@@ -28,7 +28,7 @@ uv sync --upgrade-package modal
 uv run uvicorn agent.main:app --host 127.0.0.1 --port 8765
 ```
 
-Port `8765` is only a development example; the packaged desktop app will use a random loopback port.
+Port `8765` is only a manual development example. Tauri-managed Agent sessions already use a random loopback port plus an ephemeral session token.
 
 The Modal dependency is intentionally unpinned. `--upgrade-package modal` keeps the environment on the latest available Modal release while the rest of the environment remains lockable.
 

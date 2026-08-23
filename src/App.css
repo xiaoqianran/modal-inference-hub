@@ -45,3 +45,15 @@ article strong { font-size: 14px; }
   .shell { width: min(100% - 28px, 960px); padding: 42px 0; }
   .grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+.status-copy { flex: 1; min-width: 0; }
+.status button {
+  border: 1px solid #626880;
+  border-radius: 9px;
+  padding: 9px 12px;
+  color: #c6d0f5;
+  background: #51576d;
+  cursor: pointer;
+}
+.status button:hover { background: #626880; }
+.dot.idle { background: #838ba7; box-shadow: 0 0 0 4px rgb(131 139 167 / 12%); }

@@ -1,13 +1,45 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
-from modal.exception import AuthError, ConnectionError as ModalConnectionError, PermissionDeniedError, TimeoutError as ModalTimeoutError
+import hmac
+import os
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from modal.exception import (
+    AuthError,
+    ConnectionError as ModalConnectionError,
+    PermissionDeniedError,
+    TimeoutError as ModalTimeoutError,
+)
 from pydantic import BaseModel, SecretStr
 
 from agent.hardware import detect_hardware
 from agent.modal_client import test_credentials
 
 app = FastAPI(title="modal-3D Local Agent", docs_url=None, redoc_url=None)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:1420",
+        "http://127.0.0.1:1420",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "tauri://localhost",
+    ],
+    allow_methods=["*"],
+    allow_headers=["Content-Type", "X-Modal-3D-Session"],
+)
+
+
+@app.middleware("http")
+async def require_session(request: Request, call_next):
+    expected = os.environ.get("MODAL_3D_AGENT_TOKEN")
+    if expected and request.method != "OPTIONS":
+        provided = request.headers.get("X-Modal-3D-Session", "")
+        if not hmac.compare_digest(provided, expected):
+            return JSONResponse(status_code=401, content={"detail": "Invalid local session"})
+    return await call_next(request)
 
 
 class ModalCredentials(BaseModel):
