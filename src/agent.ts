@@ -67,6 +67,29 @@ export type ModelSpec = {
   profiles: ModelProfile[];
 };
 
+
+export type Project = {
+  id: string;
+  title: string;
+  source_name: string;
+  source_bytes: number;
+  concept: string | null;
+  scene_id: string | null;
+  selection_id: string | null;
+  candidate_id: string | null;
+  canonical_path: string | null;
+  canonical_bytes: number | null;
+  model: string | null;
+  profile: string | null;
+  job_id: string | null;
+  artifact_path: string | null;
+  artifact_bytes: number | null;
+  status: "draft" | "segmented" | "ready" | "generating" | "succeeded" | "failed" | "cancelled" | "expired";
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type GenerationJob = {
   id: string;
   model: string;
@@ -141,6 +164,49 @@ export const materializeCandidate = (
 export async function assetBlob(info: AgentInfo, path: string) {
   return (await request(info, `/v1/assets?path=${encodeURIComponent(path)}`)).blob();
 }
+
+export function createProject(info: AgentInfo, image: File) {
+  const form = new FormData();
+  form.append("file", image);
+  return json<Project>(info, "/v1/projects", { method: "POST", body: form });
+}
+
+export const listProjects = (info: AgentInfo) =>
+  json<Project[]>(info, "/v1/projects");
+
+export const getProject = (info: AgentInfo, projectId: string) =>
+  json<Project>(info, `/v1/projects/${projectId}`);
+
+export async function projectSourceBlob(info: AgentInfo, projectId: string) {
+  return (await request(info, `/v1/projects/${projectId}/source`)).blob();
+}
+
+export const segmentProject = (info: AgentInfo, projectId: string, concept: string) =>
+  json<{ project: Project; selection: SamSelection }>(info, `/v1/projects/${projectId}/segment`, {
+    method: "POST",
+    body: JSON.stringify({ concept, max_candidates: 8 }),
+  });
+
+export const materializeProject = (
+  info: AgentInfo,
+  projectId: string,
+  candidateId: string,
+) =>
+  json<{ project: Project; canonical: CanonicalAsset }>(info, `/v1/projects/${projectId}/materialize`, {
+    method: "POST",
+    body: JSON.stringify({ candidate_id: candidateId, output_size: 1024 }),
+  });
+
+export const submitProjectGeneration = (
+  info: AgentInfo,
+  projectId: string,
+  model: string,
+  profile: string,
+) =>
+  json<{ project: Project; job: GenerationJob }>(info, `/v1/projects/${projectId}/generation`, {
+    method: "POST",
+    body: JSON.stringify({ model, profile, seed: 42 }),
+  });
 
 export const listModels = (info: AgentInfo) =>
   json<ModelSpec[]>(info, "/v1/models");

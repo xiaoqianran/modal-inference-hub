@@ -6,29 +6,32 @@ import {
   cancelJob,
   clearCredentials,
   connectModal,
+  createProject,
   credentialsStatus,
   disconnectModal,
   getJob,
-  listJobs,
+  getProject,
   listModels,
-  materializeCandidate,
+  listProjects,
+  materializeProject,
   modalStatus,
   probeAgent,
+  projectSourceBlob,
   saveCredentials,
-  segmentImage,
+  segmentProject,
   startAgent,
   stopAgent,
-  submitGeneration,
+  submitProjectGeneration,
   type AgentInfo,
   type CanonicalAsset,
   type CredentialStatus,
   type GenerationJob,
   type ModelSpec,
+  type Project,
   type SamSelection,
 } from "./agent";
 
 const GlbViewer = lazy(() => import("./GlbViewer"));
-
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function waitForModal(info: AgentInfo, attempts: number) {
@@ -37,6 +40,25 @@ async function waitForModal(info: AgentInfo, attempts: number) {
     if (index + 1 < attempts) await sleep(250);
   }
   return false;
+}
+
+function canonicalFromProject(project: Project): CanonicalAsset | null {
+  if (
+    !project.scene_id ||
+    !project.selection_id ||
+    !project.candidate_id ||
+    !project.canonical_path ||
+    project.canonical_bytes === null
+  ) {
+    return null;
+  }
+  return {
+    scene_id: project.scene_id,
+    selection_id: project.selection_id,
+    candidate_id: project.candidate_id,
+    canonical_path: project.canonical_path,
+    canonical_bytes: project.canonical_bytes,
+  };
 }
 
 function App() {
@@ -51,7 +73,8 @@ function App() {
 
   const [models, setModels] = useState<ModelSpec[]>([]);
   const [modelId, setModelId] = useState("fastsam3d-plus-plus");
-  const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [recentProjects, setRecentProjects] = useState<Project[]>([]);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [concept, setConcept] = useState("");
   const [selection, setSelection] = useState<SamSelection | null>(null);
@@ -112,17 +135,31 @@ function App() {
   useEffect(() => {
     if (!agent?.running || !agent.port || !modalConnected || restoredAgent.current === agent.port) return;
     restoredAgent.current = agent.port;
-    void listJobs(agent)
-      .then((history) => {
-        const latest = history.find((item) => item.status === "running")
-          ?? history.find((item) => item.status === "succeeded");
-        if (latest) return followJob(agent, latest, true);
+    void listProjects(agent)
+      .then(async (history) => {
+        setRecentProjects(history);
+        if (history[0]) await restoreProject(agent, history[0], true);
       })
       .catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)));
   }, [agent, modalConnected]);
 
+  async function refreshProjects(info: AgentInfo) {
+    const history = await listProjects(info);
+    setRecentProjects(history);
+    return history;
+  }
 
-  async function followJob(info: AgentInfo, initial: GenerationJob, restored = false) {
+  function resetOutput() {
+    setJob(null);
+    setResultUrl(null);
+  }
+
+  async function followJob(
+    info: AgentInfo,
+    initial: GenerationJob,
+    restored = false,
+    projectId?: string,
+  ) {
     let current = initial;
     setJob(current);
     setModelId(current.model);
@@ -134,6 +171,11 @@ function App() {
       current = await getJob(info, current.id);
       setJob(current);
     }
+    if (projectId) {
+      const updated = await getProject(info, projectId);
+      setProject(updated);
+      await refreshProjects(info);
+    }
     if (current.status !== "succeeded" || !current.result) {
       setWorkflowMessage(current.error || `任务已结束：${current.status}`);
       return;
@@ -142,6 +184,42 @@ function App() {
     const blob = await assetBlob(info, current.result.artifact.path);
     setResultUrl(URL.createObjectURL(blob));
     setWorkflowMessage(restored ? "已恢复最近的 3D 结果。" : "3D 生成完成。");
+  }
+
+  async function restoreProject(info: AgentInfo, value: Project, restored = false) {
+    setBusy(true);
+    try {
+      setProject(value);
+      setConcept(value.concept ?? "");
+      setModelId(value.model ?? "fastsam3d-plus-plus");
+      setSelection(null);
+      setCandidateId(value.candidate_id);
+      resetOutput();
+
+      const source = await projectSourceBlob(info, value.id);
+      setSourceUrl(URL.createObjectURL(source));
+
+      const savedCanonical = canonicalFromProject(value);
+      setCanonical(savedCanonical);
+      if (savedCanonical) {
+        setCanonicalUrl(URL.createObjectURL(await assetBlob(info, savedCanonical.canonical_path)));
+      } else {
+        setCanonicalUrl(null);
+      }
+
+      if (value.job_id) {
+        const savedJob = await getJob(info, value.job_id);
+        await followJob(info, savedJob, restored, value.id);
+      } else if (value.status === "segmented") {
+        setWorkflowMessage("已恢复项目。候选框未持久化，请重新识别对象。");
+      } else if (savedCanonical) {
+        setWorkflowMessage("已恢复 Canonical RGBA，可以继续生成 3D。");
+      } else {
+        setWorkflowMessage("已恢复项目，可以继续识别对象。");
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function start() {
@@ -214,34 +292,43 @@ function App() {
     setModalMessage("已删除保存的凭据");
   }
 
-  function resetOutput() {
-    setJob(null);
-    setResultUrl(null);
-  }
-
-  function chooseImage(file: File | null) {
-    setSourceFile(file);
-    setSourceUrl(file ? URL.createObjectURL(file) : null);
-    setSelection(null);
-    setCandidateId(null);
-    setCanonical(null);
-    setCanonicalUrl(null);
-    resetOutput();
-    setWorkflowMessage(file ? "图片已就绪。输入对象名称后开始分割。" : "导入图片并输入要提取的对象。");
-  }
-
-  async function segment() {
-    if (!agent || !sourceFile || !concept.trim()) return;
+  async function chooseImage(file: File | null) {
+    if (!agent || !file) return;
     try {
       setBusy(true);
-      setWorkflowMessage("Cloud SAM 正在识别对象…");
-      const value = await segmentImage(agent, sourceFile, concept.trim());
-      setSelection(value);
-      setCandidateId(value.candidates[0]?.candidate_id ?? null);
+      setWorkflowMessage("正在创建本地项目…");
+      const created = await createProject(agent, file);
+      setProject(created);
+      setSourceUrl(URL.createObjectURL(file));
+      setConcept("");
+      setSelection(null);
+      setCandidateId(null);
       setCanonical(null);
       setCanonicalUrl(null);
       resetOutput();
-      setWorkflowMessage(value.candidate_count ? `找到 ${value.candidate_count} 个候选，请选择目标。` : "没有找到候选对象，请换一个描述。");
+      await refreshProjects(agent);
+      setWorkflowMessage("项目已创建。输入对象名称后开始分割。");
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function segment() {
+    if (!agent || !project || !concept.trim()) return;
+    try {
+      setBusy(true);
+      setWorkflowMessage("Cloud SAM 正在识别对象…");
+      const value = await segmentProject(agent, project.id, concept.trim());
+      setProject(value.project);
+      setSelection(value.selection);
+      setCandidateId(value.selection.candidates[0]?.candidate_id ?? null);
+      setCanonical(null);
+      setCanonicalUrl(null);
+      resetOutput();
+      await refreshProjects(agent);
+      setWorkflowMessage(value.selection.candidate_count ? `找到 ${value.selection.candidate_count} 个候选，请选择目标。` : "没有找到候选对象，请换一个描述。");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -250,15 +337,17 @@ function App() {
   }
 
   async function materialize() {
-    if (!agent || !selection || !candidateId) return;
+    if (!agent || !project || !candidateId) return;
     try {
       setBusy(true);
       setWorkflowMessage("正在生成标准 Canonical RGBA…");
-      const value = await materializeCandidate(agent, selection, candidateId);
-      const blob = await assetBlob(agent, value.canonical_path);
-      setCanonical(value);
+      const value = await materializeProject(agent, project.id, candidateId);
+      const blob = await assetBlob(agent, value.canonical.canonical_path);
+      setProject(value.project);
+      setCanonical(value.canonical);
       setCanonicalUrl(URL.createObjectURL(blob));
       resetOutput();
+      await refreshProjects(agent);
       setWorkflowMessage("Canonical RGBA 已确认，可以生成 3D。");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
@@ -268,13 +357,15 @@ function App() {
   }
 
   async function generate() {
-    if (!agent || !canonical || !selectedModel || !selectedProfile) return;
+    if (!agent || !project || !canonical || !selectedModel || !selectedProfile) return;
     try {
       setBusy(true);
       resetOutput();
       setWorkflowMessage(`已提交 ${selectedModel.name}，等待云端生成…`);
-      const current = await submitGeneration(agent, canonical.canonical_path, selectedModel.id, selectedProfile.id);
-      await followJob(agent, current);
+      const value = await submitProjectGeneration(agent, project.id, selectedModel.id, selectedProfile.id);
+      setProject(value.project);
+      await refreshProjects(agent);
+      await followJob(agent, value.job, false, project.id);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -287,6 +378,8 @@ function App() {
     try {
       const current = await cancelJob(agent, job.id);
       setJob(current);
+      if (project) setProject(await getProject(agent, project.id));
+      await refreshProjects(agent);
       setWorkflowMessage("任务已取消。");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
@@ -361,17 +454,37 @@ function App() {
 
           <section className="workspace">
             <div className="workspace-head">
-              <div><span className="eyebrow">创建</span><h2>从图片生成 3D</h2></div>
+              <div>
+                <span className="eyebrow">Workspace</span>
+                <h2>{project?.title ?? "从图片生成 3D"}</h2>
+              </div>
               <span className="workflow-message">{workflowMessage}</span>
             </div>
+
+            {recentProjects.length > 0 && (
+              <div className="project-history">
+                <span>最近项目</span>
+                {recentProjects.slice(0, 6).map((item) => (
+                  <button
+                    key={item.id}
+                    className={item.id === project?.id ? "active" : ""}
+                    disabled={busy}
+                    onClick={() => agent && void restoreProject(agent, item)}
+                  >
+                    <strong>{item.title}</strong>
+                    <small>{item.status}</small>
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="workflow-grid">
               <div className="panel">
                 <div className="panel-title"><span>1</span><strong>选择对象</strong></div>
-                <label className="upload"><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => chooseImage(event.target.files?.[0] ?? null)} />{sourceUrl ? "更换图片" : "选择图片"}</label>
+                <label className="upload"><input disabled={busy} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void chooseImage(event.target.files?.[0] ?? null)} />{sourceUrl ? "新建项目" : "选择图片"}</label>
                 <div className="concept-row">
                   <input value={concept} onChange={(event) => setConcept(event.target.value)} placeholder="例如：cup、chair、plant" onKeyDown={(event) => { if (event.key === "Enter") void segment(); }} />
-                  <button disabled={busy || !sourceFile || !concept.trim()} onClick={segment}>识别</button>
+                  <button disabled={busy || !project || !concept.trim()} onClick={segment}>识别</button>
                 </div>
 
                 {sourceUrl && (
@@ -385,7 +498,7 @@ function App() {
                 )}
 
                 {selection && <div className="candidate-list">{selection.candidates.map((candidate) => <button key={candidate.candidate_id} className={candidateId === candidate.candidate_id ? "active" : ""} onClick={() => setCandidateId(candidate.candidate_id)}>#{candidate.rank + 1} · {(candidate.score * 100).toFixed(1)}%</button>)}</div>}
-                <button className="primary full" disabled={busy || !candidateId} onClick={materialize}>确认对象</button>
+                <button className="primary full" disabled={busy || !project || !candidateId} onClick={materialize}>确认对象</button>
               </div>
 
               <div className="panel">
@@ -408,7 +521,7 @@ function App() {
                 {job?.status === "running" ? (
                   <div className="generation-actions"><button className="primary" disabled>云端生成中…</button><button className="danger" onClick={cancel}>取消</button></div>
                 ) : (
-                  <button className="primary full" disabled={busy || !canonical || !selectedModel} onClick={generate}>使用 {selectedModel?.name ?? "模型"} 生成 GLB</button>
+                  <button className="primary full" disabled={busy || !project || !canonical || !selectedModel} onClick={generate}>使用 {selectedModel?.name ?? "模型"} 生成 GLB</button>
                 )}
 
                 {job?.result && (

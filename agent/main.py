@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from modal.exception import (
     AuthError,
     PermissionDeniedError,
@@ -25,6 +25,7 @@ from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
 from agent.models import public_models
+from agent.projects import projects
 
 app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -82,6 +83,22 @@ class GenerationRequest(BaseModel):
     seed: int = 42
 
 
+class ProjectSegmentRequest(BaseModel):
+    concept: str
+    max_candidates: int = Field(default=8, ge=1, le=16)
+
+
+class ProjectMaterializeRequest(BaseModel):
+    candidate_id: str
+    output_size: int = Field(default=1024, ge=256, le=2048)
+
+
+class ProjectGenerationRequest(BaseModel):
+    model: str
+    profile: str = "recommended"
+    seed: int = 42
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
@@ -116,6 +133,94 @@ def modal_connect(credentials: ModalCredentials) -> dict:
 def modal_disconnect() -> dict:
     disconnect()
     return {"ok": True}
+
+
+
+
+@app.post("/v1/projects")
+async def project_create(file: Annotated[UploadFile, File()]) -> dict:
+    try:
+        return projects.create(await file.read(), file.filename or "source.png")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/v1/projects")
+def project_list() -> list[dict]:
+    return projects.list()
+
+
+@app.get("/v1/projects/{project_id}")
+def project_get(project_id: str) -> dict:
+    try:
+        return projects.get(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+
+
+@app.get("/v1/projects/{project_id}/source")
+def project_source(project_id: str):
+    try:
+        path = projects.source_path(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=410, detail="项目源图片已丢失") from exc
+    return FileResponse(path)
+
+
+@app.post("/v1/projects/{project_id}/segment")
+def project_segment(project_id: str, request: ProjectSegmentRequest) -> dict:
+    concept = request.concept.strip()
+    if not concept:
+        raise HTTPException(status_code=400, detail="请输入要提取的对象")
+    try:
+        image = projects.source_bytes(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    selection = sam.segment(image, concept, request.max_candidates)
+    project = projects.record_segmentation(project_id, concept, selection)
+    return {"project": project, "selection": selection}
+
+
+@app.post("/v1/projects/{project_id}/materialize")
+def project_materialize(project_id: str, request: ProjectMaterializeRequest) -> dict:
+    try:
+        project = projects.get(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    if not project["scene_id"] or not project["selection_id"]:
+        raise HTTPException(status_code=409, detail="请先完成对象识别")
+    canonical = sam.materialize(
+        project["scene_id"],
+        project["selection_id"],
+        request.candidate_id,
+        request.output_size,
+    )
+    project = projects.record_canonical(project_id, request.candidate_id, canonical)
+    return {"project": project, "canonical": canonical}
+
+
+@app.post("/v1/projects/{project_id}/generation")
+def project_generation(project_id: str, request: ProjectGenerationRequest) -> dict:
+    try:
+        project = projects.get(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    if not project["canonical_path"]:
+        raise HTTPException(status_code=409, detail="请先确认 Canonical RGBA")
+    try:
+        remote = generation.submit(
+            request.model,
+            project["canonical_path"],
+            request.profile,
+            request.seed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = jobs.create(remote["model"], remote["call_id"])
+    project = projects.record_generation(project_id, request.model, request.profile, job["id"])
+    return {"project": project, "job": job}
 
 
 @app.post("/v1/assets")
@@ -197,14 +302,18 @@ def job_list() -> list[dict]:
 @app.get("/v1/jobs/{job_id}")
 def job_status(job_id: str) -> dict:
     try:
-        return jobs.poll(job_id)
+        job = jobs.poll(job_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="任务不存在") from exc
+    projects.record_job(job)
+    return job
 
 
 @app.delete("/v1/jobs/{job_id}")
 def job_cancel(job_id: str) -> dict:
     try:
-        return jobs.cancel(job_id)
+        job = jobs.cancel(job_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="任务不存在") from exc
+    projects.record_job(job)
+    return job

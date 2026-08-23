@@ -776,3 +776,50 @@ input:focus-visible {
   font-size: 10px;
   pointer-events: none;
 }
+
+.project-history {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  overflow-x: auto;
+  margin: -6px 0 18px;
+  padding: 4px 0 8px;
+}
+
+.project-history > span {
+  flex: 0 0 auto;
+  color: var(--ctp-overlay-1);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.project-history button {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 2px;
+  min-width: 108px;
+  max-width: 170px;
+  border: 1px solid var(--ctp-surface-1);
+  padding: 7px 10px;
+  color: var(--ctp-subtext-1);
+  text-align: left;
+  background: rgb(35 38 52 / 40%);
+}
+
+.project-history button strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-history button small {
+  color: var(--ctp-overlay-1);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.project-history button.active {
+  border-color: var(--ctp-mauve);
+  background: rgb(202 158 230 / 10%);
+}

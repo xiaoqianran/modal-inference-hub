@@ -28,6 +28,8 @@ React 只调用本地 Agent 的产品 API；Agent 使用当前用户的 `modal.C
 
 Generation Job 会写入客户端 app-data 目录中的 `jobs.sqlite3`。Agent 重启后会恢复本地 Job ID 与 Modal `FunctionCall` ID 的映射，并继续轮询尚未结束的远程任务；最近成功结果也可重新加载到 Viewer。
 
+客户端同时维护本地 Project Workspace：选中源图片时会在 app-data 中创建 Project 并保存 source image；`concept / SAM scene / canonical path / model / profile / job / GLB` 随工作流逐步写入 `projects.sqlite3`。重启后恢复的是完整作品上下文，而不是孤立 Job。
+
 ## Windows 开发
 
 首次使用前请安装：
