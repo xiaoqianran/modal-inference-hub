@@ -15,3 +15,9 @@ src-tauri/target/
 .env.*
 !.env.example
 .DS_Store
+
+# generated Windows sidecar
+src-tauri/resources/modal-3d-agent.exe
+
+# release build workspace
+/build/

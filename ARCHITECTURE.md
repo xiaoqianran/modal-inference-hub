@@ -16,7 +16,7 @@ React / TypeScript
 
 ## Boundaries
 
-- UI never owns Modal credentials.
+- UI may hold credentials only while the user enters/connects them; it never persists them or reloads a saved secret.
 - Tauri owns desktop lifecycle and encrypted credential storage.
 - The Python Agent owns AI/runtime integrations.
 - The Agent binds only to `127.0.0.1` on a random port; Tauri supplies a per-launch session token.
@@ -28,7 +28,7 @@ React / TypeScript
 
 1. ✅ Tauri starts/stops a localhost Agent sidecar on a random port with a per-launch session token.
 2. ✅ Connect Modal Token ID/Secret through the local Agent; credentials stay in Agent memory for the session.
-3. Add encrypted credential persistence without exposing secrets to frontend storage.
+3. ✅ Persist Modal credentials with Windows Credential Manager; saved secrets are restored directly into the Agent, not the UI.
 4. Add `SAM: Auto / Local / Cloud` with hardware detection.
 5. Add upload → select object → confirm canonical RGBA → choose 3D profile → generate.
 6. Reuse the React client for a later Web build.

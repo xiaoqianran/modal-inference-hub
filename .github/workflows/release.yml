@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install project dependencies
+        run: |
+          npm ci
+          uv python install 3.12
+          uv sync --upgrade-package modal
+
+      - name: Build and smoke agent EXE
+        shell: pwsh
+        run: |
+          ./scripts/build-agent.ps1
+          ./scripts/smoke-agent.ps1
+
+      - name: Verify source
+        run: |
+          npm run build
+          uv run python -m compileall -q agent
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo test --manifest-path src-tauri/Cargo.toml
+          cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Build Windows bundles
+        run: npm run tauri build -- --bundles nsis,msi
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(
+            Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe,
+                          src-tauri/target/release/bundle/msi/*.msi
+          )
+          if ($assets.Count -lt 2) { throw "Expected NSIS and MSI release assets" }
+          gh release create $env:GITHUB_REF_NAME @($assets.FullName) `
+            --verify-tag `
+            --title "modal-3D Client $env:GITHUB_REF_NAME" `
+            --notes "Windows-first preview release. Includes the bundled local Agent and Windows Credential Manager support. Local SAM 3.1 is not included yet. This build is unsigned, so Windows SmartScreen may warn on first launch."

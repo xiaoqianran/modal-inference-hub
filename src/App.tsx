@@ -2,13 +2,17 @@ import { useEffect, useState } from "react";
 import "./App.css";
 import {
   agentStatus,
+  clearCredentials,
   connectModal,
+  credentialsStatus,
   disconnectModal,
   modalStatus,
   probeAgent,
+  saveCredentials,
   startAgent,
   stopAgent,
   type AgentInfo,
+  type CredentialStatus,
 } from "./agent";
 
 const layers = [
@@ -18,6 +22,16 @@ const layers = [
   ["Cloud", "Modal workers"],
 ] as const;
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForModal(info: AgentInfo, attempts: number) {
+  for (let i = 0; i < attempts; i += 1) {
+    if ((await modalStatus(info)).connected) return true;
+    if (i + 1 < attempts) await sleep(250);
+  }
+  return false;
+}
+
 function App() {
   const [agent, setAgent] = useState<AgentInfo | null>(null);
   const [agentMessage, setAgentMessage] = useState("Local agent is stopped");
@@ -25,30 +39,40 @@ function App() {
   const [tokenSecret, setTokenSecret] = useState("");
   const [modalConnected, setModalConnected] = useState(false);
   const [modalMessage, setModalMessage] = useState("Not connected");
+  const [persistence, setPersistence] = useState<CredentialStatus>({ supported: false, stored: false });
+  const [remember, setRemember] = useState(false);
   const inTauri = "__TAURI_INTERNALS__" in window;
 
   useEffect(() => {
     if (!inTauri) return;
-    agentStatus()
-      .then(async (info) => {
+    Promise.all([agentStatus(), credentialsStatus()])
+      .then(async ([info, saved]) => {
         setAgent(info);
+        setPersistence(saved);
+        setRemember(saved.supported);
         if (info.running) {
           setAgentMessage(`Agent ready on 127.0.0.1:${info.port}`);
-          const status = await modalStatus(info);
-          setModalConnected(status.connected);
-          setModalMessage(status.connected ? "Connected for this session" : "Not connected");
+          const connected = await waitForModal(info, 1);
+          setModalConnected(connected);
+          setModalMessage(connected ? "Connected" : "Not connected");
         }
       })
-      .catch(() => setAgentMessage("Unable to read agent status"));
+      .catch(() => setAgentMessage("Unable to read desktop status"));
   }, [inTauri]);
 
   async function start() {
     try {
       setAgentMessage("Starting local agent…");
+      const saved = await credentialsStatus();
       const info = await startAgent();
       await probeAgent(info);
       setAgent(info);
+      setPersistence(saved);
+      setRemember(saved.supported);
       setAgentMessage(`Agent ready on 127.0.0.1:${info.port}`);
+      const connected = await waitForModal(info, saved.stored ? 20 : 1);
+      setModalConnected(connected);
+      setModalMessage(connected ? "Connected · restored from Windows" : "Not connected");
     } catch (error) {
       setAgentMessage(error instanceof Error ? error.message : String(error));
     }
@@ -64,12 +88,32 @@ function App() {
 
   async function connect() {
     if (!agent?.running) return;
+    const credentials = { token_id: tokenId, token_secret: tokenSecret };
     try {
       setModalMessage("Connecting…");
-      await connectModal(agent, { token_id: tokenId, token_secret: tokenSecret });
+      await connectModal(agent, credentials);
+      let stored = persistence.stored;
+      let savedNow = false;
+      let saveFailed = false;
+      if (remember && persistence.supported) {
+        try {
+          await saveCredentials(credentials);
+          stored = true;
+          savedNow = true;
+        } catch {
+          saveFailed = true;
+        }
+      }
       setTokenSecret("");
+      setPersistence({ ...persistence, stored });
       setModalConnected(true);
-      setModalMessage("Connected for this session");
+      setModalMessage(
+        saveFailed
+          ? "Connected, but Windows credential save failed"
+          : savedNow
+            ? "Connected · saved in Windows"
+            : "Connected for this session",
+      );
     } catch (error) {
       setModalConnected(false);
       setModalMessage(error instanceof Error ? error.message : String(error));
@@ -80,7 +124,15 @@ function App() {
     if (!agent?.running) return;
     await disconnectModal(agent);
     setModalConnected(false);
-    setModalMessage("Not connected");
+    setModalMessage(persistence.stored ? "Disconnected · saved credentials kept" : "Not connected");
+  }
+
+  async function forget() {
+    await clearCredentials();
+    if (agent?.running) await disconnectModal(agent);
+    setPersistence({ ...persistence, stored: false });
+    setModalConnected(false);
+    setModalMessage("Saved credentials removed");
   }
 
   return (
@@ -115,7 +167,10 @@ function App() {
         <div>
           <span className="eyebrow">Cloud</span>
           <h2>Modal credentials</h2>
-          <p>Stored in Agent memory only for now. Encrypted persistence comes next.</p>
+          <p>
+            Token Secret is sent once to the localhost Agent. On Windows it can be stored in Credential Manager;
+            it is never loaded back into the UI.
+          </p>
         </div>
         <div className="form">
           <label>
@@ -132,13 +187,22 @@ function App() {
               placeholder="••••••••••••"
             />
           </label>
+          {persistence.supported && (
+            <label className="remember">
+              <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
+              Remember on this Windows PC
+            </label>
+          )}
           <div className="form-actions">
             <span className={modalConnected ? "connected" : "muted"}>{modalMessage}</span>
-            {modalConnected ? (
-              <button onClick={disconnect}>Disconnect</button>
-            ) : (
-              <button disabled={!agent?.running || !tokenId || !tokenSecret} onClick={connect}>Connect</button>
-            )}
+            <div className="buttons">
+              {persistence.stored && <button className="secondary" onClick={forget}>Forget saved</button>}
+              {modalConnected ? (
+                <button onClick={disconnect}>Disconnect</button>
+              ) : (
+                <button disabled={!agent?.running || !tokenId || !tokenSecret} onClick={connect}>Connect</button>
+              )}
+            </div>
           </div>
         </div>
       </section>

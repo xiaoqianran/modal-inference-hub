@@ -15,6 +15,16 @@ export const startAgent = () => invoke<AgentInfo>("agent_start");
 export const agentStatus = () => invoke<AgentInfo>("agent_status");
 export const stopAgent = () => invoke<void>("agent_stop");
 
+export type CredentialStatus = {
+  supported: boolean;
+  stored: boolean;
+};
+
+export const credentialsStatus = () => invoke<CredentialStatus>("credentials_status");
+export const saveCredentials = (credentials: ModalCredentials) =>
+  invoke<void>("credentials_save", { credentials });
+export const clearCredentials = () => invoke<void>("credentials_clear");
+
 async function request(info: AgentInfo, path: string, init?: RequestInit) {
   if (!info.running || !info.port || !info.session_token) throw new Error("Agent is not running");
   const response = await fetch(`http://127.0.0.1:${info.port}${path}`, {

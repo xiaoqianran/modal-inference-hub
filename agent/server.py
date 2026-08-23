@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 from pathlib import Path
 
 import uvicorn
+
+from agent.main import app
+from agent.modal_client import connect
 
 
 def main() -> None:
@@ -18,13 +22,24 @@ def main() -> None:
     sock.listen(2048)
     port = sock.getsockname()[1]
 
+    saved_token_id = os.environ.pop("MODAL_3D_SAVED_TOKEN_ID", None)
+    saved_token_secret = os.environ.pop("MODAL_3D_SAVED_TOKEN_SECRET", None)
+    if saved_token_id and saved_token_secret:
+        def restore() -> None:
+            try:
+                connect(saved_token_id, saved_token_secret)
+            except Exception:
+                pass
+
+        threading.Thread(target=restore, daemon=True).start()
+
     path = Path(handshake)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(str(port), encoding="utf-8")
     os.replace(tmp, path)
 
     config = uvicorn.Config(
-        "agent.main:app",
+        app,
         host="127.0.0.1",
         port=port,
         log_level="warning",
