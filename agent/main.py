@@ -15,7 +15,7 @@ from modal.exception import (
 from pydantic import BaseModel, SecretStr
 
 from agent.hardware import detect_hardware
-from agent.modal_client import test_credentials
+from agent.modal_client import connect, connected, disconnect
 
 app = FastAPI(title="modal-3D Local Agent", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -57,14 +57,25 @@ def hardware() -> dict:
     return detect_hardware()
 
 
-@app.post("/modal/test")
-def modal_test(credentials: ModalCredentials) -> dict:
+@app.get("/modal/status")
+def modal_status() -> dict:
+    return {"connected": connected()}
+
+
+@app.post("/modal/connect")
+def modal_connect(credentials: ModalCredentials) -> dict:
     if not credentials.token_id.strip() or not credentials.token_secret.get_secret_value().strip():
         raise HTTPException(status_code=400, detail="Token ID and Token Secret are required")
     try:
-        test_credentials(credentials.token_id, credentials.token_secret.get_secret_value())
+        connect(credentials.token_id, credentials.token_secret.get_secret_value())
     except (AuthError, PermissionDeniedError) as exc:
         raise HTTPException(status_code=401, detail="Modal authentication failed") from exc
     except (ModalConnectionError, ModalTimeoutError) as exc:
         raise HTTPException(status_code=503, detail="Modal is unavailable") from exc
+    return {"ok": True}
+
+
+@app.delete("/modal/connect")
+def modal_disconnect() -> dict:
+    disconnect()
     return {"ok": True}

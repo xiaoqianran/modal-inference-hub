@@ -57,3 +57,37 @@ article strong { font-size: 14px; }
 }
 .status button:hover { background: #626880; }
 .dot.idle { background: #838ba7; box-shadow: 0 0 0 4px rgb(131 139 167 / 12%); }
+
+.credentials {
+  display: grid;
+  grid-template-columns: .8fr 1.2fr;
+  gap: 28px;
+  margin-top: 20px;
+  padding: 24px;
+  border: 1px solid #51576d;
+  border-radius: 14px;
+  background: #414559;
+}
+.credentials h2 { margin: 5px 0 8px; font-size: 20px; }
+.credentials p { margin: 0; color: #a5adce; font-size: 13px; line-height: 1.55; }
+.form { display: grid; gap: 12px; }
+.form label { display: grid; gap: 6px; color: #a5adce; font-size: 12px; }
+.form input {
+  width: 100%;
+  border: 1px solid #626880;
+  border-radius: 9px;
+  padding: 10px 11px;
+  color: #c6d0f5;
+  outline: none;
+  background: #303446;
+}
+.form input:focus { border-color: #8caaee; }
+.form-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.form-actions button { border: 0; border-radius: 9px; padding: 9px 13px; background: #8caaee; color: #303446; font-weight: 700; cursor: pointer; }
+.form-actions button:disabled { opacity: .4; cursor: default; }
+.connected { color: #a6d189; font-size: 12px; }
+.muted { color: #838ba7; font-size: 12px; }
+
+@media (max-width: 760px) {
+  .credentials { grid-template-columns: 1fr; }
+}

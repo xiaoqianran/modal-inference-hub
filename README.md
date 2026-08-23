@@ -10,7 +10,7 @@ Windows-first hybrid local/cloud client for `modal-3D`.
 - `uv` for Python environments
 - latest `modal[api-proxy-support]`
 
-Cloud model workers remain in the private `modal-3D` repository. Local SAM 3.1 will be optional and is not installed by the base client.
+Cloud model workers remain in the private `modal-3D` repository. Local SAM 3.1 will be optional and is not installed by the base client. Modal credentials are validated through the localhost Agent and currently remain in memory only for the running Agent session.
 
 ## Development
 
