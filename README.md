@@ -10,7 +10,19 @@
 - 使用 `uv` 管理 Python 环境
 - 最新版 `modal[api-proxy-support]`
 
-云端模型工作节点仍保存在私有 `modal-3D` 仓库中。本地 SAM 3.1 是可选功能，不会随基础客户端安装。Modal 凭据通过本机代理验证；Windows 版本可将凭据保存到 Windows 凭据管理器，并直接恢复到本地代理，不会重新加载到 React 界面。
+云端模型工作节点保存在公开的 `modal-3D` 仓库中。本地 SAM 3.1 是可选功能，不会随基础客户端安装。Modal 凭据通过本机代理验证；Windows 版本可将凭据保存到 Windows 凭据管理器，并直接恢复到本地代理，不会重新加载到 React 界面。
+
+
+## 当前云端 MVP
+
+桌面端已经打通第一条真实纵向链路：
+
+```text
+图片 → Cloud SAM 3.1 → 候选对象 → Canonical RGBA
+     → FastSAM3D++ → 异步 Job → GLB → 客户端下载
+```
+
+React 只调用本地 Agent 的产品 API；Agent 使用当前用户的 `modal.Client` 访问私有 Modal RPC 和共享 `modal-3d-artifacts` Volume。Cloud SAM 产出的 canonical RGBA 直接以 Volume path 交给 3D Worker，不会下载到本地再上传。
 
 ## Windows 开发
 

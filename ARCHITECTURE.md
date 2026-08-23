@@ -9,16 +9,17 @@ React / TypeScript
         │
   本地 Python 代理
      ├─ 硬件检测
-     ├─ Modal 凭据与客户端
-     ├─ 可选的本地 SAM 3.1
-     └─ 云端 SAM / 3D 工作节点
+     ├─ Modal Session / Artifact Volume
+     ├─ Cloud SAM / Generation Jobs
+     ├─ 可选的本地 SAM 3.1（后续）
+     └─ 云端 3D 工作节点
 ```
 
 ## 架构边界
 
 - 用户界面只在输入和连接期间接触凭据，不会持久化或重新读取已保存的密钥。
 - Tauri 负责桌面应用生命周期和 Windows 凭据管理器存储。
-- Python 本地代理负责 AI 与运行时集成。
+- Python 本地代理负责 Modal Session、Artifact、Cloud SAM 与长期 Generation Job 编排。
 - 本地代理仅监听随机的 `127.0.0.1` 端口；Tauri 会为每次启动提供独立会话令牌。
 - 已保存的凭据直接恢复到本地代理，不会回传到 React 界面。
 - 本地 SAM 3.1 是可选功能，云端回退使用相同的界面协议。
@@ -30,6 +31,7 @@ React / TypeScript
 1. ✅ Tauri 使用随机端口和独立会话令牌启动、停止本地代理 sidecar。
 2. ✅ 通过本地代理连接 Modal 令牌；凭据仅在当前代理会话的内存中保存。
 3. ✅ 使用 Windows 凭据管理器持久化 Modal 凭据，并直接恢复到本地代理。
-4. 增加 `SAM：自动 / 本地 / 云端` 模式与硬件检测。
-5. 增加“上传 → 选择对象 → 确认标准 RGBA → 选择 3D 配置 → 生成”工作流。
-6. 后续 Web 版本复用现有 React 客户端。
+4. ✅ 打通 Cloud SAM → 候选对象 → Canonical RGBA → FastSAM3D++ → GLB 的首条真实工作流。
+5. 增加 `SAM：自动 / 本地 / 云端` 模式与更完整的能力检测。
+6. 将 Hermite-TRELLIS2++、Hunyuan2.1++、Pixal3D 纳入统一模型选择与 profile。
+7. 增加 3D Viewer、任务恢复与后续 Web Runtime。

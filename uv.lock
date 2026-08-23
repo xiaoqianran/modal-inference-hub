@@ -498,6 +498,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "modal", extra = ["api-proxy-support"] },
     { name = "pydantic" },
+    { name = "python-multipart" },
     { name = "uvicorn" },
 ]
 
@@ -511,6 +512,7 @@ requires-dist = [
     { name = "fastapi" },
     { name = "modal", extras = ["api-proxy-support"] },
     { name = "pydantic" },
+    { name = "python-multipart" },
     { name = "uvicorn" },
 ]
 
@@ -880,6 +882,15 @@ dependencies = [
 sdist = { url = "https://uv.agentsmirror.com/pypi/files/files.pythonhosted.org/packages/94/5b/c9fe0db5e83ee1c39b2258fa21d23b15e1a60786b6c5990ee5074ead8bb6/pyinstaller_hooks_contrib-2026.6.tar.gz", hash = "sha256:bef5002c32f4f50bd55b005da12cff64eca8783e7eaf86a06a62410164bab725", size = 173354, upload-time = "2026-06-08T22:37:16.152Z" }
 wheels = [
     { url = "https://uv.agentsmirror.com/pypi/files/files.pythonhosted.org/packages/e7/31/f2d7343d8ed5f7c4678377886f6ce533e6eaaa131b252ce950114c2a7efa/pyinstaller_hooks_contrib-2026.6-py3-none-any.whl", hash = "sha256:fd13b8ac126b35361175edacd41a0d97080b75dd5f4b594ecefefff969509dd3", size = 457159, upload-time = "2026-06-08T22:37:14.722Z" },
+]
+
+[[package]]
+name = "python-multipart"
+version = "0.0.32"
+source = { registry = "https://uv.agentsmirror.com/pypi/simple" }
+sdist = { url = "https://uv.agentsmirror.com/pypi/files/files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
+wheels = [
+    { url = "https://uv.agentsmirror.com/pypi/files/files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
 ]
 
 [[package]]
