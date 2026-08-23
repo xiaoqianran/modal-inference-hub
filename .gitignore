@@ -9,6 +9,11 @@ __pycache__/
 
 # Tauri / Rust
 src-tauri/target/
+src-tauri/binaries/*.exe
+
+# Agent packaging
+build/
+*.spec
 
 # local
 .env

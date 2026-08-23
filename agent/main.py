@@ -17,7 +17,7 @@ from pydantic import BaseModel, SecretStr
 from agent.hardware import detect_hardware
 from agent.modal_client import connect, connected, disconnect
 
-app = FastAPI(title="modal-3D Local Agent", docs_url=None, redoc_url=None)
+app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -38,7 +38,7 @@ async def require_session(request: Request, call_next):
     if expected and request.method != "OPTIONS":
         provided = request.headers.get("X-Modal-3D-Session", "")
         if not hmac.compare_digest(provided, expected):
-            return JSONResponse(status_code=401, content={"detail": "Invalid local session"})
+            return JSONResponse(status_code=401, content={"detail": "本地会话无效"})
     return await call_next(request)
 
 
@@ -65,13 +65,13 @@ def modal_status() -> dict:
 @app.post("/modal/connect")
 def modal_connect(credentials: ModalCredentials) -> dict:
     if not credentials.token_id.strip() or not credentials.token_secret.get_secret_value().strip():
-        raise HTTPException(status_code=400, detail="Token ID and Token Secret are required")
+        raise HTTPException(status_code=400, detail="令牌 ID 和令牌密钥不能为空")
     try:
         connect(credentials.token_id, credentials.token_secret.get_secret_value())
     except (AuthError, PermissionDeniedError) as exc:
-        raise HTTPException(status_code=401, detail="Modal authentication failed") from exc
+        raise HTTPException(status_code=401, detail="Modal 身份验证失败") from exc
     except (ModalConnectionError, ModalTimeoutError) as exc:
-        raise HTTPException(status_code=503, detail="Modal is unavailable") from exc
+        raise HTTPException(status_code=503, detail="Modal 服务当前不可用") from exc
     return {"ok": True}
 
 

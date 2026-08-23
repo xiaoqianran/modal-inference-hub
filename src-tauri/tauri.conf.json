@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "modal-3D Client",
+  "productName": "modal-3D 三维创作客户端",
   "version": "0.1.0",
   "identifier": "com.modal3d.client",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run agent:build && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run agent:build && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "modal-3D Client",
+        "title": "modal-3D 三维创作客户端",
         "width": 1100,
         "height": 760
       }
@@ -24,6 +24,17 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/modal-3d-agent"
+    ],
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      },
+      "nsis": {
+        "languages": ["SimpChinese"]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

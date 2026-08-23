@@ -6,8 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "agent:sync": "uv sync --upgrade-package modal",
+    "agent:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-agent.ps1",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build"
   },
   "dependencies": {
     "react": "^19.1.0",

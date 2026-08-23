@@ -16,7 +16,7 @@ export const agentStatus = () => invoke<AgentInfo>("agent_status");
 export const stopAgent = () => invoke<void>("agent_stop");
 
 async function request(info: AgentInfo, path: string, init?: RequestInit) {
-  if (!info.running || !info.port || !info.session_token) throw new Error("Agent is not running");
+  if (!info.running || !info.port || !info.session_token) throw new Error("本地代理尚未运行");
   const response = await fetch(`http://127.0.0.1:${info.port}${path}`, {
     ...init,
     headers: {
@@ -27,7 +27,7 @@ async function request(info: AgentInfo, path: string, init?: RequestInit) {
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(body?.detail || `Local Agent request failed (${response.status})`);
+    throw new Error(body?.detail || `本地代理请求失败（状态码 ${response.status}）`);
   }
   return response;
 }

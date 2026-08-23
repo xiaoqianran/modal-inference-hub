@@ -1,35 +1,62 @@
-# modal-3D-client
+# modal-3D 三维创作客户端
 
-Windows-first hybrid local/cloud client for `modal-3D`.
+面向 Windows 的本地/云端混合 `modal-3D` 客户端。
 
-## Stack
+## 技术栈
 
 - Tauri 2
 - React + TypeScript
-- Python 3.12 + FastAPI local agent
-- `uv` for Python environments
-- latest `modal[api-proxy-support]`
+- Python 3.12 + FastAPI 本地代理
+- 使用 `uv` 管理 Python 环境
+- 最新版 `modal[api-proxy-support]`
 
-Cloud model workers remain in the private `modal-3D` repository. Local SAM 3.1 will be optional and is not installed by the base client. Modal credentials are validated through the localhost Agent and currently remain in memory only for the running Agent session.
+云端模型工作节点仍保存在私有 `modal-3D` 仓库中。本地 SAM 3.1 是可选功能，不会随基础客户端安装。Modal 凭据通过本机代理验证，目前仅保存在本地代理的运行内存中。
 
-## Development
+## Windows 开发
 
-Frontend:
+首次使用前请安装：
 
-```bash
+- Node.js 24 或更高版本
+- 带有 MSVC 工具链的 Rust stable
+- `uv`
+- Microsoft Edge WebView2 Runtime（当前 Windows 10/11 通常已经内置）
+
+在 PowerShell 中启动完整桌面客户端：
+
+```powershell
+npm install
+npm run agent:sync
+npm run desktop:dev
+```
+
+首次启动会将 Python 本地代理打包为 Tauri sidecar，并自动进行健康检查。后续仅在代理源码、依赖或构建脚本变化时重新打包。客户端打开后会自动启动并探测本地代理。
+
+生成简体中文 Windows 安装包：
+
+```powershell
+npm run desktop:build
+```
+
+安装包已包含 Python 本地代理，最终用户无需另外安装 Python 或 `uv`。
+
+## 单独开发前端
+
+```powershell
 npm install
 npm run dev
 ```
 
-Local agent:
+## 单独开发本地代理
 
-```bash
+```powershell
 uv sync --upgrade-package modal
 uv run uvicorn agent.main:app --host 127.0.0.1 --port 8765
 ```
 
-Port `8765` is only a manual development example. Tauri-managed Agent sessions already use a random loopback port plus an ephemeral session token.
+端口 `8765` 仅用于手动开发。由 Tauri 管理的代理会使用随机回环端口和每次启动生成的临时会话令牌。
 
-The Modal dependency is intentionally unpinned. `--upgrade-package modal` keeps the environment on the latest available Modal release while the rest of the environment remains lockable.
+Modal 版本要求有意不固定；`npm run agent:sync` 会更新锁文件中的 Modal 版本，桌面端构建随后会严格使用该锁文件。
 
-See `ARCHITECTURE.md` for boundaries and milestones.
+诊断 sidecar 启动问题时，可以通过 `MODAL_3D_AGENT_EXECUTABLE` 指定其他代理可执行文件。代理启动失败时，界面会显示捕获到的 Python 日志。
+
+架构边界和后续里程碑请参阅 [ARCHITECTURE.md](ARCHITECTURE.md)。

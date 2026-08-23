@@ -1,34 +1,34 @@
-# Architecture
+# 架构说明
 
-`modal-3D-client` is the user-facing client. Cloud model code stays in `modal-3D`.
+`modal-3D-client` 是面向用户的客户端，云端模型代码继续保存在 `modal-3D` 仓库中。
 
 ```text
 React / TypeScript
         │
       Tauri 2
         │
-  Local Python Agent
-     ├─ hardware detection
-     ├─ Modal credentials/client
-     ├─ optional local SAM 3.1
-     └─ cloud SAM / 3D workers
+  本地 Python 代理
+     ├─ 硬件检测
+     ├─ Modal 凭据与客户端
+     ├─ 可选的本地 SAM 3.1
+     └─ 云端 SAM / 3D 工作节点
 ```
 
-## Boundaries
+## 架构边界
 
-- UI never owns Modal credentials.
-- Tauri owns desktop lifecycle and encrypted credential storage.
-- The Python Agent owns AI/runtime integrations.
-- The Agent binds only to `127.0.0.1` on a random port; Tauri supplies a per-launch session token.
-- Local SAM 3.1 is optional; cloud fallback uses the same UI contract.
-- `modal-3D` remains the source of truth for cloud workers and their API contract.
-- Large models are never bundled into the installer.
+- 用户界面不直接持有 Modal 凭据。
+- Tauri 负责桌面应用生命周期和加密凭据存储。
+- Python 本地代理负责 AI 与运行时集成。
+- 本地代理仅监听随机的 `127.0.0.1` 端口；Tauri 会为每次启动提供独立会话令牌。
+- 本地 SAM 3.1 是可选功能，云端回退使用相同的界面协议。
+- `modal-3D` 是云端工作节点及其 API 协议的唯一事实来源。
+- 大型模型不会打包进安装程序。
 
-## First milestones
+## 首批里程碑
 
-1. ✅ Tauri starts/stops a localhost Agent sidecar on a random port with a per-launch session token.
-2. ✅ Connect Modal Token ID/Secret through the local Agent; credentials stay in Agent memory for the session.
-3. Add encrypted credential persistence without exposing secrets to frontend storage.
-4. Add `SAM: Auto / Local / Cloud` with hardware detection.
-5. Add upload → select object → confirm canonical RGBA → choose 3D profile → generate.
-6. Reuse the React client for a later Web build.
+1. ✅ Tauri 使用随机端口和独立会话令牌启动、停止本地代理 sidecar。
+2. ✅ 通过本地代理连接 Modal 令牌；凭据仅在当前代理会话的内存中保存。
+3. 增加加密凭据持久化，同时避免前端接触密钥。
+4. 增加 `SAM：自动 / 本地 / 云端` 模式与硬件检测。
+5. 增加“上传 → 选择对象 → 确认标准 RGBA → 选择 3D 配置 → 生成”工作流。
+6. 后续 Web 版本复用现有 React 客户端。
