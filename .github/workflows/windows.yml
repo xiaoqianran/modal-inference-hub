@@ -1,0 +1,44 @@
+name: Windows
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Python agent
+        run: |
+          uv python install 3.12
+          uv sync --upgrade-package modal
+          uv run python -m compileall -q agent
+          uv run python -c "import modal; print('modal', modal.__version__)"
+
+      - name: Tauri
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo check --manifest-path src-tauri/Cargo.toml
