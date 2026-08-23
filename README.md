@@ -19,10 +19,12 @@
 
 ```text
 图片 → Cloud SAM 3.1 → 候选对象 → Canonical RGBA
-     → FastSAM3D++ → 异步 Job → GLB → 客户端下载
+     → 选择 3D 模型 → 异步 Job → GLB → Three.js 预览 / 下载
 ```
 
 React 只调用本地 Agent 的产品 API；Agent 使用当前用户的 `modal.Client` 访问私有 Modal RPC 和共享 `modal-3d-artifacts` Volume。Cloud SAM 产出的 canonical RGBA 直接以 Volume path 交给 3D Worker，不会下载到本地再上传。
+
+当前模型 registry 已包含 FastSAM3D++、Hermite-TRELLIS2++、Hunyuan2.1++ 和 Pixal3D。每个模型只暴露已经 benchmark 验证的 `recommended` profile；模型特有参数由 Agent 翻译，React 不直接拼 Modal options。
 
 ## Windows 开发
 

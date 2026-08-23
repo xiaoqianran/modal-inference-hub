@@ -1,13 +1,15 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import "./App.css";
 import {
   agentStatus,
   assetBlob,
+  cancelJob,
   clearCredentials,
   connectModal,
   credentialsStatus,
   disconnectModal,
   getJob,
+  listModels,
   materializeCandidate,
   modalStatus,
   probeAgent,
@@ -20,8 +22,11 @@ import {
   type CanonicalAsset,
   type CredentialStatus,
   type GenerationJob,
+  type ModelSpec,
   type SamSelection,
 } from "./agent";
+
+const GlbViewer = lazy(() => import("./GlbViewer"));
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -43,6 +48,8 @@ function App() {
   const [persistence, setPersistence] = useState<CredentialStatus>({ supported: false, stored: false });
   const [remember, setRemember] = useState(false);
 
+  const [models, setModels] = useState<ModelSpec[]>([]);
+  const [modelId, setModelId] = useState("fastsam3d-plus-plus");
   const [sourceFile, setSourceFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [concept, setConcept] = useState("");
@@ -51,10 +58,13 @@ function App() {
   const [canonical, setCanonical] = useState<CanonicalAsset | null>(null);
   const [canonicalUrl, setCanonicalUrl] = useState<string | null>(null);
   const [job, setJob] = useState<GenerationJob | null>(null);
+  const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [workflowMessage, setWorkflowMessage] = useState("导入图片并输入要提取的对象。");
   const [busy, setBusy] = useState(false);
 
   const inTauri = "__TAURI_INTERNALS__" in window;
+  const selectedModel = models.find((model) => model.id === modelId) ?? models[0];
+  const selectedProfile = selectedModel?.profiles[0];
 
   useEffect(() => {
     if (!inTauri) return;
@@ -65,9 +75,13 @@ function App() {
         const [status, saved] = await Promise.all([agentStatus(), credentialsStatus()]);
         const info = status.running ? status : await startAgent();
         await probeAgent(info);
-        const connected = await waitForModal(info, saved.stored ? 20 : 1);
+        const [connected, availableModels] = await Promise.all([
+          waitForModal(info, saved.stored ? 20 : 1),
+          listModels(info),
+        ]);
         if (cancelled) return;
         setAgent(info);
+        setModels(availableModels);
         setPersistence(saved);
         setRemember(saved.supported);
         setAgentMessage(`本地代理已就绪 · 127.0.0.1:${info.port}`);
@@ -86,18 +100,24 @@ function App() {
   useEffect(() => () => {
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
   }, [sourceUrl]);
-
   useEffect(() => () => {
     if (canonicalUrl) URL.revokeObjectURL(canonicalUrl);
   }, [canonicalUrl]);
+  useEffect(() => () => {
+    if (resultUrl) URL.revokeObjectURL(resultUrl);
+  }, [resultUrl]);
 
   async function start() {
     try {
       const saved = await credentialsStatus();
       const info = await startAgent();
       await probeAgent(info);
-      const connected = await waitForModal(info, saved.stored ? 20 : 1);
+      const [connected, availableModels] = await Promise.all([
+        waitForModal(info, saved.stored ? 20 : 1),
+        listModels(info),
+      ]);
       setAgent(info);
+      setModels(availableModels);
       setPersistence(saved);
       setRemember(saved.supported);
       setAgentMessage(`本地代理已就绪 · 127.0.0.1:${info.port}`);
@@ -123,13 +143,11 @@ function App() {
       setModalMessage("正在连接…");
       await connectModal(agent, credentials);
       let stored = persistence.stored;
-      let savedNow = false;
       let saveFailed = false;
       if (remember && persistence.supported) {
         try {
           await saveCredentials(credentials);
           stored = true;
-          savedNow = true;
         } catch {
           saveFailed = true;
         }
@@ -137,7 +155,7 @@ function App() {
       setTokenSecret("");
       setPersistence({ ...persistence, stored });
       setModalConnected(true);
-      setModalMessage(saveFailed ? "已连接，但保存 Windows 凭据失败" : savedNow ? "当前会话已连接 · 已保存到 Windows" : "当前会话已连接");
+      setModalMessage(saveFailed ? "已连接，但保存 Windows 凭据失败" : stored ? "当前会话已连接 · 已保存到 Windows" : "当前会话已连接");
     } catch (error) {
       setModalConnected(false);
       setModalMessage(error instanceof Error ? error.message : String(error));
@@ -159,16 +177,19 @@ function App() {
     setModalMessage("已删除保存的凭据");
   }
 
+  function resetOutput() {
+    setJob(null);
+    setResultUrl(null);
+  }
+
   function chooseImage(file: File | null) {
-    if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-    if (canonicalUrl) URL.revokeObjectURL(canonicalUrl);
     setSourceFile(file);
     setSourceUrl(file ? URL.createObjectURL(file) : null);
     setSelection(null);
     setCandidateId(null);
     setCanonical(null);
     setCanonicalUrl(null);
-    setJob(null);
+    resetOutput();
     setWorkflowMessage(file ? "图片已就绪。输入对象名称后开始分割。" : "导入图片并输入要提取的对象。");
   }
 
@@ -182,8 +203,8 @@ function App() {
       setCandidateId(value.candidates[0]?.candidate_id ?? null);
       setCanonical(null);
       setCanonicalUrl(null);
-      setJob(null);
-      setWorkflowMessage(value.candidate_count ? `找到 ${value.candidate_count} 个候选，请选择目标。` : "没有找到候选对象，请换一个描述。 ");
+      resetOutput();
+      setWorkflowMessage(value.candidate_count ? `找到 ${value.candidate_count} 个候选，请选择目标。` : "没有找到候选对象，请换一个描述。");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -198,10 +219,9 @@ function App() {
       setWorkflowMessage("正在生成标准 Canonical RGBA…");
       const value = await materializeCandidate(agent, selection, candidateId);
       const blob = await assetBlob(agent, value.canonical_path);
-      if (canonicalUrl) URL.revokeObjectURL(canonicalUrl);
       setCanonical(value);
       setCanonicalUrl(URL.createObjectURL(blob));
-      setJob(null);
+      resetOutput();
       setWorkflowMessage("Canonical RGBA 已确认，可以生成 3D。");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
@@ -211,22 +231,26 @@ function App() {
   }
 
   async function generate() {
-    if (!agent || !canonical) return;
+    if (!agent || !canonical || !selectedModel || !selectedProfile) return;
     try {
       setBusy(true);
-      setWorkflowMessage("已提交 FastSAM3D++，等待云端生成…");
-      let current = await submitGeneration(agent, canonical.canonical_path);
+      resetOutput();
+      setWorkflowMessage(`已提交 ${selectedModel.name}，等待云端生成…`);
+      let current = await submitGeneration(agent, canonical.canonical_path, selectedModel.id, selectedProfile.id);
       setJob(current);
       while (current.status === "running") {
         await sleep(1000);
         current = await getJob(agent, current.id);
         setJob(current);
       }
-      if (current.status === "succeeded") {
-        setWorkflowMessage("3D 生成完成。");
-      } else {
+      if (current.status !== "succeeded" || !current.result) {
         setWorkflowMessage(current.error || `任务已结束：${current.status}`);
+        return;
       }
+      setWorkflowMessage("3D 已生成，正在加载预览…");
+      const blob = await assetBlob(agent, current.result.artifact.path);
+      setResultUrl(URL.createObjectURL(blob));
+      setWorkflowMessage("3D 生成完成。");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -234,18 +258,31 @@ function App() {
     }
   }
 
-  async function downloadResult() {
-    if (!agent || !job?.result) return;
+  async function cancel() {
+    if (!agent || !job || job.status !== "running") return;
     try {
-      const blob = await assetBlob(agent, job.result.artifact.path);
-      const url = URL.createObjectURL(blob);
+      const current = await cancelJob(agent, job.id);
+      setJob(current);
+      setWorkflowMessage("任务已取消。");
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function downloadResult() {
+    if (!job?.result || !agent) return;
+    try {
+      let url = resultUrl;
+      if (!url) {
+        url = URL.createObjectURL(await assetBlob(agent, job.result.artifact.path));
+        setResultUrl(url);
+      }
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = `modal-3d-${job.model}.glb`;
       document.body.append(anchor);
       anchor.click();
       anchor.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     }
@@ -307,10 +344,7 @@ function App() {
             <div className="workflow-grid">
               <div className="panel">
                 <div className="panel-title"><span>1</span><strong>选择对象</strong></div>
-                <label className="upload">
-                  <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => chooseImage(event.target.files?.[0] ?? null)} />
-                  {sourceUrl ? "更换图片" : "选择图片"}
-                </label>
+                <label className="upload"><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => chooseImage(event.target.files?.[0] ?? null)} />{sourceUrl ? "更换图片" : "选择图片"}</label>
                 <div className="concept-row">
                   <input value={concept} onChange={(event) => setConcept(event.target.value)} placeholder="例如：cup、chair、plant" onKeyDown={(event) => { if (event.key === "Enter") void segment(); }} />
                   <button disabled={busy || !sourceFile || !concept.trim()} onClick={segment}>识别</button>
@@ -326,22 +360,32 @@ function App() {
                   </div>
                 )}
 
-                {selection && (
-                  <div className="candidate-list">
-                    {selection.candidates.map((candidate) => <button key={candidate.candidate_id} className={candidateId === candidate.candidate_id ? "active" : ""} onClick={() => setCandidateId(candidate.candidate_id)}>#{candidate.rank + 1} · {(candidate.score * 100).toFixed(1)}%</button>)}
-                  </div>
-                )}
+                {selection && <div className="candidate-list">{selection.candidates.map((candidate) => <button key={candidate.candidate_id} className={candidateId === candidate.candidate_id ? "active" : ""} onClick={() => setCandidateId(candidate.candidate_id)}>#{candidate.rank + 1} · {(candidate.score * 100).toFixed(1)}%</button>)}</div>}
                 <button className="primary full" disabled={busy || !candidateId} onClick={materialize}>确认对象</button>
               </div>
 
               <div className="panel">
-                <div className="panel-title"><span>2</span><strong>生成 3D</strong></div>
-                <div className="canonical-preview">
-                  {canonicalUrl ? <img src={canonicalUrl} alt="Canonical RGBA" /> : <div>确认对象后，这里会显示标准透明 RGBA。</div>}
+                <div className="panel-title"><span>2</span><strong>选择模型并生成</strong></div>
+                {resultUrl ? <Suspense fallback={<div className="glb-viewer"><span className="viewer-message">正在加载 3D 引擎…</span></div>}><GlbViewer url={resultUrl} /></Suspense> : (
+                  <div className="canonical-preview">{canonicalUrl ? <img src={canonicalUrl} alt="Canonical RGBA" /> : <div>确认对象后，这里会显示标准透明 RGBA。</div>}</div>
+                )}
+                {canonical && !resultUrl && <div className="asset-meta"><span>Canonical RGBA</span><strong>{(canonical.canonical_bytes / 1024).toFixed(0)} KiB</strong></div>}
+
+                <div className="model-options">
+                  {models.map((model) => (
+                    <button key={model.id} className={`model-option ${model.id === selectedModel?.id ? "active" : ""}`} disabled={busy} onClick={() => { setModelId(model.id); resetOutput(); }}>
+                      <div><strong>{model.name}</strong><span>{model.description}</span></div>
+                      <div className="model-meta"><span>Warm ~{model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s</span><span>{model.output === "textured" ? "纹理" : "几何"}</span></div>
+                    </button>
+                  ))}
                 </div>
-                {canonical && <div className="asset-meta"><span>Canonical RGBA</span><strong>{(canonical.canonical_bytes / 1024).toFixed(0)} KiB</strong></div>}
-                <div className="model-card"><div><strong>FastSAM3D++</strong><span>当前 MVP · 快速几何生成</span></div><span className="model-badge">L40S</span></div>
-                <button className="primary full" disabled={busy || !canonical} onClick={generate}>{job?.status === "running" ? "云端生成中…" : "生成 GLB"}</button>
+
+                {selectedProfile && <div className="profile-row"><span>Profile</span><strong>{selectedProfile.name}</strong></div>}
+                {job?.status === "running" ? (
+                  <div className="generation-actions"><button className="primary" disabled>云端生成中…</button><button className="danger" onClick={cancel}>取消</button></div>
+                ) : (
+                  <button className="primary full" disabled={busy || !canonical || !selectedModel} onClick={generate}>使用 {selectedModel?.name ?? "模型"} 生成 GLB</button>
+                )}
 
                 {job?.result && (
                   <div className="result-card">

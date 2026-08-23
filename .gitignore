@@ -26,3 +26,6 @@ src-tauri/resources/modal-3d-agent.exe
 
 # release build workspace
 /build/
+
+# local code index
+.codegraph/

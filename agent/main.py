@@ -3,7 +3,7 @@ from __future__ import annotations
 import hmac
 import os
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,13 +24,7 @@ from agent import artifacts, generation, sam
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
-
-ModelId = Literal[
-    "fastsam3d-plus-plus",
-    "hunyuan2.1-plus-plus",
-    "hermit-trellis2-plus-plus",
-    "pixal3d",
-]
+from agent.models import public_models
 
 app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -82,9 +76,10 @@ class MaterializeRequest(BaseModel):
 
 
 class GenerationRequest(BaseModel):
-    model: ModelId
+    model: str
     input_path: str
-    options: dict = Field(default_factory=dict)
+    profile: str = "recommended"
+    seed: int = 42
 
 
 @app.get("/health")
@@ -175,9 +170,22 @@ def sam_materialize(request: MaterializeRequest) -> dict:
     )
 
 
+@app.get("/v1/models")
+def models() -> list[dict]:
+    return public_models()
+
+
 @app.post("/v1/generations")
 def generation_submit(request: GenerationRequest) -> dict:
-    remote = generation.submit(request.model, request.input_path, request.options)
+    try:
+        remote = generation.submit(
+            request.model,
+            request.input_path,
+            request.profile,
+            request.seed,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return jobs.create(remote["model"], remote["call_id"])
 
 

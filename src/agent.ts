@@ -53,6 +53,20 @@ export type GenerationResult = {
   metrics: Record<string, unknown>;
 };
 
+export type ModelProfile = {
+  id: string;
+  name: string;
+};
+
+export type ModelSpec = {
+  id: string;
+  name: string;
+  description: string;
+  output: "geometry" | "textured";
+  warm_seconds: number;
+  profiles: ModelProfile[];
+};
+
 export type GenerationJob = {
   id: string;
   model: string;
@@ -128,14 +142,18 @@ export async function assetBlob(info: AgentInfo, path: string) {
   return (await request(info, `/v1/assets?path=${encodeURIComponent(path)}`)).blob();
 }
 
+export const listModels = (info: AgentInfo) =>
+  json<ModelSpec[]>(info, "/v1/models");
+
 export const submitGeneration = (
   info: AgentInfo,
   inputPath: string,
-  model = "fastsam3d-plus-plus",
+  model: string,
+  profile: string,
 ) =>
   json<GenerationJob>(info, "/v1/generations", {
     method: "POST",
-    body: JSON.stringify({ model, input_path: inputPath, options: { seed: 42 } }),
+    body: JSON.stringify({ model, input_path: inputPath, profile, seed: 42 }),
   });
 
 export const getJob = (info: AgentInfo, jobId: string) =>

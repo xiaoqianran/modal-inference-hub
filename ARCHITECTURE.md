@@ -31,7 +31,7 @@ React / TypeScript
 1. ✅ Tauri 使用随机端口和独立会话令牌启动、停止本地代理 sidecar。
 2. ✅ 通过本地代理连接 Modal 令牌；凭据仅在当前代理会话的内存中保存。
 3. ✅ 使用 Windows 凭据管理器持久化 Modal 凭据，并直接恢复到本地代理。
-4. ✅ 打通 Cloud SAM → 候选对象 → Canonical RGBA → FastSAM3D++ → GLB 的首条真实工作流。
-5. 增加 `SAM：自动 / 本地 / 云端` 模式与更完整的能力检测。
-6. 将 Hermite-TRELLIS2++、Hunyuan2.1++、Pixal3D 纳入统一模型选择与 profile。
-7. 增加 3D Viewer、任务恢复与后续 Web Runtime。
+4. ✅ 打通 Cloud SAM → 候选对象 → Canonical RGBA → 3D Generation → GLB 的真实工作流。
+5. ✅ 四个云端模型进入统一 registry / recommended profile，并加入按需加载的 Three.js GLB Viewer。
+6. 增加 `SAM：自动 / 本地 / 云端` 模式与更完整的能力检测。
+7. 增加任务持久化恢复、项目工作区与后续 Web Runtime。
