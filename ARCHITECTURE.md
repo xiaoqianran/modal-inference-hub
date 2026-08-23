@@ -40,4 +40,5 @@ React / TypeScript
 7. ✅ Generation Job 使用 SQLite 持久化并支持 Agent 重启后恢复。
 8. ✅ Project Workspace 持久化 source → canonical → model/profile → job → GLB，并支持最近项目恢复。
 9. ✅ SAM Provider / Auto 路由已落地；当前 Auto 在 Local runtime 未安装时透明选择 Cloud，并持久化实际 provider。
-10. 构建可选 Local SAM runtime 安装包、健康检查与后续 Web Runtime。
+10. ✅ Cloud SAM 支持候选选择与正/负框 Refine，Refine selection 与 canonical 生命周期归属同一 Project/provider。
+11. 构建可选 Local SAM runtime 安装包、健康检查与后续 Web Runtime。

@@ -23,6 +23,15 @@ export type SamCandidate = {
   model_bbox_xyxy_norm: [number, number, number, number];
 };
 
+
+export type RefinementBox = {
+  cx: number;
+  cy: number;
+  width: number;
+  height: number;
+  positive: boolean;
+};
+
 export type SamSelection = {
   scene_id: string;
   selection_id: string;
@@ -213,6 +222,16 @@ export const segmentProject = (info: AgentInfo, projectId: string, concept: stri
   json<{ project: Project; selection: SamSelection; provider: "cloud" | "local" }>(info, `/v1/projects/${projectId}/segment`, {
     method: "POST",
     body: JSON.stringify({ concept, max_candidates: 8 }),
+  });
+
+export const refineProject = (
+  info: AgentInfo,
+  projectId: string,
+  boxes: RefinementBox[],
+) =>
+  json<{ project: Project; selection: SamSelection; provider: "cloud" | "local" }>(info, `/v1/projects/${projectId}/refine`, {
+    method: "POST",
+    body: JSON.stringify({ boxes, max_candidates: 8 }),
   });
 
 export const materializeProject = (

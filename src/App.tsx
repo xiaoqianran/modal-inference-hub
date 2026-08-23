@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import "./App.css";
 import {
   agentStatus,
@@ -18,6 +18,7 @@ import {
   modalStatus,
   probeAgent,
   projectSourceBlob,
+  refineProject,
   saveCredentials,
   segmentProject,
   setSamMode,
@@ -30,6 +31,7 @@ import {
   type GenerationJob,
   type ModelSpec,
   type Project,
+  type RefinementBox,
   type RuntimeCapabilities,
   type SamMode,
   type SamSelection,
@@ -84,6 +86,10 @@ function App() {
   const [concept, setConcept] = useState("");
   const [selection, setSelection] = useState<SamSelection | null>(null);
   const [candidateId, setCandidateId] = useState<string | null>(null);
+  const [refineMode, setRefineMode] = useState<"positive" | "negative" | null>(null);
+  const [refineBoxes, setRefineBoxes] = useState<RefinementBox[]>([]);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [dragPoint, setDragPoint] = useState<{ x: number; y: number } | null>(null);
   const [canonical, setCanonical] = useState<CanonicalAsset | null>(null);
   const [canonicalUrl, setCanonicalUrl] = useState<string | null>(null);
   const [job, setJob] = useState<GenerationJob | null>(null);
@@ -207,6 +213,10 @@ function App() {
       setModelId(value.model ?? "fastsam3d-plus-plus");
       setSelection(null);
       setCandidateId(value.candidate_id);
+      setRefineMode(null);
+      setRefineBoxes([]);
+      setDragStart(null);
+      setDragPoint(null);
       resetOutput();
 
       const source = await projectSourceBlob(info, value.id);
@@ -333,6 +343,10 @@ function App() {
       setConcept("");
       setSelection(null);
       setCandidateId(null);
+      setRefineMode(null);
+      setRefineBoxes([]);
+      setDragStart(null);
+      setDragPoint(null);
       setCanonical(null);
       setCanonicalUrl(null);
       resetOutput();
@@ -355,11 +369,80 @@ function App() {
       setProject(value.project);
       setSelection(value.selection);
       setCandidateId(value.selection.candidates[0]?.candidate_id ?? null);
+      setRefineMode(null);
+      setRefineBoxes([]);
+      setDragStart(null);
+      setDragPoint(null);
       setCanonical(null);
       setCanonicalUrl(null);
       resetOutput();
       await refreshProjects(agent);
       setWorkflowMessage(value.selection.candidate_count ? `${value.provider === "local" ? "Local" : "Cloud"} SAM 找到 ${value.selection.candidate_count} 个候选，请选择目标。` : "没有找到候选对象，请换一个描述。");
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function refinementPoint(event: ReactPointerEvent<HTMLDivElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+    };
+  }
+
+  function beginRefinement(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!refineMode || !selection || event.button !== 0) return;
+    const point = refinementPoint(event);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragStart(point);
+    setDragPoint(point);
+  }
+
+  function moveRefinement(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!refineMode || !dragStart) return;
+    setDragPoint(refinementPoint(event));
+  }
+
+  function endRefinement(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!refineMode || !dragStart) return;
+    const end = refinementPoint(event);
+    const width = Math.abs(end.x - dragStart.x);
+    const height = Math.abs(end.y - dragStart.y);
+    if (width >= 0.01 && height >= 0.01) {
+      setRefineBoxes((boxes) => [
+        ...boxes,
+        {
+          cx: (end.x + dragStart.x) / 2,
+          cy: (end.y + dragStart.y) / 2,
+          width,
+          height,
+          positive: refineMode === "positive",
+        },
+      ]);
+    }
+    setDragStart(null);
+    setDragPoint(null);
+  }
+
+  async function applyRefinement() {
+    if (!agent || !project || refineBoxes.length === 0) return;
+    try {
+      setBusy(true);
+      setWorkflowMessage("正在使用提示框 Refine…");
+      const value = await refineProject(agent, project.id, refineBoxes);
+      setProject(value.project);
+      setSelection(value.selection);
+      setCandidateId(value.selection.candidates[0]?.candidate_id ?? null);
+      setCanonical(null);
+      setCanonicalUrl(null);
+      resetOutput();
+      setRefineBoxes([]);
+      setRefineMode(null);
+      await refreshProjects(agent);
+      setWorkflowMessage(`${value.provider === "local" ? "Local" : "Cloud"} SAM Refine 完成，找到 ${value.selection.candidate_count} 个候选。`);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -549,16 +632,54 @@ function App() {
                 </div>
 
                 {sourceUrl && (
-                  <div className="image-stage" style={selection ? { aspectRatio: `${selection.image_size[0]} / ${selection.image_size[1]}` } : undefined}>
+                  <div
+                    className={`image-stage ${refineMode ? "refining" : ""}`}
+                    style={selection ? { aspectRatio: `${selection.image_size[0]} / ${selection.image_size[1]}` } : undefined}
+                    onPointerDown={beginRefinement}
+                    onPointerMove={moveRefinement}
+                    onPointerUp={endRefinement}
+                  >
                     <img src={sourceUrl} alt="源图片" />
                     {selection?.candidates.map((candidate) => {
                       const [x0, y0, x1, y1] = candidate.model_bbox_xyxy_norm;
                       return <button key={candidate.candidate_id} className={`candidate ${candidateId === candidate.candidate_id ? "selected" : ""}`} style={{ left: `${x0 * 100}%`, top: `${y0 * 100}%`, width: `${(x1 - x0) * 100}%`, height: `${(y1 - y0) * 100}%` }} onClick={() => setCandidateId(candidate.candidate_id)} title={`score ${candidate.score.toFixed(3)}`} />;
                     })}
+                    {refineBoxes.map((box, index) => (
+                      <div
+                        key={`${box.positive ? "p" : "n"}-${index}`}
+                        className={`refine-box ${box.positive ? "positive" : "negative"}`}
+                        style={{
+                          left: `${(box.cx - box.width / 2) * 100}%`,
+                          top: `${(box.cy - box.height / 2) * 100}%`,
+                          width: `${box.width * 100}%`,
+                          height: `${box.height * 100}%`,
+                        }}
+                      />
+                    ))}
+                    {dragStart && dragPoint && (
+                      <div
+                        className={`refine-box preview ${refineMode === "negative" ? "negative" : "positive"}`}
+                        style={{
+                          left: `${Math.min(dragStart.x, dragPoint.x) * 100}%`,
+                          top: `${Math.min(dragStart.y, dragPoint.y) * 100}%`,
+                          width: `${Math.abs(dragPoint.x - dragStart.x) * 100}%`,
+                          height: `${Math.abs(dragPoint.y - dragStart.y) * 100}%`,
+                        }}
+                      />
+                    )}
                   </div>
                 )}
 
                 {selection && <div className="candidate-list">{selection.candidates.map((candidate) => <button key={candidate.candidate_id} className={candidateId === candidate.candidate_id ? "active" : ""} onClick={() => setCandidateId(candidate.candidate_id)}>#{candidate.rank + 1} · {(candidate.score * 100).toFixed(1)}%</button>)}</div>}
+                {selection && (
+                  <div className="refine-toolbar">
+                    <span>候选不准？在图上拖框</span>
+                    <button className={refineMode === "positive" ? "active positive" : ""} disabled={busy} onClick={() => setRefineMode(refineMode === "positive" ? null : "positive")}>+ 保留</button>
+                    <button className={refineMode === "negative" ? "active negative" : ""} disabled={busy} onClick={() => setRefineMode(refineMode === "negative" ? null : "negative")}>− 排除</button>
+                    <button disabled={busy || refineBoxes.length === 0} onClick={() => void applyRefinement()}>应用 Refine ({refineBoxes.length})</button>
+                    {refineBoxes.length > 0 && <button disabled={busy} onClick={() => setRefineBoxes([])}>清除</button>}
+                  </div>
+                )}
                 <button className="primary full" disabled={busy || !project || !candidateId} onClick={materialize}>确认对象</button>
               </div>
 

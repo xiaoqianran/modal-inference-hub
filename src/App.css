@@ -884,3 +884,66 @@ input:focus-visible {
   .sam-mode-bar { grid-template-columns: 1fr; }
   .sam-mode-bar small { text-align: left; white-space: normal; }
 }
+
+.image-stage.refining {
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.image-stage.refining .candidate {
+  pointer-events: none;
+  opacity: .65;
+}
+
+.refine-box {
+  position: absolute;
+  z-index: 3;
+  border: 2px solid var(--ctp-green);
+  border-radius: 4px;
+  background: rgb(166 209 137 / 10%);
+  pointer-events: none;
+}
+
+.refine-box.negative {
+  border-color: var(--ctp-red);
+  background: rgb(231 130 132 / 10%);
+}
+
+.refine-box.preview {
+  border-style: dashed;
+}
+
+.refine-toolbar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.refine-toolbar > span {
+  margin-right: auto;
+  color: var(--ctp-overlay-1);
+  font-size: 10px;
+}
+
+.refine-toolbar button {
+  border: 1px solid var(--ctp-surface-1);
+  padding: 5px 8px;
+  color: var(--ctp-subtext-0);
+  background: transparent;
+  font-size: 10px;
+}
+
+.refine-toolbar button.active.positive {
+  border-color: var(--ctp-green);
+  color: var(--ctp-green);
+  background: rgb(166 209 137 / 9%);
+}
+
+.refine-toolbar button.active.negative {
+  border-color: var(--ctp-red);
+  color: var(--ctp-red);
+  background: rgb(231 130 132 / 9%);
+}

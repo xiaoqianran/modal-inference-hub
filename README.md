@@ -32,6 +32,8 @@ Generation Job 会写入客户端 app-data 目录中的 `jobs.sqlite3`。Agent �
 
 SAM 已使用 Provider 模式：`Auto / Cloud / Local`。当前 Cloud SAM 已真实启用；Auto 在 Local runtime 不可用时明确回落 Cloud。Local 模式只有在独立 SAM runtime 安装并通过健康检查后才会开放，不把约 3.5 GB checkpoint 和 Torch/CUDA 直接塞进主 Agent。每个 Project 都持久化实际使用的 `sam_provider`，确保后续 materialize 与 segmentation 来源一致。
 
+Cloud SAM 还支持交互式 Refine：候选不理想时可在原图拖多个正框（保留）和负框（排除），提交后生成新的 selection；确认 candidate 后再 materialize canonical RGBA。
+
 ## Windows 开发
 
 首次使用前请安装：

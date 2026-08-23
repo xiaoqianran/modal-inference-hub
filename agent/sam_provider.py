@@ -29,6 +29,20 @@ def segment(image: bytes, concept: str, max_candidates: int = 8) -> tuple[str, d
     raise SamProviderUnavailable("本地 SAM runtime 尚未启用")
 
 
+
+
+def refine(
+    provider: str,
+    scene_id: str,
+    concept: str,
+    boxes: list[dict],
+    max_candidates: int = 8,
+) -> dict:
+    if provider == "cloud":
+        return sam.refine(scene_id, concept, boxes, max_candidates)
+    raise SamProviderUnavailable("本地 SAM runtime 尚未启用")
+
+
 def materialize(
     provider: str,
     scene_id: str,

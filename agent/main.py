@@ -96,6 +96,11 @@ class ProjectSegmentRequest(BaseModel):
     max_candidates: int = Field(default=8, ge=1, le=16)
 
 
+class ProjectRefineRequest(BaseModel):
+    boxes: list[dict] = Field(min_length=1, max_length=16)
+    max_candidates: int = Field(default=8, ge=1, le=16)
+
+
 class ProjectMaterializeRequest(BaseModel):
     candidate_id: str
     output_size: int = Field(default=1024, ge=256, le=2048)
@@ -210,6 +215,26 @@ def project_segment(project_id: str, request: ProjectSegmentRequest) -> dict:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
     provider, selection = sam_provider.segment(image, concept, request.max_candidates)
     project = projects.record_segmentation(project_id, concept, provider, selection)
+    return {"project": project, "selection": selection, "provider": provider}
+
+
+@app.post("/v1/projects/{project_id}/refine")
+def project_refine(project_id: str, request: ProjectRefineRequest) -> dict:
+    try:
+        project = projects.get(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    if not project["scene_id"] or not project["concept"]:
+        raise HTTPException(status_code=409, detail="请先完成对象识别")
+    provider = project["sam_provider"] or "cloud"
+    selection = sam_provider.refine(
+        provider,
+        project["scene_id"],
+        project["concept"],
+        request.boxes,
+        request.max_candidates,
+    )
+    project = projects.record_segmentation(project_id, project["concept"], provider, selection)
     return {"project": project, "selection": selection, "provider": provider}
 
 
