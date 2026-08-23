@@ -19,7 +19,7 @@ React / TypeScript
 
 - 用户界面只在输入和连接期间接触凭据，不会持久化或重新读取已保存的密钥。
 - Tauri 负责桌面应用生命周期和 Windows 凭据管理器存储。
-- Python 本地代理负责 Modal Session、Artifact、Cloud SAM 与长期 Generation Job 编排。
+- Python 本地代理负责 Modal Session、Artifact、Cloud SAM 与长期 Generation Job 编排；Job 元数据持久化到 SQLite，可跨 Agent 重启恢复 Modal FunctionCall。
 - 本地代理仅监听随机的 `127.0.0.1` 端口；Tauri 会为每次启动提供独立会话令牌。
 - 已保存的凭据直接恢复到本地代理，不会回传到 React 界面。
 - 本地 SAM 3.1 是可选功能，云端回退使用相同的界面协议。
@@ -34,4 +34,5 @@ React / TypeScript
 4. ✅ 打通 Cloud SAM → 候选对象 → Canonical RGBA → 3D Generation → GLB 的真实工作流。
 5. ✅ 四个云端模型进入统一 registry / recommended profile，并加入按需加载的 Three.js GLB Viewer。
 6. 增加 `SAM：自动 / 本地 / 云端` 模式与更完整的能力检测。
-7. 增加任务持久化恢复、项目工作区与后续 Web Runtime。
+7. ✅ Generation Job 使用 SQLite 持久化并支持 Agent 重启后恢复。
+8. 增加项目工作区、Local / Auto SAM 与后续 Web Runtime。

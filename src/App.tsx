@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import "./App.css";
 import {
   agentStatus,
@@ -9,6 +9,7 @@ import {
   credentialsStatus,
   disconnectModal,
   getJob,
+  listJobs,
   listModels,
   materializeCandidate,
   modalStatus,
@@ -61,6 +62,7 @@ function App() {
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [workflowMessage, setWorkflowMessage] = useState("导入图片并输入要提取的对象。");
   const [busy, setBusy] = useState(false);
+  const restoredAgent = useRef<number | null>(null);
 
   const inTauri = "__TAURI_INTERNALS__" in window;
   const selectedModel = models.find((model) => model.id === modelId) ?? models[0];
@@ -106,6 +108,41 @@ function App() {
   useEffect(() => () => {
     if (resultUrl) URL.revokeObjectURL(resultUrl);
   }, [resultUrl]);
+
+  useEffect(() => {
+    if (!agent?.running || !agent.port || !modalConnected || restoredAgent.current === agent.port) return;
+    restoredAgent.current = agent.port;
+    void listJobs(agent)
+      .then((history) => {
+        const latest = history.find((item) => item.status === "running")
+          ?? history.find((item) => item.status === "succeeded");
+        if (latest) return followJob(agent, latest, true);
+      })
+      .catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)));
+  }, [agent, modalConnected]);
+
+
+  async function followJob(info: AgentInfo, initial: GenerationJob, restored = false) {
+    let current = initial;
+    setJob(current);
+    setModelId(current.model);
+    if (restored && current.status === "running") {
+      setWorkflowMessage(`正在恢复 ${current.model} 的远程任务…`);
+    }
+    while (current.status === "running") {
+      await sleep(1000);
+      current = await getJob(info, current.id);
+      setJob(current);
+    }
+    if (current.status !== "succeeded" || !current.result) {
+      setWorkflowMessage(current.error || `任务已结束：${current.status}`);
+      return;
+    }
+    setWorkflowMessage(restored ? "已恢复最近的 3D 结果，正在加载预览…" : "3D 已生成，正在加载预览…");
+    const blob = await assetBlob(info, current.result.artifact.path);
+    setResultUrl(URL.createObjectURL(blob));
+    setWorkflowMessage(restored ? "已恢复最近的 3D 结果。" : "3D 生成完成。");
+  }
 
   async function start() {
     try {
@@ -236,21 +273,8 @@ function App() {
       setBusy(true);
       resetOutput();
       setWorkflowMessage(`已提交 ${selectedModel.name}，等待云端生成…`);
-      let current = await submitGeneration(agent, canonical.canonical_path, selectedModel.id, selectedProfile.id);
-      setJob(current);
-      while (current.status === "running") {
-        await sleep(1000);
-        current = await getJob(agent, current.id);
-        setJob(current);
-      }
-      if (current.status !== "succeeded" || !current.result) {
-        setWorkflowMessage(current.error || `任务已结束：${current.status}`);
-        return;
-      }
-      setWorkflowMessage("3D 已生成，正在加载预览…");
-      const blob = await assetBlob(agent, current.result.artifact.path);
-      setResultUrl(URL.createObjectURL(blob));
-      setWorkflowMessage("3D 生成完成。");
+      const current = await submitGeneration(agent, canonical.canonical_path, selectedModel.id, selectedProfile.id);
+      await followJob(agent, current);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {

@@ -147,7 +147,7 @@ fn process_info(process: &AgentProcess) -> AgentInfo {
 }
 
 #[tauri::command]
-fn agent_start(state: State<'_, AgentState>) -> Result<AgentInfo, String> {
+fn agent_start(app: tauri::AppHandle, state: State<'_, AgentState>) -> Result<AgentInfo, String> {
     let mut state = state.0.lock().map_err(|_| "无法锁定本地代理状态")?;
     if let Some(process) = state.as_mut() {
         if process
@@ -177,6 +177,12 @@ fn agent_start(state: State<'_, AgentState>) -> Result<AgentInfo, String> {
     let _ = fs::remove_file(&log);
 
     let mut command = agent_command()?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+    fs::create_dir_all(&data_dir).map_err(|error| format!("无法创建客户端数据目录：{error}"))?;
+    command.env("MODAL_3D_AGENT_DATA_DIR", data_dir);
     if let Ok(Some((token_id, token_secret))) = credentials::load() {
         command
             .env("MODAL_3D_SAVED_TOKEN_ID", token_id)

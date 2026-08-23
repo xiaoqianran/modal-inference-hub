@@ -26,6 +26,8 @@ React 只调用本地 Agent 的产品 API；Agent 使用当前用户的 `modal.C
 
 当前模型 registry 已包含 FastSAM3D++、Hermite-TRELLIS2++、Hunyuan2.1++ 和 Pixal3D。每个模型只暴露已经 benchmark 验证的 `recommended` profile；模型特有参数由 Agent 翻译，React 不直接拼 Modal options。
 
+Generation Job 会写入客户端 app-data 目录中的 `jobs.sqlite3`。Agent 重启后会恢复本地 Job ID 与 Modal `FunctionCall` ID 的映射，并继续轮询尚未结束的远程任务；最近成功结果也可重新加载到 Viewer。
+
 ## Windows 开发
 
 首次使用前请安装：

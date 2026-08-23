@@ -189,6 +189,11 @@ def generation_submit(request: GenerationRequest) -> dict:
     return jobs.create(remote["model"], remote["call_id"])
 
 
+@app.get("/v1/jobs")
+def job_list() -> list[dict]:
+    return jobs.list()
+
+
 @app.get("/v1/jobs/{job_id}")
 def job_status(job_id: str) -> dict:
     try:

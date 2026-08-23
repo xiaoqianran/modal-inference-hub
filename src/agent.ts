@@ -156,6 +156,9 @@ export const submitGeneration = (
     body: JSON.stringify({ model, input_path: inputPath, profile, seed: 42 }),
   });
 
+export const listJobs = (info: AgentInfo) =>
+  json<GenerationJob[]>(info, "/v1/jobs");
+
 export const getJob = (info: AgentInfo, jobId: string) =>
   json<GenerationJob>(info, `/v1/jobs/${jobId}`);
 
