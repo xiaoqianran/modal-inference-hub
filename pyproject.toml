@@ -1,0 +1,11 @@
+[project]
+name = "modal-3d-client-agent"
+version = "0.1.0"
+description = "Local agent for modal-3D Client"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "modal[api-proxy-support]",
+    "pydantic",
+    "uvicorn",
+]

@@ -1,0 +1,17 @@
+# frontend
+node_modules/
+dist/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Tauri / Rust
+src-tauri/target/
+
+# local
+.env
+.env.*
+!.env.example
+.DS_Store
