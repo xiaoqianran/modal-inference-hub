@@ -18,6 +18,9 @@ function Invoke-HttpAllowError {
     [string]$Body
   )
   $parameters = @{ Uri = $Uri; Method = $Method; Headers = $Headers; UseBasicParsing = $true }
+  if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {
+    $parameters.SkipHttpErrorCheck = $true
+  }
   if ($Body) {
     $parameters.ContentType = "application/json"
     $parameters.Body = $Body
