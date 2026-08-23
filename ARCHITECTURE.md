@@ -11,8 +11,10 @@ React / TypeScript
      ├─ 硬件检测
      ├─ Modal Session / Artifact Volume
      ├─ Project Workspace / Generation Jobs
-     ├─ Cloud SAM / Artifact Runtime
-     ├─ 可选的本地 SAM 3.1（后续）
+     ├─ SAM Provider / Capability Router
+     │   ├─ Cloud SAM ✅
+     │   └─ Local SAM runtime（可选安装，后续）
+     ├─ Artifact Runtime
      └─ 云端 3D 工作节点
 ```
 
@@ -37,4 +39,5 @@ React / TypeScript
 6. 增加 `SAM：自动 / 本地 / 云端` 模式与更完整的能力检测。
 7. ✅ Generation Job 使用 SQLite 持久化并支持 Agent 重启后恢复。
 8. ✅ Project Workspace 持久化 source → canonical → model/profile → job → GLB，并支持最近项目恢复。
-9. 增加 Local / Auto SAM 与后续 Web Runtime。
+9. ✅ SAM Provider / Auto 路由已落地；当前 Auto 在 Local runtime 未安装时透明选择 Cloud，并持久化实际 provider。
+10. 构建可选 Local SAM runtime 安装包、健康检查与后续 Web Runtime。

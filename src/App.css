@@ -823,3 +823,64 @@ input:focus-visible {
   border-color: var(--ctp-mauve);
   background: rgb(202 158 230 / 10%);
 }
+
+.sam-mode-bar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  margin: -2px 0 18px;
+  border: 1px solid var(--ctp-surface-1);
+  border-radius: 10px;
+  padding: 9px 11px;
+  background: rgb(35 38 52 / 36%);
+}
+
+.sam-mode-bar > div:first-child {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+}
+
+.sam-mode-bar > div:first-child strong {
+  color: var(--ctp-subtext-1);
+  font-size: 11px;
+}
+
+.sam-mode-bar > div:first-child span,
+.sam-mode-bar small {
+  color: var(--ctp-overlay-1);
+  font-size: 10px;
+}
+
+.sam-mode-bar small {
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sam-mode-buttons {
+  display: flex;
+  gap: 5px;
+  justify-self: start;
+}
+
+.sam-mode-buttons button {
+  border: 1px solid var(--ctp-surface-1);
+  padding: 5px 9px;
+  color: var(--ctp-subtext-0);
+  background: transparent;
+  font-size: 10px;
+}
+
+.sam-mode-buttons button.active {
+  border-color: var(--ctp-teal);
+  color: var(--ctp-teal);
+  background: rgb(129 200 190 / 9%);
+}
+
+@media (max-width: 760px) {
+  .sam-mode-bar { grid-template-columns: 1fr; }
+  .sam-mode-bar small { text-align: left; white-space: normal; }
+}

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import threading
 import uuid
@@ -15,17 +14,13 @@ from modal.exception import OutputExpiredError
 from modal.exception import TimeoutError as ModalTimeoutError
 
 from agent.modal_client import client
+from agent.storage import data_dir
 
 _TERMINAL = {"succeeded", "failed", "cancelled", "expired"}
 
 
 def default_db_path() -> Path:
-    if root := os.environ.get("MODAL_3D_AGENT_DATA_DIR"):
-        return Path(root) / "jobs.sqlite3"
-    if os.name == "nt" and (root := os.environ.get("LOCALAPPDATA")):
-        return Path(root) / "modal-3D-client" / "jobs.sqlite3"
-    root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return root / "modal-3D-client" / "jobs.sqlite3"
+    return data_dir() / "jobs.sqlite3"
 
 
 @dataclass

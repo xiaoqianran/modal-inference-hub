@@ -9,6 +9,7 @@ import {
   createProject,
   credentialsStatus,
   disconnectModal,
+  getCapabilities,
   getJob,
   getProject,
   listModels,
@@ -19,6 +20,7 @@ import {
   projectSourceBlob,
   saveCredentials,
   segmentProject,
+  setSamMode,
   startAgent,
   stopAgent,
   submitProjectGeneration,
@@ -28,6 +30,8 @@ import {
   type GenerationJob,
   type ModelSpec,
   type Project,
+  type RuntimeCapabilities,
+  type SamMode,
   type SamSelection,
 } from "./agent";
 
@@ -72,6 +76,7 @@ function App() {
   const [remember, setRemember] = useState(false);
 
   const [models, setModels] = useState<ModelSpec[]>([]);
+  const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilities | null>(null);
   const [modelId, setModelId] = useState("fastsam3d-plus-plus");
   const [project, setProject] = useState<Project | null>(null);
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
@@ -140,6 +145,14 @@ function App() {
         setRecentProjects(history);
         if (history[0]) await restoreProject(agent, history[0], true);
       })
+      .catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)));
+  }, [agent, modalConnected]);
+
+
+  useEffect(() => {
+    if (!agent?.running) return;
+    void getCapabilities(agent)
+      .then(setRuntimeCapabilities)
       .catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)));
   }, [agent, modalConnected]);
 
@@ -292,6 +305,23 @@ function App() {
     setModalMessage("已删除保存的凭据");
   }
 
+  async function changeSamMode(mode: SamMode) {
+    if (!agent) return;
+    try {
+      await setSamMode(agent, mode);
+      const state = await getCapabilities(agent);
+      setRuntimeCapabilities(state);
+      const effective = state.sam.effective;
+      setWorkflowMessage(
+        effective
+          ? `SAM 模式已切换：${mode === "auto" ? `Auto → ${effective}` : effective}`
+          : state.sam.local.reason,
+      );
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function chooseImage(file: File | null) {
     if (!agent || !file) return;
     try {
@@ -319,7 +349,8 @@ function App() {
     if (!agent || !project || !concept.trim()) return;
     try {
       setBusy(true);
-      setWorkflowMessage("Cloud SAM 正在识别对象…");
+      const effective = runtimeCapabilities?.sam.effective ?? "cloud";
+      setWorkflowMessage(`${effective === "local" ? "Local" : "Cloud"} SAM 正在识别对象…`);
       const value = await segmentProject(agent, project.id, concept.trim());
       setProject(value.project);
       setSelection(value.selection);
@@ -328,7 +359,7 @@ function App() {
       setCanonicalUrl(null);
       resetOutput();
       await refreshProjects(agent);
-      setWorkflowMessage(value.selection.candidate_count ? `找到 ${value.selection.candidate_count} 个候选，请选择目标。` : "没有找到候选对象，请换一个描述。");
+      setWorkflowMessage(value.selection.candidate_count ? `${value.provider === "local" ? "Local" : "Cloud"} SAM 找到 ${value.selection.candidate_count} 个候选，请选择目标。` : "没有找到候选对象，请换一个描述。");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -475,6 +506,36 @@ function App() {
                     <small>{item.status}</small>
                   </button>
                 ))}
+              </div>
+            )}
+
+
+            {runtimeCapabilities && (
+              <div className="sam-mode-bar">
+                <div>
+                  <strong>SAM Provider</strong>
+                  <span>
+                    {runtimeCapabilities.sam.mode === "auto"
+                      ? `Auto → ${runtimeCapabilities.sam.effective ?? "不可用"}`
+                      : runtimeCapabilities.sam.mode}
+                  </span>
+                </div>
+                <div className="sam-mode-buttons">
+                  {(["auto", "cloud", "local"] as SamMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      className={runtimeCapabilities.sam.mode === mode ? "active" : ""}
+                      disabled={busy || (mode === "local" && !runtimeCapabilities.sam.local.available)}
+                      title={mode === "local" ? runtimeCapabilities.sam.local.reason : undefined}
+                      onClick={() => void changeSamMode(mode)}
+                    >
+                      {mode === "auto" ? "Auto" : mode === "cloud" ? "Cloud" : "Local"}
+                    </button>
+                  ))}
+                </div>
+                {!runtimeCapabilities.sam.local.available && (
+                  <small>{runtimeCapabilities.sam.local.reason}</small>
+                )}
               </div>
             )}
 

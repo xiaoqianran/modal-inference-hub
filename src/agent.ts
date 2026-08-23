@@ -68,12 +68,40 @@ export type ModelSpec = {
 };
 
 
+
+export type SamMode = "auto" | "cloud" | "local";
+
+export type RuntimeCapabilities = {
+  hardware: {
+    platform: string;
+    machine: string;
+    memory_mib: number | null;
+    disk_free_mib: number;
+    gpus: { name: string; memory_mib: number; driver: string }[];
+  };
+  sam: {
+    mode: SamMode;
+    effective: "cloud" | "local" | null;
+    local: {
+      available: boolean;
+      installed: boolean;
+      hardware_eligible: boolean;
+      reason: string;
+      min_vram_mib: number;
+      checkpoint_bytes: number;
+      gpu: { name: string; memory_mib: number; driver: string } | null;
+    };
+    cloud: { available: boolean };
+  };
+};
+
 export type Project = {
   id: string;
   title: string;
   source_name: string;
   source_bytes: number;
   concept: string | null;
+  sam_provider: "cloud" | "local" | null;
   scene_id: string | null;
   selection_id: string | null;
   candidate_id: string | null;
@@ -182,7 +210,7 @@ export async function projectSourceBlob(info: AgentInfo, projectId: string) {
 }
 
 export const segmentProject = (info: AgentInfo, projectId: string, concept: string) =>
-  json<{ project: Project; selection: SamSelection }>(info, `/v1/projects/${projectId}/segment`, {
+  json<{ project: Project; selection: SamSelection; provider: "cloud" | "local" }>(info, `/v1/projects/${projectId}/segment`, {
     method: "POST",
     body: JSON.stringify({ concept, max_candidates: 8 }),
   });
@@ -206,6 +234,15 @@ export const submitProjectGeneration = (
   json<{ project: Project; job: GenerationJob }>(info, `/v1/projects/${projectId}/generation`, {
     method: "POST",
     body: JSON.stringify({ model, profile, seed: 42 }),
+  });
+
+export const getCapabilities = (info: AgentInfo) =>
+  json<RuntimeCapabilities>(info, "/v1/capabilities");
+
+export const setSamMode = (info: AgentInfo, mode: SamMode) =>
+  json<{ sam_mode: SamMode }>(info, "/v1/settings/sam", {
+    method: "PUT",
+    body: JSON.stringify({ mode }),
   });
 
 export const listModels = (info: AgentInfo) =>

@@ -20,12 +20,15 @@ from modal.exception import (
 )
 from pydantic import BaseModel, Field, SecretStr
 
-from agent import artifacts, generation, sam
+from agent import artifacts, generation, sam, sam_provider
+from agent.capabilities import capabilities
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
 from agent.models import public_models
 from agent.projects import projects
+from agent.sam_provider import SamProviderUnavailable
+from agent.settings import get_settings, set_sam_mode
 
 app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -54,6 +57,11 @@ async def require_session(request: Request, call_next):
 
 @app.exception_handler(NotConnectedError)
 async def modal_required(_request: Request, exc: NotConnectedError):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(SamProviderUnavailable)
+async def sam_provider_required(_request: Request, exc: SamProviderUnavailable):
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
@@ -99,6 +107,10 @@ class ProjectGenerationRequest(BaseModel):
     seed: int = 42
 
 
+class SamSettingsRequest(BaseModel):
+    mode: str
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
@@ -107,6 +119,24 @@ def health() -> dict:
 @app.get("/hardware")
 def hardware() -> dict:
     return detect_hardware()
+
+
+@app.get("/v1/capabilities")
+def runtime_capabilities() -> dict:
+    return capabilities()
+
+
+@app.get("/v1/settings/sam")
+def sam_settings() -> dict:
+    return get_settings()
+
+
+@app.put("/v1/settings/sam")
+def sam_settings_update(request: SamSettingsRequest) -> dict:
+    try:
+        return set_sam_mode(request.mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/modal/status")
@@ -178,9 +208,9 @@ def project_segment(project_id: str, request: ProjectSegmentRequest) -> dict:
         image = projects.source_bytes(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
-    selection = sam.segment(image, concept, request.max_candidates)
-    project = projects.record_segmentation(project_id, concept, selection)
-    return {"project": project, "selection": selection}
+    provider, selection = sam_provider.segment(image, concept, request.max_candidates)
+    project = projects.record_segmentation(project_id, concept, provider, selection)
+    return {"project": project, "selection": selection, "provider": provider}
 
 
 @app.post("/v1/projects/{project_id}/materialize")
@@ -191,7 +221,9 @@ def project_materialize(project_id: str, request: ProjectMaterializeRequest) -> 
         raise HTTPException(status_code=404, detail="项目不存在") from exc
     if not project["scene_id"] or not project["selection_id"]:
         raise HTTPException(status_code=409, detail="请先完成对象识别")
-    canonical = sam.materialize(
+    provider = project["sam_provider"] or "cloud"
+    canonical = sam_provider.materialize(
+        provider,
         project["scene_id"],
         project["selection_id"],
         request.candidate_id,

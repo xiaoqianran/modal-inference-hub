@@ -30,6 +30,8 @@ Generation Job 会写入客户端 app-data 目录中的 `jobs.sqlite3`。Agent �
 
 客户端同时维护本地 Project Workspace：选中源图片时会在 app-data 中创建 Project 并保存 source image；`concept / SAM scene / canonical path / model / profile / job / GLB` 随工作流逐步写入 `projects.sqlite3`。重启后恢复的是完整作品上下文，而不是孤立 Job。
 
+SAM 已使用 Provider 模式：`Auto / Cloud / Local`。当前 Cloud SAM 已真实启用；Auto 在 Local runtime 不可用时明确回落 Cloud。Local 模式只有在独立 SAM runtime 安装并通过健康检查后才会开放，不把约 3.5 GB checkpoint 和 Torch/CUDA 直接塞进主 Agent。每个 Project 都持久化实际使用的 `sam_provider`，确保后续 materialize 与 segmentation 来源一致。
+
 ## Windows 开发
 
 首次使用前请安装：

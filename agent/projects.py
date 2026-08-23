@@ -1,23 +1,15 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from agent.storage import data_dir
+
 _MAX_SOURCE_BYTES = 25 * 1024 * 1024
 _ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-
-
-def _data_dir() -> Path:
-    if root := os.environ.get("MODAL_3D_AGENT_DATA_DIR"):
-        return Path(root)
-    if os.name == "nt" and (root := os.environ.get("LOCALAPPDATA")):
-        return Path(root) / "modal-3D-client"
-    root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return root / "modal-3D-client"
 
 
 @dataclass
@@ -28,6 +20,7 @@ class Project:
     source_path: str
     source_bytes: int
     concept: str | None
+    sam_provider: str | None
     scene_id: str | None
     selection_id: str | None
     candidate_id: str | None
@@ -50,6 +43,7 @@ class Project:
             "source_name": self.source_name,
             "source_bytes": self.source_bytes,
             "concept": self.concept,
+            "sam_provider": self.sam_provider,
             "scene_id": self.scene_id,
             "selection_id": self.selection_id,
             "candidate_id": self.candidate_id,
@@ -69,7 +63,7 @@ class Project:
 
 class ProjectStore:
     def __init__(self, root: Path | None = None) -> None:
-        self.root = root or _data_dir()
+        self.root = root or data_dir()
         self.root.mkdir(parents=True, exist_ok=True)
         self.assets = self.root / "projects"
         self.assets.mkdir(parents=True, exist_ok=True)
@@ -92,6 +86,7 @@ class ProjectStore:
                     source_path TEXT NOT NULL,
                     source_bytes INTEGER NOT NULL,
                     concept TEXT,
+                    sam_provider TEXT,
                     scene_id TEXT,
                     selection_id TEXT,
                     candidate_id TEXT,
@@ -109,6 +104,9 @@ class ProjectStore:
                 )
                 """
             )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(projects)")}
+            if "sam_provider" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN sam_provider TEXT")
 
     @staticmethod
     def _project(row: sqlite3.Row) -> Project:
@@ -169,10 +167,13 @@ class ProjectStore:
     def source_bytes(self, project_id: str) -> bytes:
         return self.source_path(project_id).read_bytes()
 
-    def record_segmentation(self, project_id: str, concept: str, selection: dict) -> dict:
+    def record_segmentation(
+        self, project_id: str, concept: str, provider: str, selection: dict
+    ) -> dict:
         return self._update(
             project_id,
             concept=concept,
+            sam_provider=provider,
             scene_id=selection["scene_id"],
             selection_id=selection["selection_id"],
             candidate_id=None,
