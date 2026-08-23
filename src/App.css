@@ -415,3 +415,8 @@ input:focus-visible {
     transition-duration: .01ms !important;
   }
 }
+
+.remember { display: flex !important; grid-template-columns: none !important; align-items: center; gap: 8px !important; }
+.remember input { width: auto; }
+.buttons { display: flex; gap: 8px; }
+.form-actions .secondary { border: 1px solid #626880; color: #c6d0f5; background: transparent; font-weight: 600; }

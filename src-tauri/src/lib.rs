@@ -1,3 +1,4 @@
+mod credentials;
 use rand::RngCore;
 use serde::Serialize;
 use std::{
@@ -10,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{Manager, State};
-
 #[derive(Clone, Serialize)]
 struct AgentInfo {
     running: bool,
@@ -177,6 +177,11 @@ fn agent_start(state: State<'_, AgentState>) -> Result<AgentInfo, String> {
     let _ = fs::remove_file(&log);
 
     let mut command = agent_command()?;
+    if let Ok(Some((token_id, token_secret))) = credentials::load() {
+        command
+            .env("MODAL_3D_SAVED_TOKEN_ID", token_id)
+            .env("MODAL_3D_SAVED_TOKEN_SECRET", token_secret);
+    }
     let log_file =
         fs::File::create(&log).map_err(|error| format!("无法创建本地代理启动日志：{error}"))?;
     let log_stdout = log_file
@@ -299,7 +304,6 @@ fn agent_stop(state: State<'_, AgentState>) -> Result<(), String> {
     }
     Ok(())
 }
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -307,7 +311,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_start,
             agent_status,
-            agent_stop
+            agent_stop,
+            credentials::credentials_status,
+            credentials::credentials_save,
+            credentials::credentials_clear
         ])
         .build(tauri::generate_context!())
         .expect("构建 modal-3D 客户端失败");

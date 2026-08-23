@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: 安装项目依赖
+        run: |
+          npm ci
+          uv python install 3.12
+          uv sync --upgrade-package modal
+
+      - name: 构建并冒烟测试本地代理
+        shell: pwsh
+        run: |
+          ./scripts/build-agent.ps1
+          ./scripts/smoke-agent.ps1
+
+      - name: 验证源码
+        run: |
+          npm run build
+          uv run python -m compileall -q agent
+          cargo fmt --manifest-path src-tauri/Cargo.toml --check
+          cargo test --manifest-path src-tauri/Cargo.toml
+          cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: 构建 Windows 安装包
+        run: npm run tauri build -- --bundles nsis,msi
+
+      - name: 发布 GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(
+            Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe,
+                          src-tauri/target/release/bundle/msi/*.msi
+          )
+          if ($assets.Count -lt 2) { throw "预期生成 NSIS 和 MSI 两个安装包。" }
+          gh release create $env:GITHUB_REF_NAME @($assets.FullName) `
+            --verify-tag `
+            --title "modal-3D 三维创作客户端 $env:GITHUB_REF_NAME" `
+            --notes "Windows 优先预览版本，包含本地代理和 Windows 凭据管理器支持。本版本暂不包含本地 SAM 3.1。安装包尚未签名，首次启动时 Windows SmartScreen 可能显示警告。"

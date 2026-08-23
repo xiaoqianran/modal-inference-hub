@@ -2,13 +2,17 @@ import { useEffect, useState } from "react";
 import "./App.css";
 import {
   agentStatus,
+  clearCredentials,
   connectModal,
+  credentialsStatus,
   disconnectModal,
   modalStatus,
   probeAgent,
+  saveCredentials,
   startAgent,
   stopAgent,
   type AgentInfo,
+  type CredentialStatus,
 } from "./agent";
 
 const layers = [
@@ -18,6 +22,16 @@ const layers = [
   ["云端服务", "Modal 模型工作节点"],
 ] as const;
 
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function waitForModal(info: AgentInfo, attempts: number) {
+  for (let index = 0; index < attempts; index += 1) {
+    if ((await modalStatus(info)).connected) return true;
+    if (index + 1 < attempts) await sleep(250);
+  }
+  return false;
+}
+
 function App() {
   const [agent, setAgent] = useState<AgentInfo | null>(null);
   const [agentMessage, setAgentMessage] = useState("本地代理尚未启动");
@@ -25,6 +39,8 @@ function App() {
   const [tokenSecret, setTokenSecret] = useState("");
   const [modalConnected, setModalConnected] = useState(false);
   const [modalMessage, setModalMessage] = useState("尚未连接");
+  const [persistence, setPersistence] = useState<CredentialStatus>({ supported: false, stored: false });
+  const [remember, setRemember] = useState(false);
   const inTauri = "__TAURI_INTERNALS__" in window;
 
   useEffect(() => {
@@ -34,18 +50,19 @@ function App() {
     async function initializeAgent() {
       try {
         setAgentMessage("正在启动本地代理…");
-        const status = await agentStatus();
+        const [status, saved] = await Promise.all([agentStatus(), credentialsStatus()]);
         const info = status.running ? status : await startAgent();
         await probeAgent(info);
-        const cloud = await modalStatus(info);
+        const connected = await waitForModal(info, saved.stored ? 20 : 1);
         if (cancelled) return;
         setAgent(info);
+        setPersistence(saved);
+        setRemember(saved.supported);
         setAgentMessage(`本地代理已就绪 · 127.0.0.1:${info.port}`);
-        setModalConnected(cloud.connected);
-        setModalMessage(cloud.connected ? "当前会话已连接" : "尚未连接");
+        setModalConnected(connected);
+        setModalMessage(connected ? "当前会话已连接 · 已从 Windows 恢复" : "尚未连接");
       } catch (error) {
-        if (cancelled) return;
-        setAgentMessage(error instanceof Error ? error.message : String(error));
+        if (!cancelled) setAgentMessage(error instanceof Error ? error.message : String(error));
       }
     }
 
@@ -58,10 +75,16 @@ function App() {
   async function start() {
     try {
       setAgentMessage("正在启动本地代理…");
+      const saved = await credentialsStatus();
       const info = await startAgent();
       await probeAgent(info);
+      const connected = await waitForModal(info, saved.stored ? 20 : 1);
       setAgent(info);
+      setPersistence(saved);
+      setRemember(saved.supported);
       setAgentMessage(`本地代理已就绪 · 127.0.0.1:${info.port}`);
+      setModalConnected(connected);
+      setModalMessage(connected ? "当前会话已连接 · 已从 Windows 恢复" : "尚未连接");
     } catch (error) {
       setAgentMessage(error instanceof Error ? error.message : String(error));
     }
@@ -77,12 +100,32 @@ function App() {
 
   async function connect() {
     if (!agent?.running) return;
+    const credentials = { token_id: tokenId, token_secret: tokenSecret };
     try {
       setModalMessage("正在连接…");
-      await connectModal(agent, { token_id: tokenId, token_secret: tokenSecret });
+      await connectModal(agent, credentials);
+      let stored = persistence.stored;
+      let savedNow = false;
+      let saveFailed = false;
+      if (remember && persistence.supported) {
+        try {
+          await saveCredentials(credentials);
+          stored = true;
+          savedNow = true;
+        } catch {
+          saveFailed = true;
+        }
+      }
       setTokenSecret("");
+      setPersistence({ ...persistence, stored });
       setModalConnected(true);
-      setModalMessage("当前会话已连接");
+      setModalMessage(
+        saveFailed
+          ? "已连接，但保存 Windows 凭据失败"
+          : savedNow
+            ? "当前会话已连接 · 已保存到 Windows"
+            : "当前会话已连接",
+      );
     } catch (error) {
       setModalConnected(false);
       setModalMessage(error instanceof Error ? error.message : String(error));
@@ -93,7 +136,15 @@ function App() {
     if (!agent?.running) return;
     await disconnectModal(agent);
     setModalConnected(false);
-    setModalMessage("尚未连接");
+    setModalMessage(persistence.stored ? "已断开 · Windows 中仍保留凭据" : "尚未连接");
+  }
+
+  async function forget() {
+    await clearCredentials();
+    if (agent?.running) await disconnectModal(agent);
+    setPersistence({ ...persistence, stored: false });
+    setModalConnected(false);
+    setModalMessage("已删除保存的凭据");
   }
 
   return (
@@ -132,7 +183,7 @@ function App() {
         <div>
           <span className="eyebrow">云端服务</span>
           <h2>连接 Modal</h2>
-          <p>凭据目前仅保存在本地代理的内存中，关闭应用后会自动清除。</p>
+          <p>凭据会先发送给本地代理；Windows 版本可将其安全保存到凭据管理器，且不会回显到界面。</p>
         </div>
         <div className="form">
           <label>
@@ -149,13 +200,22 @@ function App() {
               placeholder="••••••••••••"
             />
           </label>
+          {persistence.supported && (
+            <label className="remember">
+              <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
+              在这台 Windows 电脑上记住
+            </label>
+          )}
           <div className="form-actions">
             <span className={modalConnected ? "connected" : "muted"}>{modalMessage}</span>
-            {modalConnected ? (
-              <button onClick={disconnect}>断开连接</button>
-            ) : (
-              <button disabled={!agent?.running || !tokenId || !tokenSecret} onClick={connect}>连接云端</button>
-            )}
+            <div className="buttons">
+              {persistence.stored && <button className="secondary" onClick={forget}>删除已保存凭据</button>}
+              {modalConnected ? (
+                <button onClick={disconnect}>断开连接</button>
+              ) : (
+                <button disabled={!agent?.running || !tokenId || !tokenSecret} onClick={connect}>连接云端</button>
+              )}
+            </div>
           </div>
         </div>
       </section>
