@@ -83,6 +83,11 @@ $sam3ImageText = $sam3ImageText.Replace("$interactiveImport`n", "")
 if (-not $sam3ImageText.StartsWith("from __future__ import annotations")) {
     $sam3ImageText = "from __future__ import annotations`n`n" + $sam3ImageText
 }
+$collatorImport = "from sam3.train.data.collator import BatchedDatapoint"
+if (-not $sam3ImageText.Contains($collatorImport)) {
+    throw "SAM3 Windows image-only patch drifted; BatchedDatapoint import missing"
+}
+$sam3ImageText = $sam3ImageText.Replace("$collatorImport`n", "")
 Set-Content -LiteralPath $sam3Image -Value $sam3ImageText -Encoding UTF8
 
 Copy-Item -Recurse -LiteralPath (Join-Path $projectRoot "local_sam_runtime") -Destination (Join-Path $stage "local_sam_runtime")
