@@ -143,6 +143,19 @@ Implemented:
 - local materialize -> canonical PNG -> single upload to `modal-3d-artifacts` -> unchanged 3D worker contract;
 - UI install/progress/start-and-verify controls.
 
+GPU engine validation:
+
+The exact client `local_sam_runtime/engine.py` was mounted into the production SAM3.1 CUDA environment on an L40S and completed `segment -> positive-box refine -> materialize` on the same test image used by the client workflow.
+
+- model load: `12.155 s`
+- segment image encode: `0.479 s`
+- segment text prompt: `0.921 s`
+- refine prompt: `0.129 s` with scene-cache hit
+- peak allocated: `4.377 GiB`
+- peak reserved: `4.441 GiB`
+- canonical: RGBA `1024 x 1024`, `609,707` bytes
+- canonical SHA256: `78ca93bbdd6109fc30ecfb1be787847a02b69da8d6f7c5171887300c8e82968e`
+
 Still requiring a physical validation target:
 
-- a full `segment -> refine -> materialize -> 3D` run on a real Windows x86_64 NVIDIA machine. GitHub-hosted Windows runners validate packaging/imports but do not expose an NVIDIA CUDA GPU.
+- the same end-to-end runtime process on a real Windows x86_64 NVIDIA machine. GitHub Windows runners validate packaging/imports and the exact engine has been GPU-validated on L40S, but the combined Windows + NVIDIA environment is not available in hosted CI.

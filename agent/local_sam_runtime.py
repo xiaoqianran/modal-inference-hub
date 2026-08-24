@@ -98,7 +98,6 @@ def _download(url: str, target: Path, *, expected_sha256: str | None = None) -> 
         raise
 
 
-
 def _safe_extract(zip_path: Path, destination: Path) -> None:
     staging = destination.with_name(destination.name + ".new")
     shutil.rmtree(staging, ignore_errors=True)
@@ -214,8 +213,7 @@ def install(
     if os.name != "nt":
         raise RuntimeError("Local SAM runtime 目前只支持 Windows x86_64")
     stop()
-    with _lock:
-        _write_status(state="installing", step="bootstrap")
+    _write_status(state="installing", step="bootstrap")
     cache = root() / "downloads"
     cache.mkdir(exist_ok=True)
     archive = cache / BOOTSTRAP_ASSET
@@ -258,8 +256,6 @@ def install(
         raise RuntimeError("Local SAM 安装验证失败")
     _write_status(state="installed", step="ready")
     return status()
-
-
 
 
 def _install_worker() -> None:
@@ -312,8 +308,6 @@ def _request(path: str, payload: dict | None = None, *, timeout: float = 30) -> 
         raise RuntimeError(detail or f"Local SAM HTTP {exc.code}") from exc
 
 
-
-
 def _runtime_log_tail(lines: int = 20) -> str:
     path = root() / "runtime.log"
     if not path.is_file():
@@ -355,7 +349,7 @@ def start(*, health_timeout: float = 180) -> dict:
         )
         python = runtime_dir() / "python" / "python.exe"
         log_path = root() / "runtime.log"
-        log = log_path.open("a", encoding="utf-8")
+        log = log_path.open("w", encoding="utf-8")
         try:
             _process = subprocess.Popen(
                 [str(python), "-m", "local_sam_runtime.server"],
@@ -421,18 +415,25 @@ def stop() -> None:
     (root() / "runtime.port").unlink(missing_ok=True)
 
 
+def installation_state() -> dict:
+    runtime_installed = _runtime_files_valid()
+    checkpoint_installed = _checkpoint_valid()
+    return {
+        "runtime_installed": runtime_installed,
+        "checkpoint_installed": checkpoint_installed,
+        "installed": runtime_installed and checkpoint_installed,
+    }
+
+
 def status() -> dict:
     with _lock:
         process = _process
         running = process is not None and process.poll() is None and _port is not None
         health = _last_health
         installing = _install_thread is not None and _install_thread.is_alive()
-    runtime_installed = _runtime_files_valid()
-    checkpoint_installed = _checkpoint_valid()
     return {
         **_read_status(),
-        "runtime_installed": runtime_installed,
-        "checkpoint_installed": checkpoint_installed,
+        **installation_state(),
         "checkpoint_bytes": CHECKPOINT_BYTES,
         "installing": installing,
         "running": running,

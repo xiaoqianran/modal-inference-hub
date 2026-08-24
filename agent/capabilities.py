@@ -25,8 +25,8 @@ def local_sam_status(hardware: dict | None = None) -> dict:
     )
     runtime = local_sam_runtime.status()
     disk_eligible = int(hardware.get("disk_free_mib", 0)) >= LOCAL_SAM_MIN_DISK_MIB
-    installed = runtime["runtime_installed"] and runtime["checkpoint_installed"]
-    ready = bool(runtime["ready"])
+    installed = runtime["installed"]
+    ready = runtime["ready"]
 
     if not supported_platform:
         reason = "Local SAM runtime 当前只支持 Windows x86_64"
