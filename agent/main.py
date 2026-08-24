@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from modal.exception import (
@@ -20,9 +20,8 @@ from modal.exception import (
 )
 from pydantic import BaseModel, Field, SecretStr
 
-from agent import artifacts, exports, generation, local_sam_runtime, sam, sam_provider
+from agent import artifacts, exports, generation, local_sam_runtime, sam_provider
 from agent.capabilities import capabilities
-from agent.api_cloud import router as cloud_router
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
@@ -32,7 +31,6 @@ from agent.sam_provider import SamProviderUnavailable
 from agent.settings import get_settings, set_sam_mode
 
 app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
-app.include_router(cloud_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -72,27 +70,6 @@ class ModalCredentials(BaseModel):
     token_secret: SecretStr
 
 
-class RefineRequest(BaseModel):
-    scene_id: str
-    concept: str
-    boxes: list[dict]
-    max_candidates: int = Field(default=8, ge=1, le=16)
-
-
-class MaterializeRequest(BaseModel):
-    scene_id: str
-    selection_id: str
-    candidate_id: str
-    output_size: int = Field(default=1024, ge=256, le=2048)
-
-
-class GenerationRequest(BaseModel):
-    model: str
-    input_path: str
-    profile: str = "recommended"
-    seed: int = 42
-
-
 class ProjectSegmentRequest(BaseModel):
     concept: str
     max_candidates: int = Field(default=8, ge=1, le=16)
@@ -116,6 +93,10 @@ class ProjectGenerationRequest(BaseModel):
 
 class SamSettingsRequest(BaseModel):
     mode: str
+
+
+class LocalSamLocationRequest(BaseModel):
+    path: str
 
 
 class ExportRequest(BaseModel):
@@ -175,6 +156,14 @@ def local_sam_start() -> dict:
 def local_sam_stop() -> dict:
     local_sam_runtime.stop()
     return {"ok": True}
+
+
+@app.put("/v1/local-sam/location")
+def local_sam_location(request: LocalSamLocationRequest) -> dict:
+    try:
+        return local_sam_runtime.migrate_root(request.path.strip())
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/v1/settings/sam")
@@ -347,16 +336,6 @@ def export_prepare(request: ExportRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/v1/assets")
-async def upload_asset(file: Annotated[UploadFile, File()]) -> dict:
-    data = await file.read()
-    suffix = Path(file.filename or "").suffix or ".bin"
-    try:
-        return artifacts.put(data, suffix)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
 @app.get("/v1/assets")
 def download_asset(path: str = Query(...)):
     try:
@@ -370,62 +349,12 @@ def download_asset(path: str = Query(...)):
     return StreamingResponse(chunks, media_type=media_type)
 
 
-@app.post("/v1/sam/segment")
-async def sam_segment(
-    image: Annotated[UploadFile, File()],
-    concept: Annotated[str, Form()],
-    max_candidates: Annotated[int, Form(ge=1, le=16)] = 8,
-) -> dict:
-    data = await image.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="图片为空")
-    if not concept.strip():
-        raise HTTPException(status_code=400, detail="请输入要提取的对象")
-    return sam.segment(data, concept, max_candidates)
-
-
-@app.post("/v1/sam/refine")
-def sam_refine(request: RefineRequest) -> dict:
-    return sam.refine(request.scene_id, request.concept, request.boxes, request.max_candidates)
-
-
-@app.post("/v1/sam/materialize")
-def sam_materialize(request: MaterializeRequest) -> dict:
-    return sam.materialize(
-        request.scene_id,
-        request.selection_id,
-        request.candidate_id,
-        request.output_size,
-    )
-
-
 @app.get("/v1/models")
 def models() -> list[dict]:
     try:
         return public_models()
     except CapabilityError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
-@app.post("/v1/generations")
-def generation_submit(request: GenerationRequest) -> dict:
-    try:
-        remote = generation.submit(
-            request.model,
-            request.input_path,
-            request.profile,
-            request.seed,
-        )
-    except CapabilityError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return jobs.create(remote["model"], remote["call_id"])
-
-
-@app.get("/v1/jobs")
-def job_list() -> list[dict]:
-    return jobs.list()
 
 
 @app.get("/v1/jobs/{job_id}")

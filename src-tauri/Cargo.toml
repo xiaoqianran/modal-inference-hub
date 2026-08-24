@@ -1,6 +1,6 @@
 [package]
 name = "modal-3d-client"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hybrid local/cloud image-to-3D client"
 authors = ["xiaoqianran"]
 edition = "2021"

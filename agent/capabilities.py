@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+
 from agent import local_sam_runtime
 from agent.hardware import detect_hardware
 from agent.modal_client import connected
@@ -24,7 +26,7 @@ def local_sam_status(hardware: dict | None = None) -> dict:
         None,
     )
     runtime = local_sam_runtime.status()
-    disk_eligible = int(hardware.get("disk_free_mib", 0)) >= LOCAL_SAM_MIN_DISK_MIB
+    disk_eligible = int(shutil.disk_usage(local_sam_runtime.root()).free // (1024 * 1024)) >= LOCAL_SAM_MIN_DISK_MIB
     installed = runtime["installed"]
     ready = runtime["ready"]
     update_available = runtime["update_available"]
@@ -62,6 +64,10 @@ def local_sam_status(hardware: dict | None = None) -> dict:
         "step": runtime.get("step"),
         "error": runtime.get("error"),
         "downloaded_bytes": runtime.get("downloaded_bytes"),
+        "download_total_bytes": runtime.get("download_total_bytes"),
+        "download_speed_bps": runtime.get("download_speed_bps"),
+        "download_eta_seconds": runtime.get("download_eta_seconds"),
+        "root_path": runtime.get("root_path"),
         "hardware_eligible": bool(supported_platform and eligible_gpu is not None),
         "disk_eligible": disk_eligible,
         "min_disk_mib": LOCAL_SAM_MIN_DISK_MIB,

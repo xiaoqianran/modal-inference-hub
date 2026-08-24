@@ -21,6 +21,8 @@ from agent.storage import data_dir
 
 APP_NAME = "modal-3d-gateway"
 CONTRACT = "modal-3d.capabilities.v1"
+PIPELINE_FUNCTION = "generate_from_raw"
+SUBMIT_FUNCTION = "submit"
 _CACHE_NAME = "generation-capabilities.json"
 _RECOVERABLE_ERRORS = (
     NotConnectedError,
@@ -94,7 +96,13 @@ def _validate_document(value) -> dict:
         )
 
     generation = _require_mapping(document.get("generation"), "generation")
-    if generation.get("app") != APP_NAME or generation.get("submit_function") != "submit":
+    expected_generation = {
+        "app": APP_NAME,
+        "submit_function": SUBMIT_FUNCTION,
+        "pipeline_function": PIPELINE_FUNCTION,
+        "job_transport": "modal.FunctionCall",
+    }
+    if any(generation.get(key) != expected for key, expected in expected_generation.items()):
         raise IncompatibleCapability("generation endpoint does not match the supported gateway")
 
     models = document.get("models")
@@ -115,6 +123,13 @@ def _validate_document(value) -> dict:
             raise IncompatibleCapability(f"models[{index}].status is invalid")
         if model.get("output") not in {"geometry", "textured"}:
             raise IncompatibleCapability(f"models[{index}].output is invalid")
+        _require_string(model.get("worker_app"), f"models[{index}].worker_app")
+        artifact = _require_mapping(model.get("artifact"), f"models[{index}].artifact")
+        if artifact.get("mime") != "model/gltf-binary" or artifact.get("extension") != ".glb":
+            raise IncompatibleCapability(f"models[{index}].artifact is invalid")
+        model_input = _require_mapping(model.get("input"), f"models[{index}].input")
+        if model_input.get("role") != "canonical_rgba" or model_input.get("mime") != "image/png":
+            raise IncompatibleCapability(f"models[{index}].input is invalid")
 
         reference = _require_mapping(model.get("reference"), f"models[{index}].reference")
         warm_seconds = reference.get("warm_seconds")
@@ -160,7 +175,7 @@ def _write_cache(document: dict) -> None:
     path = _cache_path()
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
-        json.dumps(document, ensure_ascii=False, separators=(",", ":")),
+        json.dumps(document, separators=(",", ":")),
         encoding="utf-8",
     )
     os.replace(temporary, path)

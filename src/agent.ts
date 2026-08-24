@@ -106,6 +106,10 @@ export type RuntimeCapabilities = {
       step: string | null;
       error: string | null;
       downloaded_bytes: number | null;
+      download_total_bytes: number | null;
+      download_speed_bps: number | null;
+      download_eta_seconds: number | null;
+      root_path: string;
       hardware_eligible: boolean;
       disk_eligible: boolean;
       min_disk_mib: number;
@@ -228,28 +232,6 @@ export async function disconnectModal(info: AgentInfo) {
   await request(info, "/modal/connect", { method: "DELETE" });
 }
 
-export function segmentImage(info: AgentInfo, image: File, concept: string) {
-  const form = new FormData();
-  form.append("image", image);
-  form.append("concept", concept);
-  return json<SamSelection>(info, "/v1/sam/segment", { method: "POST", body: form });
-}
-
-export const materializeCandidate = (
-  info: AgentInfo,
-  selection: SamSelection,
-  candidateId: string,
-) =>
-  json<CanonicalAsset>(info, "/v1/sam/materialize", {
-    method: "POST",
-    body: JSON.stringify({
-      scene_id: selection.scene_id,
-      selection_id: selection.selection_id,
-      candidate_id: candidateId,
-      output_size: 1024,
-    }),
-  });
-
 export async function assetBlob(info: AgentInfo, path: string) {
   return (await request(info, `/v1/assets?path=${encodeURIComponent(path)}`)).blob();
 }
@@ -329,6 +311,12 @@ export const installLocalSam = (info: AgentInfo) =>
 export const uninstallLocalSam = (info: AgentInfo) =>
   json<{ released_bytes: number }>(info, "/v1/local-sam/install", { method: "DELETE" });
 
+export const migrateLocalSam = (info: AgentInfo, path: string) =>
+  json<RuntimeCapabilities>(info, "/v1/local-sam/location", {
+    method: "PUT",
+    body: JSON.stringify({ path }),
+  });
+
 export const startLocalSam = (info: AgentInfo) =>
   json<Record<string, unknown>>(info, "/v1/local-sam/start", { method: "POST" });
 
@@ -344,20 +332,6 @@ export const setSamMode = (info: AgentInfo, mode: SamMode) =>
 
 export const listModels = (info: AgentInfo) =>
   json<ModelSpec[]>(info, "/v1/models");
-
-export const submitGeneration = (
-  info: AgentInfo,
-  inputPath: string,
-  model: string,
-  profile: string,
-) =>
-  json<GenerationJob>(info, "/v1/generations", {
-    method: "POST",
-    body: JSON.stringify({ model, input_path: inputPath, profile, seed: 42 }),
-  });
-
-export const listJobs = (info: AgentInfo) =>
-  json<GenerationJob[]>(info, "/v1/jobs");
 
 export const getJob = (info: AgentInfo, jobId: string) =>
   json<GenerationJob>(info, `/v1/jobs/${jobId}`);

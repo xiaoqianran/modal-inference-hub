@@ -15,7 +15,9 @@ React / TypeScript
      │   ├─ Cloud SAM ✅
      │   └─ Local SAM runtime（Windows 可选安装）
      ├─ Artifact Runtime / Native Export
-     └─ 云端 3D 工作节点
+     └─ modal-3D Gateway v2
+          ├─ 动态 Capability Registry
+          └─ 云端 3D 工作节点
 ```
 
 ## 架构边界
@@ -27,6 +29,7 @@ React / TypeScript
 - 已保存的凭据直接恢复到本地代理，不会回传到 React 界面。
 - 本地 SAM 3.1 是可选功能，云端回退使用相同的界面协议。
 - `modal-3D` 是云端工作节点及其 API 协议的唯一事实来源。
+- Agent 只使用新版 gateway 的 `capabilities`、`submit` 与 `modal.FunctionCall` 协议；不存在第二份客户端模型 registry 或旧版 cloud router。
 - 大型模型不会打包进安装程序。
 
 ## 首批里程碑

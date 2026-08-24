@@ -17,6 +17,7 @@ def capability_fixture() -> dict:
         "generation": {
             "app": models.APP_NAME,
             "submit_function": "submit",
+            "pipeline_function": "generate_from_raw",
             "job_transport": "modal.FunctionCall",
         },
         "models": [
@@ -25,7 +26,10 @@ def capability_fixture() -> dict:
                 "name": "FastSAM3D++",
                 "description": "fast",
                 "status": "enabled",
+                "worker_app": "modal-3d-fastsam3d",
                 "output": "geometry",
+                "artifact": {"mime": "model/gltf-binary", "extension": ".glb"},
+                "input": {"role": "canonical_rgba", "mime": "image/png", "alpha": "required"},
                 "reference": {"warm_seconds": 6.06},
                 "profiles": [
                     {
@@ -45,7 +49,10 @@ def capability_fixture() -> dict:
                 "name": "Pixal3D",
                 "description": "textured",
                 "status": "enabled",
+                "worker_app": "modal-3d-pixal3d",
                 "output": "textured",
+                "artifact": {"mime": "model/gltf-binary", "extension": ".glb"},
+                "input": {"role": "canonical_rgba", "mime": "image/png", "alpha": "required"},
                 "reference": {"warm_seconds": 108.92},
                 "profiles": [
                     {

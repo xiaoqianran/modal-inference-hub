@@ -974,6 +974,14 @@ input:focus-visible {
   justify-self: end;
 }
 
+.local-sam-path {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .local-sam-actions button {
   border: 1px solid var(--ctp-surface-1);
   padding: 5px 9px;

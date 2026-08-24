@@ -13,6 +13,7 @@ import {
   getCapabilities,
   getJob,
   installLocalSam,
+  migrateLocalSam,
   getProject,
   listModels,
   listProjects,
@@ -43,6 +44,7 @@ import {
   type SamMode,
   type SamSelection,
 } from "./agent";
+import { invoke } from "@tauri-apps/api/core";
 
 const GlbViewer = lazy(() => import("./GlbViewer"));
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -374,13 +376,19 @@ function App() {
   function localSamProgressLabel() {
     const local = runtimeCapabilities?.sam.local;
     if (!local?.installing) return local?.reason ?? "";
+    const speed = local.download_speed_bps && local.download_speed_bps > 0
+      ? ` · ${(local.download_speed_bps / 1024 / 1024).toFixed(1)} MiB/s`
+      : "";
+    const eta = local.download_eta_seconds && local.download_eta_seconds > 0
+      ? ` · 剩余约 ${Math.ceil(local.download_eta_seconds / 60)} 分钟`
+      : "";
     if (local.step === "checkpoint" && local.downloaded_bytes) {
       const percent = Math.min(100, (local.downloaded_bytes / local.checkpoint_bytes) * 100);
-      return `正在同步 SAM 3.1 checkpoint · ${percent.toFixed(1)}%`;
+      return `正在同步 SAM 3.1 checkpoint · ${percent.toFixed(1)}%${speed}${eta}`;
     }
-    if (local.step === "dependencies") return "正在安装预编译 Torch / CUDA runtime…";
+    if (local.step === "dependencies") return `正在安装预编译 Torch / CUDA runtime…${speed}${eta}`;
     if (local.step === "health") return "正在启动 Local SAM 并加载模型…";
-    return "正在安装 Local SAM runtime…";
+    return `正在安装 Local SAM runtime…${speed}${eta}`;
   }
 
   async function refreshLocalCapabilities() {
@@ -428,6 +436,23 @@ function App() {
       const gib = result.released_bytes / 1024 / 1024 / 1024;
       const routing = state?.sam.mode === "auto" ? "SAM 已切回 Auto" : "selection 数据已保留";
       setWorkflowMessage(`Local SAM 已卸载，释放 ${gib.toFixed(2)} GiB；${routing}。`);
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLocalSamActionBusy(false);
+    }
+  }
+
+  async function migrateLocalRuntime() {
+    if (!agent || !runtimeCapabilities || runtimeCapabilities.sam.local.installing) return;
+    try {
+      const selected = await invoke<string | null>("choose_local_sam_directory");
+      if (!selected) return;
+      setLocalSamActionBusy(true);
+      setWorkflowMessage("正在迁移 Local SAM 文件，请勿退出客户端…");
+      await migrateLocalSam(agent, selected);
+      await refreshLocalCapabilities();
+      setWorkflowMessage(`Local SAM 已迁移到：${selected}`);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -789,6 +814,7 @@ function App() {
                   ))}
                 </div>
                 <small>{localSamProgressLabel()}</small>
+                <small className="local-sam-path">存储：{runtimeCapabilities.sam.local.root_path}</small>
                 <div className="local-sam-actions">
                   {runtimeCapabilities.sam.local.hardware_eligible && runtimeCapabilities.sam.local.disk_eligible && !runtimeCapabilities.sam.local.installed && (
                     <button
@@ -815,6 +841,9 @@ function App() {
                       卸载 Local
                     </button>
                   )}
+                  <button disabled={localSamActionBusy || runtimeCapabilities.sam.local.installing} onClick={() => void migrateLocalRuntime()}>
+                    迁移目录
+                  </button>
                 </div>
               </div>
             )}

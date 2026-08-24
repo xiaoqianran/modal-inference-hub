@@ -5,9 +5,11 @@ import sqlite3
 import threading
 import uuid
 from builtins import TimeoutError as BuiltinTimeoutError
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Iterator
 
 import modal
 from modal.exception import (
@@ -79,8 +81,14 @@ class JobManager:
         self._initialize_db()
         self._load()
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._db_path, timeout=5)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        db = sqlite3.connect(self._db_path, timeout=5)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def _initialize_db(self) -> None:
         with self._connect() as db:

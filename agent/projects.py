@@ -3,9 +3,11 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Iterator
 
 from agent.storage import data_dir
 
@@ -71,10 +73,15 @@ class ProjectStore:
         self.db_path = self.root / "projects.sqlite3"
         self._initialize_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=5)
-        connection.row_factory = sqlite3.Row
-        return connection
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        db = sqlite3.connect(self.db_path, timeout=5)
+        db.row_factory = sqlite3.Row
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def _initialize_db(self) -> None:
         with self._connect() as db:

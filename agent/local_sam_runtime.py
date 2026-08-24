@@ -17,6 +17,7 @@ import modal
 
 from agent.modal_client import client
 from agent.storage import data_dir
+from agent.settings import get_settings, set_local_sam_root
 
 BOOTSTRAP_VERSION = "1"
 BOOTSTRAP_RELEASE_TAG = "local-sam-runtime-v1"
@@ -39,7 +40,8 @@ _install_thread: threading.Thread | None = None
 
 
 def root() -> Path:
-    value = data_dir() / "local-sam"
+    configured = get_settings().get("local_sam_root")
+    value = Path(configured).expanduser() if configured else data_dir() / "local-sam"
     value.mkdir(parents=True, exist_ok=True)
     return value
 
@@ -74,24 +76,43 @@ def _read_status() -> dict:
         return {"state": "unknown"}
 
 
-def _download(url: str, target: Path, *, expected_sha256: str | None = None) -> dict:
+def _progress(step: str, downloaded: int, total: int | None, started: float, *, force=False) -> None:
+    now = time.monotonic()
+    previous = _read_status()
+    if not force and now - float(previous.get("progress_at", 0)) < 0.5:
+        return
+    speed = downloaded / max(now - started, 0.001)
+    _write_status(
+        state="installing", step=step, downloaded_bytes=downloaded,
+        download_total_bytes=total, download_speed_bps=round(speed, 1),
+        download_eta_seconds=round((total - downloaded) / speed) if total and speed > 0 else None,
+        progress_at=now,
+    )
+
+
+def _download(url: str, target: Path, *, expected_sha256: str | None = None, step="bootstrap") -> dict:
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".part")
     digest = hashlib.sha256()
     total = 0
     request = urllib.request.Request(url, headers={"User-Agent": "modal-3D-client"})
+    started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
+            length = response.headers.get("Content-Length")
+            total_bytes = int(length) if length and length.isdigit() else None
             while chunk := response.read(8 * 1024 * 1024):
                 output.write(chunk)
                 digest.update(chunk)
                 total += len(chunk)
+                _progress(step, total, total_bytes, started)
             output.flush()
             os.fsync(output.fileno())
         actual = digest.hexdigest()
         if expected_sha256 and actual.lower() != expected_sha256.lower():
             raise ValueError(f"SHA256 不匹配：预期 {expected_sha256}，实际 {actual}")
         partial.replace(target)
+        _progress(step, total, total_bytes, started, force=True)
         return {"bytes": total, "sha256": actual}
     except Exception:
         partial.unlink(missing_ok=True)
@@ -212,20 +233,13 @@ def sync_checkpoint() -> dict:
     digest = hashlib.sha256()
     total = 0
     try:
-        next_report = 64 * 1024 * 1024
+        started = time.monotonic()
         with partial.open("wb") as output:
             for chunk in volume.read_file(WEIGHTS_PATH):
                 output.write(chunk)
                 digest.update(chunk)
                 total += len(chunk)
-                if total >= next_report:
-                    _write_status(
-                        state="installing",
-                        step="checkpoint",
-                        downloaded_bytes=total,
-                        checkpoint_bytes=CHECKPOINT_BYTES,
-                    )
-                    next_report += 64 * 1024 * 1024
+                _progress("checkpoint", total, CHECKPOINT_BYTES, started)
             output.flush()
             os.fsync(output.fileno())
         if total != CHECKPOINT_BYTES:
@@ -258,7 +272,7 @@ def install(
         bootstrap_url = f"{BOOTSTRAP_RELEASE_BASE}/{BOOTSTRAP_ASSET}"
     if bootstrap_sha256 is None:
         bootstrap_sha256 = BOOTSTRAP_SHA256
-    _download(bootstrap_url, archive, expected_sha256=bootstrap_sha256)
+    _download(bootstrap_url, archive, expected_sha256=bootstrap_sha256, step="bootstrap")
     staging = runtime_dir().with_name(runtime_dir().name + ".installing")
     shutil.rmtree(staging, ignore_errors=True)
     _safe_extract(archive, staging)
@@ -374,6 +388,34 @@ def uninstall() -> dict:
         "released_bytes": released,
         "preserved_data": str(root() / "data"),
     }
+
+
+def migrate_root(destination: str) -> dict:
+    with _lock:
+        if _install_thread is not None and _install_thread.is_alive():
+            raise RuntimeError("Local SAM 正在安装，请等待安装结束后再迁移")
+    stop()
+    source = root().resolve()
+    target = Path(destination).expanduser()
+    if not target.is_absolute():
+        raise ValueError("Local SAM 目录必须是绝对路径")
+    target = target.resolve()
+    if target == source:
+        return status()
+    if source in target.parents:
+        raise ValueError("Local SAM 目录不能迁移到当前目录内部")
+    if target.exists() and not target.is_dir():
+        raise ValueError("目标路径不是目录")
+    if target.exists() and any(target.iterdir()):
+        raise ValueError("目标目录必须为空")
+    if source.exists():
+        shutil.copytree(source, target, dirs_exist_ok=True)
+        shutil.rmtree(source)
+    else:
+        target.mkdir(parents=True, exist_ok=True)
+    set_local_sam_root(str(target))
+    _write_status(state="ready" if _checkpoint_valid() else "not_installed", step="migrated")
+    return status()
 
 
 def _request(path: str, payload: dict | None = None, *, timeout: float = 30) -> dict:
@@ -533,6 +575,7 @@ def status() -> dict:
         **_read_status(),
         **installation_state(),
         "checkpoint_bytes": CHECKPOINT_BYTES,
+        "root_path": str(root()),
         "installing": installing,
         "running": running,
         "ready": bool(running and health and health.get("ready")),

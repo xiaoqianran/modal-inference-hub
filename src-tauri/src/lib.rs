@@ -36,6 +36,16 @@ fn random_token() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[tauri::command]
+fn choose_local_sam_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    Ok(app
+        .dialog()
+        .file()
+        .set_title("选择 Local SAM 存储目录")
+        .blocking_pick_folder()
+        .map(|path| path.to_string()))
+}
+
 fn agent_command() -> Result<Command, String> {
     if let Some(path) = std::env::var_os("MODAL_3D_AGENT_EXECUTABLE") {
         return Ok(Command::new(path));
@@ -380,6 +390,7 @@ pub fn run() {
             agent_start,
             agent_status,
             agent_stop,
+            choose_local_sam_directory,
             export_save,
             credentials::credentials_status,
             credentials::credentials_save,

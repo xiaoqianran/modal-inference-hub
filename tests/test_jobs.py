@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -145,7 +146,7 @@ class JobManagerTests(unittest.TestCase):
 
     def test_legacy_database_migrates_in_place(self) -> None:
         legacy = Path(self.temp.name) / "legacy.sqlite3"
-        with sqlite3.connect(legacy) as db:
+        with closing(sqlite3.connect(legacy)) as db, db:
             db.execute(
                 """
                 CREATE TABLE jobs (
@@ -165,7 +166,7 @@ class JobManagerTests(unittest.TestCase):
             )
         manager = JobManager(legacy)
         self.assertEqual(manager.list()[0]["status"], "running")
-        with sqlite3.connect(legacy) as db:
+        with closing(sqlite3.connect(legacy)) as db:
             columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
             version = db.execute("PRAGMA user_version").fetchone()[0]
         self.assertTrue({"updated_at", "error_code", "retryable"}.issubset(columns))
@@ -173,7 +174,7 @@ class JobManagerTests(unittest.TestCase):
 
     def test_future_database_version_is_rejected(self) -> None:
         future = Path(self.temp.name) / "future.sqlite3"
-        with sqlite3.connect(future) as db:
+        with closing(sqlite3.connect(future)) as db, db:
             db.execute("PRAGMA user_version = 99")
         with self.assertRaisesRegex(RuntimeError, "Job DB 版本过新"):
             JobManager(future)
