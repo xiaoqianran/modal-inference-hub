@@ -9,5 +9,7 @@
   "sam3_commit": "8f0b7f4d4e7eda2ed606ebde6702c93359ad01da",
   "sam31_revision": "daa63191845a41281374e725f4c9e51c7a824460",
   "checkpoint": "sam3.1_multiplex.pt",
-  "checkpoint_bytes": 3502755717
+  "checkpoint_bytes": 3502755717,
+  "torch_wheel": "https://download-r2.pytorch.org/whl/cu128/torch-2.10.0%2Bcu128-cp312-cp312-win_amd64.whl#sha256=fbde8f6a9ec8c76979a0d14df21c10b9e5cab6f0d106a73ca73e2179bc597cae",
+  "torchvision_wheel": "https://download-r2.pytorch.org/whl/cu128/torchvision-0.25.0%2Bcu128-cp312-cp312-win_amd64.whl#sha256=068e519838b4a8b32a09521244b170edd8c2ac9eeb6538b7bf492cd70e57ebf5"
 }
