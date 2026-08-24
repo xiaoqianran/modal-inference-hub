@@ -1,51 +1,30 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import "./App.css";
 import {
-  agentStatus,
   assetBlob,
   cancelJob,
-  clearCredentials,
-  connectModal,
   createProject,
-  credentialsStatus,
   deleteProject,
-  disconnectModal,
-  getCapabilities,
   getJob,
-  installLocalSam,
-  migrateLocalSam,
   getProject,
-  listModels,
   listProjects,
   materializeProject,
-  modalStatus,
-  probeAgent,
   prepareExport,
   projectSourceBlob,
   refineProject,
-  saveCredentials,
   savePreparedExport,
   segmentProject,
-  setSamMode,
-  startAgent,
-  startLocalSam,
-  uninstallLocalSam,
-  stopAgent,
   submitProjectGeneration,
   type AgentInfo,
   type CanonicalAsset,
-  type CredentialStatus,
   type GenerationJob,
   type GenerationJobStatus,
-  type ModelSpec,
   type Project,
   type RefinementBox,
-  type RuntimeCapabilities,
-  type SamMode,
   type SamSelection,
 } from "./agent";
-import { invoke } from "@tauri-apps/api/core";
 import SettingsPanel from "./SettingsPanel";
+import { useRuntimeController } from "./useRuntimeController";
 
 const GlbViewer = lazy(() => import("./GlbViewer"));
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -62,21 +41,13 @@ function jobActivityLabel(status: GenerationJobStatus) {
   return "云端生成中";
 }
 
-async function waitForModal(info: AgentInfo, attempts: number) {
-  for (let index = 0; index < attempts; index += 1) {
-    if ((await modalStatus(info)).connected) return true;
-    if (index + 1 < attempts) await sleep(250);
-  }
-  return false;
-}
-
-async function listModelsOrEmpty(info: AgentInfo, cloudConnected: boolean) {
-  try {
-    return await listModels(info);
-  } catch (error) {
-    if (cloudConnected) throw error;
-    return [] as ModelSpec[];
-  }
+function projectStatusLabel(status: Project["status"]) {
+  const labels: Record<Project["status"], string> = {
+    draft: "待识别", segmented: "已识别", ready: "可生成", generating: "提交中",
+    running: "生成中", connection_required: "等待连接", cancel_requested: "取消中",
+    succeeded: "已完成", failed: "失败", cancelled: "已取消", expired: "已过期",
+  };
+  return labels[status];
 }
 
 function canonicalFromProject(project: Project): CanonicalAsset | null {
@@ -99,19 +70,10 @@ function canonicalFromProject(project: Project): CanonicalAsset | null {
 }
 
 function App() {
-  const [agent, setAgent] = useState<AgentInfo | null>(null);
-  const [agentMessage, setAgentMessage] = useState("本地代理尚未启动");
-  const [tokenId, setTokenId] = useState("");
-  const [tokenSecret, setTokenSecret] = useState("");
-  const [modalConnected, setModalConnected] = useState(false);
-  const [modalMessage, setModalMessage] = useState("尚未连接");
-  const [persistence, setPersistence] = useState<CredentialStatus>({ supported: false, stored: false });
-  const [remember, setRemember] = useState(false);
+  const runtimeController = useRuntimeController();
+  const { agent, modalConnected, models, runtime: runtimeCapabilities } = runtimeController;
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const [models, setModels] = useState<ModelSpec[]>([]);
-  const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilities | null>(null);
-  const [localSamActionBusy, setLocalSamActionBusy] = useState(false);
   const [modelId, setModelId] = useState("");
   const [project, setProject] = useState<Project | null>(null);
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
@@ -131,42 +93,19 @@ function App() {
   const [busy, setBusy] = useState(false);
   const restoredAgent = useRef<number | null>(null);
 
-  const inTauri = "__TAURI_INTERNALS__" in window;
   const selectedModel = modelId
     ? models.find((model) => model.id === modelId)
     : models.find((model) => model.status !== "disabled") ?? models[0];
   const selectedProfile = selectedModel?.profiles[0];
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const workflowStage = resultUrl || job?.status === "succeeded" ? 4 : job || canonical ? 3 : selection ? 2 : project ? 1 : 0;
+  const segmentHint = !project ? "先选择一张主体清晰的图片" : !concept.trim() ? "描述要提取的对象，例如 cup、chair 或 plant" : selection ? `已找到 ${selection.candidate_count} 个候选，可继续识别或调整` : "准备就绪，可以开始识别";
+  const candidateHint = !selection ? "完成识别后选择目标候选" : !candidateId ? "点击图片中的框或候选编号" : "目标已选择，确认后会生成透明标准图";
+  const generationHint = !canonical ? "先在左侧确认对象" : !selectedModel ? "暂无可用模型，请刷新 Modal 连接" : "模型与推荐参数已就绪";
 
   useEffect(() => {
-    if (!inTauri) return;
-    let cancelled = false;
-    async function initializeAgent() {
-      try {
-        setAgentMessage("正在启动本地代理…");
-        const [status, saved] = await Promise.all([agentStatus(), credentialsStatus()]);
-        const info = status.running ? status : await startAgent();
-        await probeAgent(info);
-        const connected = await waitForModal(info, saved.stored ? 20 : 1);
-        const availableModels = await listModelsOrEmpty(info, connected);
-        if (cancelled) return;
-        setAgent(info);
-        setModels(availableModels);
-        setPersistence(saved);
-        setRemember(saved.supported);
-        setAgentMessage(`本地代理已就绪 · 127.0.0.1:${info.port}`);
-        setModalConnected(connected);
-        setModalMessage(connected ? "当前会话已连接 · 已从 Windows 恢复" : "尚未连接");
-        if (!connected) setSettingsOpen(true);
-      } catch (error) {
-        if (!cancelled) setAgentMessage(error instanceof Error ? error.message : String(error));
-      }
-    }
-    void initializeAgent();
-    return () => {
-      cancelled = true;
-    };
-  }, [inTauri]);
+    if (runtimeController.initialized && !runtimeController.modalConnected) setSettingsOpen(true);
+  }, [runtimeController.initialized, runtimeController.modalConnected]);
 
   useEffect(() => () => {
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
@@ -186,14 +125,6 @@ function App() {
         setRecentProjects(history);
         if (history[0]) await restoreProject(agent, history[0], true);
       })
-      .catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)));
-  }, [agent, modalConnected]);
-
-
-  useEffect(() => {
-    if (!agent?.running) return;
-    void getCapabilities(agent)
-      .then(setRuntimeCapabilities)
       .catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)));
   }, [agent, modalConnected]);
 
@@ -301,206 +232,6 @@ function App() {
       }
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function start() {
-    try {
-      const saved = await credentialsStatus();
-      const info = await startAgent();
-      await probeAgent(info);
-      const connected = await waitForModal(info, saved.stored ? 20 : 1);
-      const availableModels = await listModelsOrEmpty(info, connected);
-      setAgent(info);
-      setModels(availableModels);
-      setPersistence(saved);
-      setRemember(saved.supported);
-      setAgentMessage(`本地代理已就绪 · 127.0.0.1:${info.port}`);
-      setModalConnected(connected);
-      setModalMessage(connected ? "当前会话已连接 · 已从 Windows 恢复" : "尚未连接");
-    } catch (error) {
-      setAgentMessage(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  async function stop() {
-    await stopAgent();
-    setAgent({ running: false, port: null, session_token: null });
-    setModalConnected(false);
-    setAgentMessage("本地代理已停止");
-    setModalMessage("尚未连接");
-  }
-
-  async function connect() {
-    if (!agent?.running) return;
-    const credentials = { token_id: tokenId, token_secret: tokenSecret };
-    try {
-      setModalMessage("正在连接…");
-      await connectModal(agent, credentials);
-      let stored = persistence.stored;
-      let saveFailed = false;
-      if (remember && persistence.supported) {
-        try {
-          await saveCredentials(credentials);
-          stored = true;
-        } catch {
-          saveFailed = true;
-        }
-      }
-      setTokenSecret("");
-      setPersistence({ ...persistence, stored });
-      setModalConnected(true);
-      setModalMessage(saveFailed ? "已连接，但保存 Windows 凭据失败" : stored ? "当前会话已连接 · 已保存到 Windows" : "当前会话已连接");
-      try {
-        setModels(await listModels(agent));
-        setSettingsOpen(false);
-      } catch (error) {
-        setModalMessage(`已连接，但模型 capability 不可用：${error instanceof Error ? error.message : String(error)}`);
-      }
-    } catch (error) {
-      setModalConnected(false);
-      setModalMessage(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  async function disconnect() {
-    if (!agent?.running) return;
-    await disconnectModal(agent);
-    setModalConnected(false);
-    setModalMessage(persistence.stored ? "已断开 · Windows 中仍保留凭据" : "尚未连接");
-  }
-
-  async function forget() {
-    await clearCredentials();
-    if (agent?.running) await disconnectModal(agent);
-    setPersistence({ ...persistence, stored: false });
-    setModalConnected(false);
-    setModalMessage("已删除保存的凭据");
-  }
-
-  function localSamProgressLabel() {
-    const local = runtimeCapabilities?.sam.local;
-    if (!local?.installing) return local?.reason ?? "";
-    const speed = local.download_speed_bps && local.download_speed_bps > 0
-      ? ` · ${(local.download_speed_bps / 1024 / 1024).toFixed(1)} MiB/s`
-      : "";
-    const eta = local.download_eta_seconds && local.download_eta_seconds > 0
-      ? ` · 剩余约 ${Math.ceil(local.download_eta_seconds / 60)} 分钟`
-      : "";
-    if (local.step === "checkpoint" && local.downloaded_bytes) {
-      const percent = Math.min(100, (local.downloaded_bytes / local.checkpoint_bytes) * 100);
-      return `正在同步 SAM 3.1 checkpoint · ${percent.toFixed(1)}%${speed}${eta}`;
-    }
-    if (local.step === "dependencies") return `正在安装预编译 Torch / CUDA runtime…${speed}${eta}`;
-    if (local.step === "health") return "正在启动 Local SAM 并加载模型…";
-    return `正在安装 Local SAM runtime…${speed}${eta}`;
-  }
-
-  async function refreshLocalCapabilities() {
-    if (!agent) return null;
-    const state = await getCapabilities(agent);
-    setRuntimeCapabilities(state);
-    return state;
-  }
-
-  async function installLocalRuntime() {
-    if (!agent) return;
-    const updating = runtimeCapabilities?.sam.local.update_available ?? false;
-    try {
-      setLocalSamActionBusy(true);
-      await installLocalSam(agent);
-      setWorkflowMessage(`Local SAM 已开始后台${updating ? "更新" : "安装"}；Cloud SAM 仍可继续使用。`);
-      await refreshLocalCapabilities();
-      setLocalSamActionBusy(false);
-      while (true) {
-        await sleep(1000);
-        const state = await refreshLocalCapabilities();
-        if (!state?.sam.local.installing) {
-          if (state?.sam.local.error) {
-            setWorkflowMessage(`Local SAM 安装失败：${state.sam.local.error}`);
-          } else if (state?.sam.local.ready) {
-            setWorkflowMessage(`Local SAM 已就绪：${state.sam.local.health?.gpu ?? "NVIDIA GPU"}`);
-          } else {
-            setWorkflowMessage(state?.sam.local.reason ?? "Local SAM 安装结束。");
-          }
-          break;
-        }
-      }
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setLocalSamActionBusy(false);
-    }
-  }
-
-  async function uninstallLocalRuntime() {
-    if (!agent || !(runtimeCapabilities?.sam.local.installed || runtimeCapabilities?.sam.local.update_available)) return;
-    if (!window.confirm("卸载 Local SAM？将删除 runtime、Torch/CUDA 依赖和 3.5 GB checkpoint；Project 的本地 selection 数据会保留。")) return;
-    try {
-      setLocalSamActionBusy(true);
-      const result = await uninstallLocalSam(agent);
-      const state = await refreshLocalCapabilities();
-      const gib = result.released_bytes / 1024 / 1024 / 1024;
-      const routing = state?.sam.mode === "auto" ? "SAM 已切回 Auto" : "selection 数据已保留";
-      setWorkflowMessage(`Local SAM 已卸载，释放 ${gib.toFixed(2)} GiB；${routing}。`);
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setLocalSamActionBusy(false);
-    }
-  }
-
-  async function migrateLocalRuntime() {
-    if (!agent || !runtimeCapabilities || runtimeCapabilities.sam.local.installing) return;
-    try {
-      const selected = await invoke<string | null>("choose_local_sam_directory");
-      if (!selected) return;
-      setLocalSamActionBusy(true);
-      setWorkflowMessage("正在迁移 Local SAM 文件，请勿退出客户端…");
-      await migrateLocalSam(agent, selected);
-      await refreshLocalCapabilities();
-      setWorkflowMessage(`Local SAM 已迁移到：${selected}`);
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setLocalSamActionBusy(false);
-    }
-  }
-
-  async function verifyLocalRuntime() {
-    if (!agent) return;
-    try {
-      setLocalSamActionBusy(true);
-      setWorkflowMessage("正在启动 Local SAM 并加载模型…");
-      await startLocalSam(agent);
-      const state = await refreshLocalCapabilities();
-      setWorkflowMessage(
-        state?.sam.local.ready
-          ? `Local SAM 已就绪：${state.sam.local.health?.gpu ?? "NVIDIA GPU"}`
-          : state?.sam.local.reason ?? "Local SAM 未就绪",
-      );
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
-      await refreshLocalCapabilities();
-    } finally {
-      setLocalSamActionBusy(false);
-    }
-  }
-
-  async function changeSamMode(mode: SamMode) {
-    if (!agent) return;
-    try {
-      await setSamMode(agent, mode);
-      const state = await getCapabilities(agent);
-      setRuntimeCapabilities(state);
-      const effective = state.sam.effective;
-      setWorkflowMessage(
-        effective
-          ? `SAM 模式已切换：${mode === "auto" ? `Auto → ${effective}` : effective}`
-          : state.sam.local.reason,
-      );
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -726,7 +457,7 @@ function App() {
           {recentProjects.length ? recentProjects.slice(0, 8).map((item) => (
             <div className={`sidebar-project ${item.id === project?.id ? "active" : ""}`} key={item.id}>
               <button className="sidebar-project-open" disabled={busy} onClick={() => agent && void restoreProject(agent, item)}>
-                <span>{item.title.slice(0, 1).toUpperCase()}</span><div><strong>{item.title}</strong><small>{item.status}</small></div>
+                <span>{item.title.slice(0, 1).toUpperCase()}</span><div><strong>{item.title}</strong><small>{projectStatusLabel(item.status)}</small></div>
               </button>
               <button className="sidebar-project-delete" disabled={busy || activeProjectStatuses.has(item.status)} aria-label={`删除项目 ${item.title}`} onClick={() => void deleteProjectEntry(item)}>×</button>
             </div>
@@ -757,6 +488,12 @@ function App() {
               <span className="workflow-message">{workflowMessage}</span>
             </div>
 
+            <ol className="workflow-steps" aria-label="创作进度">
+              {["导入图片", "选择对象", "生成 3D", "导出 GLB"].map((label, index) => (
+                <li key={label} className={`${workflowStage === index + 1 ? "active" : ""} ${workflowStage > index + 1 ? "done" : ""}`}><span>{workflowStage > index + 1 ? "✓" : index + 1}</span>{label}</li>
+              ))}
+            </ol>
+
             <div className="workflow-grid">
               <div className="panel">
                 <div className="panel-title"><span>1</span><strong>选择对象</strong></div>
@@ -765,6 +502,7 @@ function App() {
                   <input value={concept} onChange={(event) => setConcept(event.target.value)} placeholder="例如：cup、chair、plant" onKeyDown={(event) => { if (event.key === "Enter") void segment(); }} />
                   <button disabled={busy || !project || !concept.trim()} onClick={segment}>识别</button>
                 </div>
+                <p className="action-guidance">{segmentHint}</p>
 
                 {sourceUrl && (
                   <div
@@ -816,6 +554,7 @@ function App() {
                   </div>
                 )}
                 <button className="primary full" disabled={busy || !project || !candidateId} onClick={materialize}>确认对象</button>
+                <p className="action-guidance">{candidateHint}</p>
               </div>
 
               <div className="panel">
@@ -832,6 +571,7 @@ function App() {
                       <div className="model-meta"><span>Warm ~{model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s</span><span>{model.output === "textured" ? "纹理" : "几何"}</span></div>
                     </button>
                   ))}
+                  {!models.length ? <div className="workspace-recovery"><strong>未取得云端模型列表</strong><span>检查 Modal 连接后刷新状态。</span><button type="button" className="quiet-button" onClick={() => setSettingsOpen(true)}>打开设置</button></div> : null}
                 </div>
 
                 {selectedProfile && <div className="profile-row"><span>Profile</span><strong>{selectedProfile.name}</strong></div>}
@@ -845,6 +585,7 @@ function App() {
                 ) : (
                   <button className="primary full" disabled={busy || !project || !canonical || !selectedModel || selectedModel.status === "disabled"} onClick={generate}>使用 {selectedModel?.name ?? "模型"} 生成 GLB</button>
                 )}
+                {!job || !jobIsActive(job) ? <p className="action-guidance">{generationHint}</p> : null}
 
                 {job?.result && (
                   <div className="result-card">
@@ -873,31 +614,7 @@ function App() {
       <SettingsPanel
         open={settingsOpen}
         onClose={closeSettings}
-        agent={agent}
-        agentMessage={agentMessage}
-        inTauri={inTauri}
-        onToggleAgent={() => void (agent?.running ? stop() : start())}
-        modalConnected={modalConnected}
-        modalMessage={modalMessage}
-        tokenId={tokenId}
-        setTokenId={setTokenId}
-        tokenSecret={tokenSecret}
-        setTokenSecret={setTokenSecret}
-        persistence={persistence}
-        remember={remember}
-        setRemember={setRemember}
-        onConnect={() => void connect()}
-        onDisconnect={() => void disconnect()}
-        onForget={() => void forget()}
-        runtime={runtimeCapabilities}
-        localBusy={localSamActionBusy}
-        localProgress={localSamProgressLabel()}
-        onRefresh={() => void refreshLocalCapabilities().catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)))}
-        onSamMode={(mode) => void changeSamMode(mode)}
-        onInstall={() => void installLocalRuntime()}
-        onVerify={() => void verifyLocalRuntime()}
-        onUninstall={() => void uninstallLocalRuntime()}
-        onMigrate={() => void migrateLocalRuntime()}
+        controller={runtimeController}
       />
     </div>
   );

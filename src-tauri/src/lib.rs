@@ -36,6 +36,13 @@ fn random_token() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[derive(Serialize)]
+struct AppDiagnostics {
+    version: String,
+    data_dir: String,
+    agent_log: Option<String>,
+}
+
 #[tauri::command]
 fn choose_local_sam_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
     Ok(app
@@ -44,6 +51,45 @@ fn choose_local_sam_directory(app: tauri::AppHandle) -> Result<Option<String>, S
         .set_title("选择 Local SAM 存储目录")
         .blocking_pick_folder()
         .map(|path| path.to_string()))
+}
+
+#[tauri::command]
+fn app_diagnostics(
+    app: tauri::AppHandle,
+    state: State<'_, AgentState>,
+) -> Result<AppDiagnostics, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+    let agent_log = state
+        .0
+        .lock()
+        .map_err(|_| "无法锁定本地代理状态")?
+        .as_ref()
+        .map(|process| process.log.to_string_lossy().into_owned());
+    Ok(AppDiagnostics {
+        version: app.package_info().version.to_string(),
+        data_dir: data_dir.to_string_lossy().into_owned(),
+        agent_log,
+    })
+}
+
+#[tauri::command]
+fn reveal_app_data(app: tauri::AppHandle) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+    fs::create_dir_all(&data_dir).map_err(|error| format!("无法创建客户端数据目录：{error}"))?;
+    #[cfg(target_os = "windows")]
+    Command::new("explorer.exe")
+        .arg(&data_dir)
+        .spawn()
+        .map_err(|error| format!("无法打开客户端数据目录：{error}"))?;
+    #[cfg(not(target_os = "windows"))]
+    return Err("当前只支持在 Windows 中打开数据目录".into());
+    Ok(())
 }
 
 fn agent_command() -> Result<Command, String> {
@@ -391,6 +437,8 @@ pub fn run() {
             agent_status,
             agent_stop,
             choose_local_sam_directory,
+            app_diagnostics,
+            reveal_app_data,
             export_save,
             credentials::credentials_status,
             credentials::credentials_save,

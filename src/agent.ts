@@ -16,6 +16,12 @@ export type CredentialStatus = {
   stored: boolean;
 };
 
+export type AppDiagnostics = {
+  version: string;
+  data_dir: string;
+  agent_log: string | null;
+};
+
 export type SamCandidate = {
   candidate_id: string;
   rank: number;
@@ -199,6 +205,8 @@ export const credentialsStatus = () => invoke<CredentialStatus>("credentials_sta
 export const saveCredentials = (credentials: ModalCredentials) =>
   invoke<void>("credentials_save", { credentials });
 export const clearCredentials = () => invoke<void>("credentials_clear");
+export const getAppDiagnostics = () => invoke<AppDiagnostics>("app_diagnostics");
+export const revealAppData = () => invoke<void>("reveal_app_data");
 
 async function request(info: AgentInfo, path: string, init: RequestInit = {}) {
   if (!info.running || !info.port || !info.session_token) throw new Error("本地代理尚未运行");

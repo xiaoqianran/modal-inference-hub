@@ -89,4 +89,4 @@ Modal 版本要求有意不固定；`npm run agent:sync` 会更新锁文件中�
 
 诊断 sidecar 启动问题时，可以通过 `MODAL_3D_AGENT_EXECUTABLE` 指定其他代理可执行文件。代理启动失败时，界面会显示捕获到的 Python 日志。
 
-架构边界和后续里程碑请参阅 [ARCHITECTURE.md](ARCHITECTURE.md)。
+架构边界和后续里程碑请参阅 [ARCHITECTURE.md](ARCHITECTURE.md)。完整的产品信息架构、接口映射、状态机与 UX 约束请参阅 [docs/PRODUCT_ARCHITECTURE.md](docs/PRODUCT_ARCHITECTURE.md)。
