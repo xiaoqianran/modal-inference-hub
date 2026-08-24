@@ -157,8 +157,8 @@ class ProjectStore:
 
     def delete(self, project_id: str) -> dict:
         project = self.get(project_id)
-        if project["status"] == "generating":
-            raise ValueError("项目仍在生成中，请先取消任务")
+        if project["status"] in {"generating", "running", "connection_required", "cancel_requested"}:
+            raise ValueError("项目仍有远程任务活动，请先等待终态或完成取消")
 
         directory = self.assets / project_id
         tombstone = self.assets / f".delete-{project_id}-{uuid.uuid4().hex}"

@@ -35,6 +35,7 @@ import {
   type CanonicalAsset,
   type CredentialStatus,
   type GenerationJob,
+  type GenerationJobStatus,
   type ModelSpec,
   type Project,
   type RefinementBox,
@@ -45,6 +46,18 @@ import {
 
 const GlbViewer = lazy(() => import("./GlbViewer"));
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const activeJobStatuses = new Set<GenerationJobStatus>(["running", "connection_required", "cancel_requested"]);
+const activeProjectStatuses = new Set<Project["status"]>(["generating", "running", "connection_required", "cancel_requested"]);
+
+function jobIsActive(value: GenerationJob) {
+  return activeJobStatuses.has(value.status);
+}
+
+function jobActivityLabel(status: GenerationJobStatus) {
+  if (status === "connection_required") return "云端连接中断，任务可能仍在运行";
+  if (status === "cancel_requested") return "取消请求已发送，等待远端确认";
+  return "云端生成中";
+}
 
 async function waitForModal(info: AgentInfo, attempts: number) {
   for (let index = 0; index < attempts; index += 1) {
@@ -204,13 +217,22 @@ function App() {
     let current = initial;
     setJob(current);
     setModelId(current.model);
-    if (restored && current.status === "running") {
+    if (restored && jobIsActive(current)) {
       setWorkflowMessage(`正在恢复 ${current.model} 的远程任务…`);
     }
-    while (current.status === "running") {
-      await sleep(1000);
+    while (jobIsActive(current)) {
+      const previousStatus = current.status;
+      await sleep(current.status === "connection_required" ? 2000 : 1000);
       current = await getJob(info, current.id);
       setJob(current);
+      if (current.status === previousStatus) continue;
+      if (current.status === "connection_required") {
+        setWorkflowMessage(current.error ?? "云端连接中断，远端任务可能仍在运行；重新连接后会继续恢复。");
+      } else if (current.status === "cancel_requested") {
+        setWorkflowMessage("取消请求已发送，正在等待远端确认…");
+      } else if (current.status === "running" && previousStatus === "connection_required") {
+        setWorkflowMessage("云端连接已恢复，继续等待生成结果…");
+      }
     }
     if (projectId) {
       const updated = await getProject(info, projectId);
@@ -620,13 +642,17 @@ function App() {
   }
 
   async function cancel() {
-    if (!agent || !job || job.status !== "running") return;
+    if (!agent || !job || !jobIsActive(job) || job.status === "cancel_requested") return;
     try {
       const current = await cancelJob(agent, job.id);
       setJob(current);
       if (project) setProject(await getProject(agent, project.id));
       await refreshProjects(agent);
-      setWorkflowMessage("任务已取消。");
+      setWorkflowMessage(
+        current.status === "cancelled"
+          ? "任务已取消。"
+          : current.error ?? "取消请求已发送，正在等待远端确认…",
+      );
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     }
@@ -715,8 +741,8 @@ function App() {
                     </button>
                     <button
                       className="project-delete"
-                      disabled={busy || item.status === "generating"}
-                      title={item.status === "generating" ? "请先取消生成任务" : "删除项目"}
+                      disabled={busy || activeProjectStatuses.has(item.status)}
+                      title={activeProjectStatuses.has(item.status) ? "请先等待远程任务结束或完成取消" : "删除项目"}
                       onClick={() => void deleteProjectEntry(item)}
                     >
                       ×
@@ -859,8 +885,13 @@ function App() {
                 </div>
 
                 {selectedProfile && <div className="profile-row"><span>Profile</span><strong>{selectedProfile.name}</strong></div>}
-                {job?.status === "running" ? (
-                  <div className="generation-actions"><button className="primary" disabled>云端生成中…</button><button className="danger" onClick={cancel}>取消</button></div>
+                {job && jobIsActive(job) ? (
+                  <div className="generation-actions">
+                    <button className="primary" disabled>{jobActivityLabel(job.status)}…</button>
+                    <button className="danger" disabled={job.status === "cancel_requested"} onClick={cancel}>
+                      {job.status === "cancel_requested" ? "取消确认中" : "取消"}
+                    </button>
+                  </div>
                 ) : (
                   <button className="primary full" disabled={busy || !project || !canonical || !selectedModel} onClick={generate}>使用 {selectedModel?.name ?? "模型"} 生成 GLB</button>
                 )}

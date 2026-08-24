@@ -142,7 +142,18 @@ export type Project = {
   job_id: string | null;
   artifact_path: string | null;
   artifact_bytes: number | null;
-  status: "draft" | "segmented" | "ready" | "generating" | "succeeded" | "failed" | "cancelled" | "expired";
+  status:
+    | "draft"
+    | "segmented"
+    | "ready"
+    | "generating"
+    | "running"
+    | "connection_required"
+    | "cancel_requested"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
+    | "expired";
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -155,13 +166,25 @@ export type PreparedExport = {
   sha256: string;
 };
 
+export type GenerationJobStatus =
+  | "running"
+  | "connection_required"
+  | "cancel_requested"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
 export type GenerationJob = {
   id: string;
   model: string;
-  status: "running" | "succeeded" | "failed" | "cancelled" | "expired";
+  status: GenerationJobStatus;
   created_at: string;
+  updated_at: string;
   result: GenerationResult | null;
   error: string | null;
+  error_code: string | null;
+  retryable: boolean | null;
 };
 
 export const startAgent = () => invoke<AgentInfo>("agent_start");

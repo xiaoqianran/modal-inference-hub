@@ -41,6 +41,7 @@ jobs:
           uv python install 3.12
           uv sync --upgrade-package modal
           uv run python -m compileall -q agent
+          uv run python -m unittest discover -s tests -v
           uv run python -c "import modal; print('modal', modal.__version__)"
           npm run agent:build
 
