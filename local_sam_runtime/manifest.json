@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "platform": "windows-x86_64",
+  "python": "3.12.10",
+  "uv": "0.12.5",
+  "torch": "2.10.0",
+  "torchvision": "0.25.0",
+  "torch_index": "https://download.pytorch.org/whl/cu128",
+  "sam3_commit": "8f0b7f4d4e7eda2ed606ebde6702c93359ad01da",
+  "sam31_revision": "daa63191845a41281374e725f4c9e51c7a824460",
+  "checkpoint": "sam3.1_multiplex.pt",
+  "checkpoint_bytes": 3502755717
+}

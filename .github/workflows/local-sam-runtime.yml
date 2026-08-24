@@ -1,0 +1,49 @@
+name: Local SAM Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "local_sam_runtime/**"
+      - "scripts/build-local-sam-bootstrap.ps1"
+      - "scripts/install-local-sam-runtime.ps1"
+      - ".github/workflows/local-sam-runtime.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-bootstrap:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: 0.12.5
+          enable-cache: true
+
+      - name: Build portable bootstrap
+        shell: pwsh
+        run: ./scripts/build-local-sam-bootstrap.ps1
+
+      - name: Validate pinned Windows wheels
+        shell: pwsh
+        run: |
+          $source = Resolve-Path "build/local-sam/bootstrap"
+          $validation = Join-Path $env:RUNNER_TEMP "local-sam-validation"
+          Copy-Item -Recurse -LiteralPath $source -Destination $validation
+          & "$validation/install.ps1" -RuntimeDir $validation
+          if (-not (Test-Path "$validation/installed.json")) {
+            throw "Local SAM validation did not produce installed.json"
+          }
+
+      - name: Upload bootstrap
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: modal-3D-local-sam-bootstrap-windows-x86_64
+          path: |
+            build/local-sam/*.zip
+            build/local-sam/*.sha256
+          if-no-files-found: error
