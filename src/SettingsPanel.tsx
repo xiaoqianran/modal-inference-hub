@@ -13,7 +13,7 @@ type SettingsPanelProps = {
 const SAM_OPTIONS: { mode: SamMode; name: string; description: string }[] = [
   { mode: "auto", name: "自动（推荐）", description: "本机可用时优先本机，失败后自动使用云端。" },
   { mode: "cloud", name: "仅云端", description: "始终使用 Modal SAM，省去本机安装和显存占用。" },
-  { mode: "local", name: "仅本机", description: "数据留在本机；运行时不可用时会明确停止任务。" },
+  { mode: "local", name: "强制本地", description: "图片不上传云端；本地运行时不可用时暂停任务，不会悄悄切换云端。" },
 ];
 
 function formatBytes(bytes: number | null | undefined) {
@@ -128,7 +128,12 @@ export default function SettingsPanel({ open, onClose, controller }: SettingsPan
                   {SAM_OPTIONS.map((option) => {
                     const selected = runtime?.sam.mode === option.mode;
                     const available = option.mode === "auto" ? Boolean(runtime?.sam.effective) : option.mode === "cloud" ? Boolean(runtime?.sam.cloud.available) : Boolean(local?.available);
-                    return <button key={option.mode} type="button" role="radio" aria-checked={selected} className={selected ? "selected" : ""} disabled={!agentReady || samBusy} onClick={() => void controller.changeSamMode(option.mode)}><span className="provider-radio" aria-hidden="true" /><div><strong>{option.name}</strong><p>{option.description}</p></div><small className={available ? "available" : ""}>{available ? "可用" : "当前不可用"}</small></button>;
+                    const availability = available
+                      ? "可用"
+                      : option.mode === "local"
+                        ? local?.installing ? "安装中" : local?.installed ? "等待启动" : "未安装"
+                        : option.mode === "cloud" ? "Modal 未连接" : "没有可用服务";
+                    return <button key={option.mode} type="button" role="radio" aria-checked={selected} className={selected ? "selected" : ""} disabled={!agentReady || samBusy} onClick={() => void controller.changeSamMode(option.mode)}><span className="provider-radio" aria-hidden="true" /><div><strong>{option.name}</strong><p>{option.description}</p></div><small className={available ? "available" : ""}>{availability}</small></button>;
                   })}
                 </div>
 

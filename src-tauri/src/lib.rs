@@ -3,6 +3,7 @@ use rand::RngCore;
 use serde::Serialize;
 use std::{
     fs,
+    io::Write,
     net::TcpStream,
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -10,7 +11,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{Manager, State};
+use tauri::{async_runtime, Manager};
 use tauri_plugin_dialog::DialogExt;
 #[derive(Clone, Serialize)]
 struct AgentInfo {
@@ -54,25 +55,27 @@ fn choose_local_sam_directory(app: tauri::AppHandle) -> Result<Option<String>, S
 }
 
 #[tauri::command]
-fn app_diagnostics(
-    app: tauri::AppHandle,
-    state: State<'_, AgentState>,
-) -> Result<AppDiagnostics, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
-    let agent_log = state
-        .0
-        .lock()
-        .map_err(|_| "无法锁定本地代理状态")?
-        .as_ref()
-        .map(|process| process.log.to_string_lossy().into_owned());
-    Ok(AppDiagnostics {
-        version: app.package_info().version.to_string(),
-        data_dir: data_dir.to_string_lossy().into_owned(),
-        agent_log,
+async fn app_diagnostics(app: tauri::AppHandle) -> Result<AppDiagnostics, String> {
+    async_runtime::spawn_blocking(move || {
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+        let state = app.state::<AgentState>();
+        let agent_log = state
+            .0
+            .lock()
+            .map_err(|_| "无法锁定本地代理状态")?
+            .as_ref()
+            .map(|process| process.log.to_string_lossy().into_owned());
+        Ok(AppDiagnostics {
+            version: app.package_info().version.to_string(),
+            data_dir: data_dir.to_string_lossy().into_owned(),
+            agent_log,
+        })
     })
+    .await
+    .map_err(|error| format!("桌面后台任务异常退出：{error}"))?
 }
 
 #[tauri::command]
@@ -142,7 +145,22 @@ fn terminate_child(child: &mut Child) {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .creation_flags(0x08000000);
-            if !matches!(taskkill.status(), Ok(status) if status.success()) {
+            let terminated = taskkill.spawn().ok().is_some_and(|mut taskkill| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match taskkill.try_wait() {
+                        Ok(Some(status)) => break status.success(),
+                        Ok(None) if Instant::now() < deadline => {
+                            thread::sleep(Duration::from_millis(25));
+                        }
+                        _ => {
+                            let _ = taskkill.kill();
+                            break false;
+                        }
+                    }
+                }
+            });
+            if !terminated {
                 let _ = child.kill();
             }
         }
@@ -151,13 +169,19 @@ fn terminate_child(child: &mut Child) {
     #[cfg(not(target_os = "windows"))]
     let _ = child.kill();
 
-    let _ = child.wait();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    let _ = child.kill();
 }
 
 fn stop_process(process: &mut AgentProcess) {
     terminate_child(&mut process.child);
     let _ = fs::remove_file(&process.handshake);
-    let _ = fs::remove_file(&process.log);
 }
 
 fn startup_failure(
@@ -187,8 +211,6 @@ fn startup_failure(
             )
         }
     });
-    let _ = fs::remove_file(log);
-
     match detail {
         Some(detail) => format!("{message}\n本地代理日志：\n{detail}"),
         None => message,
@@ -203,8 +225,8 @@ fn process_info(process: &AgentProcess) -> AgentInfo {
     }
 }
 
-#[tauri::command]
-fn agent_start(app: tauri::AppHandle, state: State<'_, AgentState>) -> Result<AgentInfo, String> {
+fn agent_start_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
+    let state = app.state::<AgentState>();
     let mut state = state.0.lock().map_err(|_| "无法锁定本地代理状态")?;
     if let Some(process) = state.as_mut() {
         if process
@@ -220,33 +242,36 @@ fn agent_start(app: tauri::AppHandle, state: State<'_, AgentState>) -> Result<Ag
     }
 
     let session_token = random_token();
-    let handshake = std::env::temp_dir().join(format!(
-        "modal-3d-agent-{}-{}.port",
-        std::process::id(),
-        &session_token[..12]
-    ));
-    let log = std::env::temp_dir().join(format!(
-        "modal-3d-agent-{}-{}.log",
-        std::process::id(),
-        &session_token[..12]
-    ));
-    let _ = fs::remove_file(&handshake);
-    let _ = fs::remove_file(&log);
-
-    let mut command = agent_command()?;
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
     fs::create_dir_all(&data_dir).map_err(|error| format!("无法创建客户端数据目录：{error}"))?;
-    command.env("MODAL_3D_AGENT_DATA_DIR", data_dir);
+    let handshake = std::env::temp_dir().join(format!(
+        "modal-3d-agent-{}-{}.port",
+        std::process::id(),
+        &session_token[..12]
+    ));
+    let log = data_dir.join("agent.log");
+    let _ = fs::remove_file(&handshake);
+
+    let mut command = agent_command()?;
+    command.env("MODAL_3D_AGENT_DATA_DIR", &data_dir);
     if let Ok(Some((token_id, token_secret))) = credentials::load() {
         command
             .env("MODAL_3D_SAVED_TOKEN_ID", token_id)
             .env("MODAL_3D_SAVED_TOKEN_SECRET", token_secret);
     }
-    let log_file =
-        fs::File::create(&log).map_err(|error| format!("无法创建本地代理启动日志：{error}"))?;
+    let mut log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .map_err(|error| format!("无法创建本地代理启动日志：{error}"))?;
+    let _ = writeln!(
+        log_file,
+        "[desktop] starting local agent pid={}",
+        std::process::id()
+    );
     let log_stdout = log_file
         .try_clone()
         .map_err(|error| format!("无法打开本地代理启动日志：{error}"))?;
@@ -266,7 +291,6 @@ fn agent_start(app: tauri::AppHandle, state: State<'_, AgentState>) -> Result<Ag
 
     let mut child = command.spawn().map_err(|error| {
         let _ = fs::remove_file(&handshake);
-        let _ = fs::remove_file(&log);
         format!("无法启动本地代理：{error}")
     })?;
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -338,7 +362,21 @@ fn agent_start(app: tauri::AppHandle, state: State<'_, AgentState>) -> Result<Ag
 }
 
 #[tauri::command]
-fn agent_status(state: State<'_, AgentState>) -> Result<AgentInfo, String> {
+async fn agent_start(app: tauri::AppHandle) -> Result<AgentInfo, String> {
+    async_runtime::spawn_blocking(move || agent_start_blocking(&app))
+        .await
+        .map_err(|error| format!("桌面后台任务异常退出：{error}"))?
+}
+
+#[tauri::command]
+async fn agent_status(app: tauri::AppHandle) -> Result<AgentInfo, String> {
+    async_runtime::spawn_blocking(move || agent_status_blocking(&app))
+        .await
+        .map_err(|error| format!("桌面后台任务异常退出：{error}"))?
+}
+
+fn agent_status_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
+    let state = app.state::<AgentState>();
     let mut state = state.0.lock().map_err(|_| "无法锁定本地代理状态")?;
     if let Some(process) = state.as_mut() {
         if process
@@ -420,7 +458,14 @@ async fn export_save(
 }
 
 #[tauri::command]
-fn agent_stop(state: State<'_, AgentState>) -> Result<(), String> {
+async fn agent_stop(app: tauri::AppHandle) -> Result<(), String> {
+    async_runtime::spawn_blocking(move || agent_stop_blocking(&app))
+        .await
+        .map_err(|error| format!("桌面后台任务异常退出：{error}"))?
+}
+
+fn agent_stop_blocking(app: &tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AgentState>();
     let mut state = state.0.lock().map_err(|_| "无法锁定本地代理状态")?;
     if let Some(mut process) = state.take() {
         stop_process(&mut process);

@@ -208,26 +208,54 @@ export const clearCredentials = () => invoke<void>("credentials_clear");
 export const getAppDiagnostics = () => invoke<AppDiagnostics>("app_diagnostics");
 export const revealAppData = () => invoke<void>("reveal_app_data");
 
-async function request(info: AgentInfo, path: string, init: RequestInit = {}) {
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
+async function request(
+  info: AgentInfo,
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+) {
   if (!info.running || !info.port || !info.session_token) throw new Error("本地代理尚未运行");
   const headers = new Headers(init.headers);
   headers.set("X-Modal-3D-Session", info.session_token);
   if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(`http://127.0.0.1:${info.port}${path}`, { ...init, headers });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(body?.detail || `本地代理请求失败（状态码 ${response.status}）`);
+  const controller = new AbortController();
+  const upstream = init.signal;
+  const abort = () => controller.abort();
+  if (upstream?.aborted) controller.abort();
+  else upstream?.addEventListener("abort", abort, { once: true });
+  const timer = window.setTimeout(abort, timeoutMs);
+  try {
+    const response = await fetch(`http://127.0.0.1:${info.port}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const body = (await response.json().catch(() => null)) as { detail?: string } | null;
+      throw new Error(body?.detail || `本地代理请求失败（状态码 ${response.status}）`);
+    }
+    return response;
+  } catch (error) {
+    if (controller.signal.aborted && !upstream?.aborted) {
+      throw new Error(`本地服务在 ${Math.round(timeoutMs / 1000)} 秒内没有响应`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+    upstream?.removeEventListener("abort", abort);
   }
-  return response;
 }
 
 async function json<T>(info: AgentInfo, path: string, init?: RequestInit) {
   return (await request(info, path, init)).json() as Promise<T>;
 }
 
-export const probeAgent = (info: AgentInfo) => json<{ ok: boolean }>(info, "/health");
+export const probeAgent = (info: AgentInfo) =>
+  request(info, "/health", {}, 5_000).then((response) => response.json() as Promise<{ ok: boolean }>);
 export const modalStatus = (info: AgentInfo) => json<{ connected: boolean }>(info, "/modal/status");
 
 export const connectModal = (info: AgentInfo, credentials: ModalCredentials) =>
@@ -241,7 +269,7 @@ export async function disconnectModal(info: AgentInfo) {
 }
 
 export async function assetBlob(info: AgentInfo, path: string) {
-  return (await request(info, `/v1/assets?path=${encodeURIComponent(path)}`)).blob();
+  return (await request(info, `/v1/assets?path=${encodeURIComponent(path)}`, {}, 600_000)).blob();
 }
 
 export const prepareExport = (info: AgentInfo, artifactPath: string) =>

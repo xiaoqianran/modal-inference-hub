@@ -28,7 +28,7 @@ def _watch_windows_parent(parent_pid: int) -> None:
     kernel32.CloseHandle.restype = wintypes.BOOL
     handle = kernel32.OpenProcess(synchronize, False, parent_pid)
     if not handle:
-        return
+        os._exit(0)
     try:
         kernel32.WaitForSingleObject(handle, infinite)
     finally:
@@ -60,6 +60,7 @@ def main() -> None:
     if not token or not handshake:
         raise RuntimeError("本地代理 sidecar 的启动环境不完整")
 
+    print(f"[agent] starting pid={os.getpid()}", flush=True)
     _start_parent_watchdog()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -73,8 +74,9 @@ def main() -> None:
         def restore() -> None:
             try:
                 connect(saved_token_id, saved_token_secret)
-            except Exception:
-                pass
+                print("[agent] saved Modal credentials restored", flush=True)
+            except Exception as exc:
+                print(f"[agent] credential restore failed type={type(exc).__name__}", flush=True)
 
         threading.Thread(target=restore, daemon=True).start()
 
@@ -82,6 +84,7 @@ def main() -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(str(port), encoding="utf-8")
     os.replace(tmp, path)
+    print(f"[agent] listening port={port}", flush=True)
 
     config = uvicorn.Config(
         app,

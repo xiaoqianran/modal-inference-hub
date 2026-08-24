@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -43,6 +44,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["Content-Type", "X-Modal-3D-Session"],
 )
+
+
+@app.middleware("http")
+async def request_diagnostics(request: Request, call_next):
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        print(
+            f"[agent] request failed method={request.method} path={request.url.path} "
+            f"elapsed_ms={elapsed_ms} type={type(exc).__name__}",
+            flush=True,
+        )
+        raise
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    if response.status_code >= 400 or elapsed_ms >= 2000:
+        print(
+            f"[agent] request method={request.method} path={request.url.path} "
+            f"status={response.status_code} elapsed_ms={elapsed_ms}",
+            flush=True,
+        )
+    return response
 
 
 @app.middleware("http")

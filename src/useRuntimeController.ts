@@ -219,6 +219,36 @@ export function useRuntimeController() {
     };
   }, [agent, installing, refreshCapabilities]);
 
+  useEffect(() => {
+    if (!agent?.running) return;
+    const info = agent;
+    let cancelled = false;
+    let failures = 0;
+    let timer = 0;
+    async function heartbeat() {
+      try {
+        await probeAgent(info);
+        if (cancelled) return;
+        failures = 0;
+        setAgentMessage(`本地服务正常 · 127.0.0.1:${info.port}`);
+      } catch (error) {
+        if (cancelled) return;
+        failures = Math.min(2, failures + 1);
+        setAgentMessage(`本地服务响应异常（${failures}/2）· ${errorText(error)}`);
+        if (failures === 2) {
+          setNotice({ tone: "error", text: "本地服务连续两次没有响应，请在“高级与诊断”中重启服务。" });
+        }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(heartbeat, 15_000);
+      }
+    }
+    timer = window.setTimeout(heartbeat, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [agent]);
+
   const start = useCallback(async () => {
     if (!inTauri || !begin("agent")) return;
     try {
