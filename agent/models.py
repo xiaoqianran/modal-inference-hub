@@ -1,3 +1,21 @@
+"""云端 capability 的校验、缓存与 options 展开。
+
+`_validate_document` 是对云端 `modal_3d/capabilities.py` 的「镜像校验」：
+客户端不信任云端，因此独立复刻了一份 capability 结构校验规则（而非共享代码）。
+两端必须保持同步，改动任一端时请同步另一端：
+
+  客户端 models.py                            云端 modal-3D
+  ─────────────────────────────────────────  ──────────────────────────────────
+  contract == CONTRACT                         capabilities.py: CONTRACT
+  generation.app == GATEWAY_APP                gateway.py: APP_NAME
+  generation.submit_function == GATEWAY_SUBMIT gateway.py: submit
+  generation.pipeline_function == PIPELINE      gateway.py: generate_from_raw
+  generation.job_transport == JOB_TRANSPORT    capabilities.py: capabilities_document
+  model.artifact.mime/extension                common.py: worker_capability
+  model.input.role == "canonical_rgba"         common.py: worker_capability
+  model.options / profiles / reference         common.py: worker_capability
+"""
+
 from __future__ import annotations
 
 import json
@@ -16,13 +34,23 @@ from modal.exception import (
 from modal.exception import ConnectionError as ModalConnectionError
 from modal.exception import TimeoutError as ModalTimeoutError
 
+from agent.constants import (
+    CONTRACT,
+    GATEWAY_APP,
+    GATEWAY_PIPELINE,
+    GATEWAY_SUBMIT,
+    JOB_TRANSPORT,
+    SOURCE_MAX_BYTES,
+    SOURCE_MAX_PIXELS,
+    SOURCE_MIME_TYPES,
+)
 from agent.modal_client import NotConnectedError, client, connected
 from agent.storage import data_dir
 
-APP_NAME = "modal-3d-gateway"
-CONTRACT = "modal-3d.capabilities.v1"
-PIPELINE_FUNCTION = "generate_from_raw"
-SUBMIT_FUNCTION = "submit"
+# 重新导出，避免其它模块直接依赖 constants；命名保持历史语义。
+APP_NAME = GATEWAY_APP
+PIPELINE_FUNCTION = GATEWAY_PIPELINE
+SUBMIT_FUNCTION = GATEWAY_SUBMIT
 _CACHE_NAME = "generation-capabilities.json"
 _RECOVERABLE_ERRORS = (
     NotConnectedError,
@@ -71,15 +99,25 @@ def _validate_option_value(name: str, value, schema: dict) -> None:
         if schema.get("nullable") is True:
             return
         raise IncompatibleCapability(f"option {name} must not be null")
+    # 与云端 modal_3d/capabilities.py 的 _validate_value 对齐，支持全部 option 类型。
     kind = schema.get("type")
     if kind == "integer":
         valid = isinstance(value, int) and not isinstance(value, bool)
     elif kind == "number":
         valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+    elif kind == "string":
+        valid = isinstance(value, str)
+    elif kind == "boolean":
+        valid = isinstance(value, bool)
     else:
         raise IncompatibleCapability(f"unsupported option type for {name}: {kind}")
     if not valid:
         raise IncompatibleCapability(f"option {name} must be {kind}")
+
+    allowed = schema.get("enum")
+    if allowed is not None and value not in allowed:
+        raise IncompatibleCapability(f"option {name} must be one of: {allowed}")
+
     minimum = schema.get("minimum")
     if minimum is not None and value < minimum:
         raise IncompatibleCapability(f"option {name} must be >= {minimum}")
@@ -100,10 +138,29 @@ def _validate_document(value) -> dict:
         "app": APP_NAME,
         "submit_function": SUBMIT_FUNCTION,
         "pipeline_function": PIPELINE_FUNCTION,
-        "job_transport": "modal.FunctionCall",
+        "job_transport": JOB_TRANSPORT,
     }
     if any(generation.get(key) != expected for key, expected in expected_generation.items()):
         raise IncompatibleCapability("generation endpoint does not match the supported gateway")
+
+    sam = _require_mapping(document.get("sam"), "sam")
+    cloud = _require_mapping(sam.get("cloud"), "sam.cloud")
+    source_input = cloud.get("input")
+    if source_input is None:
+        source_input = {
+            "mime": list(SOURCE_MIME_TYPES),
+            "max_bytes": SOURCE_MAX_BYTES,
+            "max_pixels": SOURCE_MAX_PIXELS,
+        }
+        cloud["input"] = source_input
+    else:
+        source_input = _require_mapping(source_input, "sam.cloud.input")
+        if source_input.get("mime") != list(SOURCE_MIME_TYPES):
+            raise IncompatibleCapability("sam.cloud.input.mime is incompatible")
+        if source_input.get("max_bytes") != SOURCE_MAX_BYTES:
+            raise IncompatibleCapability("sam.cloud.input.max_bytes is incompatible")
+        if source_input.get("max_pixels") != SOURCE_MAX_PIXELS:
+            raise IncompatibleCapability("sam.cloud.input.max_pixels is incompatible")
 
     models = document.get("models")
     if not isinstance(models, list) or not models:
@@ -215,6 +272,18 @@ def capabilities_document(*, refresh: bool = True) -> dict:
     if not connected():
         raise CapabilityUnavailable("模型 capability 尚不可用；请先连接 Modal")
     raise CapabilityUnavailable("无法读取云端模型 capability，且没有可用缓存")
+
+
+def source_input_limits() -> dict:
+    try:
+        document = capabilities_document()
+        return dict(document["sam"]["cloud"]["input"])
+    except CapabilityUnavailable:
+        return {
+            "mime": list(SOURCE_MIME_TYPES),
+            "max_bytes": SOURCE_MAX_BYTES,
+            "max_pixels": SOURCE_MAX_PIXELS,
+        }
 
 
 def public_models() -> list[dict]:

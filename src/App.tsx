@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import "./App.css";
 import {
-  assetBlob,
+  jobArtifactBlob,
   cancelJob,
   createProject,
   deleteProject,
@@ -10,6 +10,7 @@ import {
   listProjects,
   materializeProject,
   prepareExport,
+  projectCanonicalBlob,
   projectSourceBlob,
   refineProject,
   savePreparedExport,
@@ -51,21 +52,13 @@ function projectStatusLabel(status: Project["status"]) {
 }
 
 function canonicalFromProject(project: Project): CanonicalAsset | null {
-  if (
-    !project.scene_id ||
-    !project.selection_id ||
-    !project.candidate_id ||
-    !project.canonical_path ||
-    project.canonical_bytes === null
-  ) {
-    return null;
-  }
+  if (!project.canonical_id || !project.canonical_sha256 || project.canonical_bytes === null) return null;
   return {
-    scene_id: project.scene_id,
-    selection_id: project.selection_id,
-    candidate_id: project.candidate_id,
-    canonical_path: project.canonical_path,
-    canonical_bytes: project.canonical_bytes,
+    id: project.canonical_id,
+    role: "canonical-rgba",
+    mime: "image/png",
+    bytes: project.canonical_bytes,
+    sha256: project.canonical_sha256,
   };
 }
 
@@ -190,7 +183,7 @@ function App() {
       return;
     }
     setWorkflowMessage(restored ? "已恢复最近的 3D 结果，正在加载预览…" : "3D 已生成，正在加载预览…");
-    const blob = await assetBlob(info, current.result.artifact.path);
+    const blob = await jobArtifactBlob(info, current.id);
     setResultUrl(URL.createObjectURL(blob));
     setWorkflowMessage(restored ? "已恢复最近的 3D 结果。" : "3D 生成完成。");
   }
@@ -215,7 +208,7 @@ function App() {
       const savedCanonical = canonicalFromProject(value);
       setCanonical(savedCanonical);
       if (savedCanonical) {
-        setCanonicalUrl(URL.createObjectURL(await assetBlob(info, savedCanonical.canonical_path)));
+        setCanonicalUrl(URL.createObjectURL(await projectCanonicalBlob(info, value.id)));
       } else {
         setCanonicalUrl(null);
       }
@@ -385,7 +378,7 @@ function App() {
       setBusy(true);
       setWorkflowMessage("正在生成标准 Canonical RGBA…");
       const value = await materializeProject(agent, project.id, candidateId);
-      const blob = await assetBlob(agent, value.canonical.canonical_path);
+      const blob = await projectCanonicalBlob(agent, project.id);
       setProject(value.project);
       setCanonical(value.canonical);
       setCanonicalUrl(URL.createObjectURL(blob));
@@ -437,7 +430,7 @@ function App() {
     if (!job?.result || !agent) return;
     try {
       setWorkflowMessage("正在准备 GLB 导出…");
-      const prepared = await prepareExport(agent, job.result.artifact.path);
+      const prepared = await prepareExport(agent, job.id);
       const saved = await savePreparedExport(prepared.id, `modal-3d-${job.model}.glb`);
       setWorkflowMessage(saved ? `GLB 已保存：${saved}` : "已取消保存。 ");
     } catch (error) {
@@ -562,7 +555,7 @@ function App() {
                 {resultUrl ? <Suspense fallback={<div className="glb-viewer"><span className="viewer-message">正在加载 3D 引擎…</span></div>}><GlbViewer url={resultUrl} /></Suspense> : (
                   <div className="canonical-preview">{canonicalUrl ? <img src={canonicalUrl} alt="Canonical RGBA" /> : <div>确认对象后，这里会显示标准透明 RGBA。</div>}</div>
                 )}
-                {canonical && !resultUrl && <div className="asset-meta"><span>Canonical RGBA</span><strong>{(canonical.canonical_bytes / 1024).toFixed(0)} KiB</strong></div>}
+                {canonical && !resultUrl && <div className="asset-meta"><span>Canonical RGBA</span><strong>{(canonical.bytes / 1024).toFixed(0)} KiB</strong></div>}
 
                 <div className="model-options">
                   {models.map((model) => (

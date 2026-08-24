@@ -1,3 +1,10 @@
+"""项目（Project）工作区的持久化。
+
+Project 承载一次完整创作流程的全部上下文：源图片 → 识别/Refine 结果 →
+canonical RGBA → 模型/Profile → Job → 产物。全部落盘到 SQLite，支持
+Agent 重启后恢复。状态推进见下方状态机图；Job 状态由 jobs.record_job 回写。
+"""
+
 from __future__ import annotations
 
 import shutil
@@ -9,10 +16,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterator
 
+from agent import image_input
 from agent.storage import data_dir
 
-_MAX_SOURCE_BYTES = 25 * 1024 * 1024
-_ALLOWED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+# Project 状态机（随工作流逐步推进）：
+#
+#   draft ──(segment)──► segmented ──(materialize)──► ready ──(generation)──► generating
+#                                                                              │
+#                                       ┌──────────────────────────────────────┘
+#                                       │  （由 jobs.py 的 Job 状态回写，见 record_job）
+#                                       ▼
+#                    running / connection_required / cancel_requested ──► succeeded / failed /
+#                                                                          cancelled / expired
+#
+# 其中 draft / segmented / ready 是「本地可安全删除」的中间态；
+# generating / running / connection_required / cancel_requested 表示仍有远程任务活动，
+# 删除项目前必须先让 Job 到达终态或完成取消（见 delete）。
 
 
 @dataclass
@@ -22,17 +41,26 @@ class Project:
     source_name: str
     source_path: str
     source_bytes: int
+    source_id: str | None
+    source_sha256: str | None
+    source_mime: str | None
+    source_width: int | None
+    source_height: int | None
     concept: str | None
     sam_provider: str | None
     scene_id: str | None
     selection_id: str | None
     candidate_id: str | None
     canonical_path: str | None
+    canonical_id: str | None
+    canonical_sha256: str | None
     canonical_bytes: int | None
     model: str | None
     profile: str | None
     job_id: str | None
     artifact_path: str | None
+    artifact_id: str | None
+    artifact_sha256: str | None
     artifact_bytes: int | None
     status: str
     error: str | None
@@ -45,17 +73,32 @@ class Project:
             "title": self.title,
             "source_name": self.source_name,
             "source_bytes": self.source_bytes,
+            "source": (
+                {
+                    "id": self.source_id,
+                    "role": "source-image",
+                    "mime": self.source_mime,
+                    "bytes": self.source_bytes,
+                    "sha256": self.source_sha256,
+                    "width": self.source_width,
+                    "height": self.source_height,
+                }
+                if self.source_id
+                else None
+            ),
             "concept": self.concept,
             "sam_provider": self.sam_provider,
             "scene_id": self.scene_id,
             "selection_id": self.selection_id,
             "candidate_id": self.candidate_id,
-            "canonical_path": self.canonical_path,
+            "canonical_id": self.canonical_id,
+            "canonical_sha256": self.canonical_sha256,
             "canonical_bytes": self.canonical_bytes,
             "model": self.model,
             "profile": self.profile,
             "job_id": self.job_id,
-            "artifact_path": self.artifact_path,
+            "artifact_id": self.artifact_id,
+            "artifact_sha256": self.artifact_sha256,
             "artifact_bytes": self.artifact_bytes,
             "status": self.status,
             "error": self.error,
@@ -93,17 +136,26 @@ class ProjectStore:
                     source_name TEXT NOT NULL,
                     source_path TEXT NOT NULL,
                     source_bytes INTEGER NOT NULL,
+                    source_id TEXT,
+                    source_sha256 TEXT,
+                    source_mime TEXT,
+                    source_width INTEGER,
+                    source_height INTEGER,
                     concept TEXT,
                     sam_provider TEXT,
                     scene_id TEXT,
                     selection_id TEXT,
                     candidate_id TEXT,
                     canonical_path TEXT,
+                    canonical_id TEXT,
+                    canonical_sha256 TEXT,
                     canonical_bytes INTEGER,
                     model TEXT,
                     profile TEXT,
                     job_id TEXT,
                     artifact_path TEXT,
+                    artifact_id TEXT,
+                    artifact_sha256 TEXT,
                     artifact_bytes INTEGER,
                     status TEXT NOT NULL,
                     error TEXT,
@@ -113,22 +165,30 @@ class ProjectStore:
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(projects)")}
-            if "sam_provider" not in columns:
-                db.execute("ALTER TABLE projects ADD COLUMN sam_provider TEXT")
+            migrations = {
+                "sam_provider": "TEXT",
+                "artifact_id": "TEXT",
+                "artifact_sha256": "TEXT",
+                "source_id": "TEXT",
+                "source_sha256": "TEXT",
+                "source_mime": "TEXT",
+                "source_width": "INTEGER",
+                "source_height": "INTEGER",
+                "canonical_id": "TEXT",
+                "canonical_sha256": "TEXT",
+            }
+            for name, definition in migrations.items():
+                if name not in columns:
+                    db.execute(f"ALTER TABLE projects ADD COLUMN {name} {definition}")
 
     @staticmethod
     def _project(row: sqlite3.Row) -> Project:
         return Project(**dict(row))
 
-    def create(self, data: bytes, filename: str) -> dict:
-        if not data:
-            raise ValueError("图片为空")
-        if len(data) > _MAX_SOURCE_BYTES:
-            raise ValueError("图片不能超过 25 MiB")
+    def create(self, data: bytes, filename: str, limits: dict | None = None) -> dict:
         name = Path(filename or "source.png").name
+        descriptor = image_input.describe(data, name, limits)
         suffix = Path(name).suffix.lower()
-        if suffix not in _ALLOWED_SUFFIXES:
-            raise ValueError("只支持 PNG、JPEG 和 WebP 图片")
 
         project_id = uuid.uuid4().hex
         directory = self.assets / project_id
@@ -141,10 +201,16 @@ class ProjectStore:
             db.execute(
                 """
                 INSERT INTO projects (
-                    id, title, source_name, source_path, source_bytes, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)
+                    id, title, source_name, source_path, source_bytes,
+                    source_id, source_sha256, source_mime, source_width, source_height,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
                 """,
-                (project_id, title, name, str(source), len(data), now, now),
+                (
+                    project_id, title, name, str(source), len(data),
+                    descriptor["id"], descriptor["sha256"], descriptor["mime"],
+                    descriptor["width"], descriptor["height"], now, now,
+                ),
             )
         return self.get(project_id)
 
@@ -210,9 +276,13 @@ class ProjectStore:
             selection_id=selection["selection_id"],
             candidate_id=None,
             canonical_path=None,
+            canonical_id=None,
+            canonical_sha256=None,
             canonical_bytes=None,
             job_id=None,
             artifact_path=None,
+            artifact_id=None,
+            artifact_sha256=None,
             artifact_bytes=None,
             status="segmented",
             error=None,
@@ -223,12 +293,40 @@ class ProjectStore:
             project_id,
             candidate_id=candidate_id,
             canonical_path=canonical["canonical_path"],
+            canonical_id=canonical["canonical_id"],
+            canonical_sha256=canonical["canonical_sha256"],
             canonical_bytes=canonical["canonical_bytes"],
             job_id=None,
             artifact_path=None,
+            artifact_id=None,
+            artifact_sha256=None,
             artifact_bytes=None,
             status="ready",
             error=None,
+        )
+
+    def canonical(self, project_id: str) -> tuple[dict, str]:
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT canonical_id, canonical_sha256, canonical_bytes, canonical_path
+                FROM projects WHERE id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(project_id)
+        if not all((row[0], row[1], row[2], row[3])):
+            raise RuntimeError("项目尚无 Canonical RGBA")
+        return (
+            {
+                "id": row[0],
+                "role": "canonical-rgba",
+                "mime": "image/png",
+                "bytes": row[2],
+                "sha256": row[1],
+            },
+            row[3],
         )
 
     def record_generation(self, project_id: str, model: str, profile: str, job_id: str) -> dict:
@@ -238,6 +336,8 @@ class ProjectStore:
             profile=profile,
             job_id=job_id,
             artifact_path=None,
+            artifact_id=None,
+            artifact_sha256=None,
             artifact_bytes=None,
             status="generating",
             error=None,
@@ -253,7 +353,9 @@ class ProjectStore:
         artifact = result.get("artifact") if result else None
         self._update(
             row[0],
-            artifact_path=artifact.get("path") if artifact else None,
+            artifact_path=None,
+            artifact_id=artifact.get("id") if artifact else None,
+            artifact_sha256=artifact.get("sha256") if artifact else None,
             artifact_bytes=artifact.get("bytes") if artifact else None,
             status=status,
             error=job.get("error"),

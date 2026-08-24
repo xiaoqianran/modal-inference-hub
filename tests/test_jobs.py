@@ -15,6 +15,7 @@ from modal.exception import (
     RemoteError,
 )
 
+from agent.artifacts import ArtifactValidationError
 from agent.jobs import JobManager
 from agent.modal_client import NotConnectedError
 
@@ -106,9 +107,82 @@ class JobManagerTests(unittest.TestCase):
             requested = self.manager.cancel(job["id"])
         self.assertEqual(requested["status"], "cancel_requested")
 
-        value, _ = self.poll_with(job["id"], result={"artifact": {"path": "x.glb"}})
+        descriptor = {
+            "id": "art-test",
+            "role": "primary-glb",
+            "mime": "model/gltf-binary",
+            "bytes": 12,
+            "sha256": "a" * 64,
+        }
+        with patch(
+            "agent.jobs.artifacts.cache_remote",
+            return_value=(descriptor, Path(self.temp.name) / "cached.glb"),
+        ):
+            value, _ = self.poll_with(job["id"], result={"artifact": {"path": "x.glb"}})
         self.assertEqual(value["status"], "succeeded")
-        self.assertIsNotNone(value["result"])
+        self.assertEqual(value["result"]["artifact"], descriptor)
+        self.assertNotIn("path", value["result"]["artifact"])
+
+    def test_success_is_persisted_only_after_verified_cache(self) -> None:
+        job = self.create()
+        descriptor = {
+            "id": "art-verified",
+            "role": "primary-glb",
+            "mime": "model/gltf-binary",
+            "bytes": 128,
+            "sha256": "b" * 64,
+        }
+        remote = {
+            "model": "fastsam3d-plus-plus",
+            "artifact": {"path": "jobs/private.glb", "bytes": 128},
+            "timing": {"inference_s": 1.0},
+        }
+        cached = Path(self.temp.name) / "cache.glb"
+        with patch("agent.jobs.artifacts.cache_remote", return_value=(descriptor, cached)) as cache:
+            value, _ = self.poll_with(job["id"], result=remote)
+        self.assertEqual(value["status"], "succeeded")
+        self.assertEqual(value["result"]["primary_artifact_id"], "art-verified")
+        self.assertNotIn("path", value["result"]["artifact"])
+        cache.assert_called_once()
+        with closing(sqlite3.connect(self.db)) as db:
+            stored = db.execute(
+                "SELECT artifact_remote_path, result_json FROM jobs WHERE id = ?", (job["id"],)
+            ).fetchone()
+        self.assertEqual(stored[0], "jobs/private.glb")
+        self.assertNotIn("jobs/private.glb", stored[1])
+
+    def test_artifact_validation_failure_is_terminal(self) -> None:
+        job = self.create()
+        with patch(
+            "agent.jobs.artifacts.cache_remote",
+            side_effect=ArtifactValidationError("hash mismatch"),
+        ):
+            value, _ = self.poll_with(
+                job["id"], result={"artifact": {"path": "jobs/bad.glb"}}
+            )
+        self.assertEqual(value["status"], "failed")
+        self.assertEqual(value["error_code"], "artifact.validation_failed")
+
+    def test_verified_terminal_result_survives_offline_reload(self) -> None:
+        job = self.create()
+        descriptor = {
+            "id": "art-offline",
+            "role": "primary-glb",
+            "mime": "model/gltf-binary",
+            "bytes": 12,
+            "sha256": "c" * 64,
+        }
+        cached = Path(self.temp.name) / "cache.glb"
+        with patch("agent.jobs.artifacts.cache_remote", return_value=(descriptor, cached)):
+            value, _ = self.poll_with(
+                job["id"], result={"artifact": {"path": "jobs/offline.glb"}}
+            )
+        self.assertEqual(value["status"], "succeeded")
+        restored = JobManager(self.db)
+        with patch("agent.jobs.artifacts.verified_path", return_value=cached):
+            restored_descriptor, restored_path = restored.artifact(job["id"])
+        self.assertEqual(restored_descriptor["id"], "art-offline")
+        self.assertEqual(restored_path, cached)
 
     def test_cancel_confirmation_becomes_cancelled(self) -> None:
         job = self.create()
@@ -169,8 +243,10 @@ class JobManagerTests(unittest.TestCase):
         with closing(sqlite3.connect(legacy)) as db:
             columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
             version = db.execute("PRAGMA user_version").fetchone()[0]
-        self.assertTrue({"updated_at", "error_code", "retryable"}.issubset(columns))
-        self.assertEqual(version, 1)
+        self.assertTrue(
+            {"updated_at", "error_code", "retryable", "artifact_remote_path"}.issubset(columns)
+        )
+        self.assertEqual(version, 2)
 
     def test_future_database_version_is_rejected(self) -> None:
         future = Path(self.temp.name) / "future.sqlite3"

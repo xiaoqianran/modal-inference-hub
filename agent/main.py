@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from modal.exception import (
     AuthError,
     PermissionDeniedError,
@@ -26,7 +27,7 @@ from agent.capabilities import capabilities
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
-from agent.models import CapabilityError, public_models
+from agent.models import CapabilityError, public_models, source_input_limits
 from agent.projects import projects
 from agent.sam_provider import SamProviderUnavailable
 from agent.settings import get_settings, set_sam_mode
@@ -124,7 +125,7 @@ class LocalSamLocationRequest(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    artifact_path: str
+    job_id: str
 
 
 @app.get("/health")
@@ -229,12 +230,13 @@ def modal_disconnect() -> dict:
     return {"ok": True}
 
 
-
-
 @app.post("/v1/projects")
 async def project_create(file: Annotated[UploadFile, File()]) -> dict:
     try:
-        return projects.create(await file.read(), file.filename or "source.png")
+        limits = source_input_limits()
+        return projects.create(await file.read(), file.filename or "source.png", limits)
+    except CapabilityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -317,29 +319,52 @@ def project_materialize(project_id: str, request: ProjectMaterializeRequest) -> 
     if not project["scene_id"] or not project["selection_id"]:
         raise HTTPException(status_code=409, detail="请先完成对象识别")
     provider = project["sam_provider"] or "cloud"
-    canonical = sam_provider.materialize(
-        provider,
-        project["scene_id"],
-        project["selection_id"],
-        request.candidate_id,
-        request.output_size,
-    )
+    try:
+        canonical = sam_provider.materialize(
+            provider,
+            project["scene_id"],
+            project["selection_id"],
+            request.candidate_id,
+            request.output_size,
+        )
+    except artifacts.ArtifactValidationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     project = projects.record_canonical(project_id, request.candidate_id, canonical)
-    return {"project": project, "canonical": canonical}
+    descriptor, _ = projects.canonical(project_id)
+    return {"project": project, "canonical": descriptor}
+
+
+@app.get("/v1/projects/{project_id}/canonical")
+def project_canonical(project_id: str):
+    try:
+        descriptor, path = projects.canonical(project_id)
+        chunks = artifacts.read(path)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return StreamingResponse(
+        chunks,
+        media_type=descriptor["mime"],
+        headers={"ETag": f'"{descriptor["sha256"]}"'},
+    )
 
 
 @app.post("/v1/projects/{project_id}/generation")
 def project_generation(project_id: str, request: ProjectGenerationRequest) -> dict:
     try:
         project = projects.get(project_id)
+        _, canonical_path = projects.canonical(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
-    if not project["canonical_path"]:
-        raise HTTPException(status_code=409, detail="请先确认 Canonical RGBA")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
         remote = generation.submit(
             request.model,
-            project["canonical_path"],
+            canonical_path,
             request.profile,
             request.seed,
         )
@@ -355,21 +380,53 @@ def project_generation(project_id: str, request: ProjectGenerationRequest) -> di
 @app.post("/v1/exports")
 def export_prepare(request: ExportRequest) -> dict:
     try:
-        return exports.prepare(request.artifact_path)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        descriptor, path = jobs.artifact(request.job_id)
+        return exports.prepare(path, descriptor)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=410, detail="已验证的本地产物不存在") from exc
+    except artifacts.ArtifactValidationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.get("/v1/assets")
+@app.get("/v1/jobs/{job_id}/artifact")
+def job_artifact(job_id: str):
+    try:
+        descriptor, path = jobs.artifact(job_id)
+        artifacts.lease(path)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=410, detail="已验证的本地产物不存在") from exc
+    except artifacts.ArtifactValidationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type=descriptor["mime"],
+        filename=f'{descriptor["id"]}.glb',
+        headers={"ETag": f'"{descriptor["sha256"]}"'},
+        background=BackgroundTask(artifacts.release, path),
+    )
+
+
+@app.get("/v1/assets", deprecated=True)
 def download_asset(path: str = Query(...)):
     try:
-        chunks = artifacts.read(path)
+        normalized = artifacts.normalize_path(path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not normalized.startswith(("sam31/", "client-inputs/")):
+        raise HTTPException(410, "path-based generation artifact access is retired")
+    chunks = artifacts.read(normalized)
     media_type = {
         ".png": "image/png",
         ".glb": "model/gltf-binary",
-    }.get(Path(path).suffix.lower(), "application/octet-stream")
+    }.get(Path(normalized).suffix.lower(), "application/octet-stream")
     return StreamingResponse(chunks, media_type=media_type)
 
 

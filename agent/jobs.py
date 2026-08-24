@@ -1,3 +1,14 @@
+"""3D 生成任务（Job）的编排与可恢复持久化。
+
+Job 是「云端 modal.FunctionCall」的本地镜像：本地只存 remote_call_id，
+状态推进依赖 poll() 轮询远端。关键设计：
+
+1. 可恢复：连接类错误 → connection_required，重连后 poll() 自动回到 running；
+2. 产物校验：远端成功返回后，先经 artifacts.cache_remote 落盘校验，通过才置 succeeded；
+3. 幂等恢复：Agent 重启后从 SQLite 读回所有 Job，未终态者继续轮询；
+   已成功但本地缓存被清理者，可凭 artifact_remote_path 重新拉取。
+"""
+
 from __future__ import annotations
 
 import json
@@ -26,15 +37,32 @@ from modal.exception import (
 from modal.exception import ConnectionError as ModalConnectionError
 from modal.exception import TimeoutError as ModalTimeoutError
 
+from agent import artifacts
 from agent.modal_client import NotConnectedError, client
 from agent.storage import data_dir
 
-_DB_VERSION = 1
+_DB_VERSION = 2
+# 终态集合：进入这些状态后不再变化，也不再轮询远端。
 _TERMINAL = {"succeeded", "failed", "cancelled", "expired"}
 _AUTH_ERRORS = (NotConnectedError, AuthError, PermissionDeniedError)
 _TRANSIENT_ERRORS = (ModalConnectionError, InternalError, ServiceError, ResourceExhaustedError)
-_RECOVERABLE_ERRORS = (*_AUTH_ERRORS, *_TRANSIENT_ERRORS)
+_RECOVERABLE_ERRORS = (*_AUTH_ERRORS, *_TRANSIENT_ERRORS, ModalTimeoutError, BuiltinTimeoutError)
 _CANCELLED_REMOTE_MESSAGE = "function call was cancelled"
+
+# Job 状态机（含可恢复语义）：
+#
+#   running ──────────────────────────────► succeeded / failed / expired
+#      │                                        （终态）
+#      │  连接中断（认证/网络/服务不可用）
+#      └──────────────► connection_required ──► running（重连成功后自动恢复轮询）
+#      │
+#      │  用户请求取消
+#      └──────────────► cancel_requested ──► cancelled（远端确认）
+#                                │
+#                                └────────► expired（远端结果已过期，无法取消）
+#
+# 说明：connection_required 与 cancel_requested 均为「可恢复」的中间态，
+# 远端 FunctionCall 可能仍在运行，重连后继续轮询即可。
 
 
 def default_db_path() -> Path:
@@ -57,6 +85,7 @@ class Job:
     error: str | None = None
     error_code: str | None = None
     retryable: bool | None = None
+    artifact_remote_path: str | None = None
 
     def public(self) -> dict:
         return {
@@ -107,7 +136,8 @@ class JobManager:
                     result_json TEXT,
                     error TEXT,
                     error_code TEXT,
-                    retryable INTEGER
+                    retryable INTEGER,
+                    artifact_remote_path TEXT
                 )
                 """
             )
@@ -116,6 +146,7 @@ class JobManager:
                 ("updated_at", "TEXT"),
                 ("error_code", "TEXT"),
                 ("retryable", "INTEGER"),
+                ("artifact_remote_path", "TEXT"),
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
@@ -127,7 +158,7 @@ class JobManager:
             rows = db.execute(
                 """
                 SELECT id, model, remote_call_id, status, created_at, updated_at,
-                       result_json, error, error_code, retryable
+                       result_json, error, error_code, retryable, artifact_remote_path
                 FROM jobs
                 """
             ).fetchall()
@@ -144,6 +175,7 @@ class JobManager:
                     error=row[7],
                     error_code=row[8],
                     retryable=None if row[9] is None else bool(row[9]),
+                    artifact_remote_path=row[10],
                 )
                 for row in rows
             }
@@ -154,8 +186,8 @@ class JobManager:
                 """
                 INSERT INTO jobs (
                     id, model, remote_call_id, status, created_at, updated_at,
-                    result_json, error, error_code, retryable
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    result_json, error, error_code, retryable, artifact_remote_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     model=excluded.model,
                     remote_call_id=excluded.remote_call_id,
@@ -164,7 +196,8 @@ class JobManager:
                     result_json=excluded.result_json,
                     error=excluded.error,
                     error_code=excluded.error_code,
-                    retryable=excluded.retryable
+                    retryable=excluded.retryable,
+                    artifact_remote_path=excluded.artifact_remote_path
                 """,
                 (
                     job.id,
@@ -177,6 +210,7 @@ class JobManager:
                     job.error,
                     job.error_code,
                     None if job.retryable is None else int(job.retryable),
+                    job.artifact_remote_path,
                 ),
             )
 
@@ -189,6 +223,7 @@ class JobManager:
         error: str | None = None,
         error_code: str | None = None,
         retryable: bool | None = None,
+        artifact_remote_path: str | None = None,
     ) -> dict:
         with self._lock:
             job = self._jobs[job_id]
@@ -200,6 +235,8 @@ class JobManager:
             job.error = error
             job.error_code = error_code
             job.retryable = retryable
+            if artifact_remote_path is not None:
+                job.artifact_remote_path = artifact_remote_path
             self._save(job)
             return job.public()
 
@@ -336,7 +373,84 @@ class JobManager:
                 retryable=False,
             )
         else:
-            return self._set_state(job.id, "succeeded", result=result, retryable=False)
+            try:
+                public_result, remote_path = self._cache_result(job, result)
+            except artifacts.ArtifactValidationError as exc:
+                return self._set_state(
+                    job.id,
+                    "failed",
+                    error=f"3D 产物校验失败：{exc}",
+                    error_code="artifact.validation_failed",
+                    retryable=False,
+                )
+            except NotFoundError:
+                return self._set_state(
+                    job.id,
+                    "failed",
+                    error="3D 产物在远端不存在或已过期",
+                    error_code="artifact.missing",
+                    retryable=False,
+                )
+            except _RECOVERABLE_ERRORS as exc:
+                return self._connection_state(self._get(job.id), exc)
+            return self._set_state(
+                job.id,
+                "succeeded",
+                result=public_result,
+                retryable=False,
+                artifact_remote_path=remote_path,
+            )
+
+    def _cache_result(self, job: Job, result) -> tuple[dict, str]:
+        if not isinstance(result, dict):
+            raise artifacts.ArtifactValidationError("generation result 必须是对象")
+        raw_artifact = result.get("artifact")
+        if not isinstance(raw_artifact, dict):
+            raise artifacts.ArtifactValidationError("generation result 缺少 artifact descriptor")
+        remote_path = raw_artifact.get("path")
+        if not isinstance(remote_path, str) or not remote_path:
+            raise artifacts.ArtifactValidationError("generation result 缺少内部 artifact path")
+        descriptor, _ = artifacts.cache_remote(remote_path, raw_artifact, job.model)
+        public_result = {key: value for key, value in result.items() if key != "artifact"}
+        public_result["artifact"] = descriptor
+        public_result["primary_artifact_id"] = result.get("primary_artifact_id") or descriptor["id"]
+        raw_artifacts = result.get("artifacts")
+        if isinstance(raw_artifacts, list):
+            public_result["artifacts"] = [
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"path", "remote_path", "internal_path"}
+                }
+                for item in raw_artifacts
+                if isinstance(item, dict)
+            ]
+        else:
+            public_result["artifacts"] = [descriptor]
+        return public_result, artifacts.normalize_path(remote_path)
+
+    def artifact(self, job_id: str) -> tuple[dict, Path]:
+        """返回已验证产物（descriptor, 本地缓存路径）。
+
+        若本地缓存已被清理，则凭 artifact_remote_path 从远端重新拉取并回填。
+        """
+        job = self._get(job_id)
+        if job.status != "succeeded" or not isinstance(job.result, dict):
+            raise RuntimeError("任务尚无可用的已验证产物")
+        descriptor = job.result.get("artifact")
+        if not isinstance(descriptor, dict):
+            raise artifacts.ArtifactValidationError("任务缺少 artifact descriptor")
+        try:
+            path = artifacts.verified_path(descriptor)
+        except FileNotFoundError:
+            if not job.artifact_remote_path:
+                raise
+            descriptor, path = artifacts.cache_remote(
+                job.artifact_remote_path, descriptor, job.model
+            )
+            job.result["artifact"] = descriptor
+            self._save(job)
+        return descriptor, path
 
     def cancel(self, job_id: str) -> dict:
         job = self._get(job_id)

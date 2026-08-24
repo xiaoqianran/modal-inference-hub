@@ -1,7 +1,14 @@
+"""GLB 导出准备：把已验证的缓存产物暴露给 Tauri 原生保存。
+
+零拷贝设计：优先用硬链接（os.link）把缓存文件直接「指」到 exports 目录，
+避免复制几十 MB 的 GLB 字节；硬链接失败（如跨盘）才回退到流式复制。
+导出文件按 24 小时超时清理。
+"""
+
 from __future__ import annotations
 
-import hashlib
 import os
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -27,31 +34,27 @@ def _root() -> Path:
     return root
 
 
-def prepare(artifact_path: str) -> dict:
+def prepare(source: Path, descriptor: dict) -> dict:
+    verified = artifacts.verified_path(descriptor)
+    if verified != source:
+        raise artifacts.ArtifactValidationError("artifact cache path 与 descriptor 不一致")
     export_id = uuid.uuid4().hex
     final = _root() / f"{export_id}.glb"
-    partial = final.with_suffix(".part")
-    total = 0
-    digest = hashlib.sha256()
-    head = bytearray()
     try:
-        with partial.open("wb") as output:
-            for chunk in artifacts.read(artifact_path):
-                if len(head) < 8:
-                    head.extend(chunk[: 8 - len(head)])
-                output.write(chunk)
-                digest.update(chunk)
-                total += len(chunk)
-            output.flush()
-            os.fsync(output.fileno())
-        if bytes(head[:4]) != b"glTF" or int.from_bytes(head[4:8], "little") != 2:
-            raise ValueError("远程 artifact 不是有效的 glTF Binary v2")
-        partial.replace(final)
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
+        os.link(source, final)
+    except OSError:
+        partial = final.with_suffix(".part")
+        try:
+            with source.open("rb") as src, partial.open("wb") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+                dst.flush()
+                os.fsync(dst.fileno())
+            os.replace(partial, final)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
     return {
         "id": export_id,
-        "bytes": total,
-        "sha256": digest.hexdigest(),
+        "bytes": descriptor["bytes"],
+        "sha256": descriptor["sha256"],
     }

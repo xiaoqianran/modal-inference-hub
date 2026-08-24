@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import modal
 
+from agent.constants import SAM_APP
 from agent.modal_client import client
 
-APP_NAME = "modal-3d-sam31"
+APP_NAME = SAM_APP
 
 
 def _model():

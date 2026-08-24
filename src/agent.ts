@@ -47,19 +47,29 @@ export type SamSelection = {
 };
 
 export type CanonicalAsset = {
-  scene_id: string;
-  selection_id: string;
-  candidate_id: string;
-  canonical_path: string;
-  canonical_bytes: number;
+  id: string;
+  role: "canonical-rgba";
+  mime: "image/png";
+  bytes: number;
+  sha256: string;
 };
 
 export type GenerationResult = {
   model: string;
+  primary_artifact_id: string;
   artifact: {
-    path: string;
+    id: string;
+    role: string;
     bytes: number;
+    sha256: string;
     mime: string;
+    producer?: {
+      model: string;
+      worker_app: string | null;
+      revision: string | null;
+    };
+    created_at?: string;
+    expires_at?: string | null;
   };
   timing: {
     load_s?: number;
@@ -146,12 +156,14 @@ export type Project = {
   scene_id: string | null;
   selection_id: string | null;
   candidate_id: string | null;
-  canonical_path: string | null;
+  canonical_id: string | null;
+  canonical_sha256: string | null;
   canonical_bytes: number | null;
   model: string | null;
   profile: string | null;
   job_id: string | null;
-  artifact_path: string | null;
+  artifact_id: string | null;
+  artifact_sha256: string | null;
   artifact_bytes: number | null;
   status:
     | "draft"
@@ -272,10 +284,14 @@ export async function assetBlob(info: AgentInfo, path: string) {
   return (await request(info, `/v1/assets?path=${encodeURIComponent(path)}`, {}, 600_000)).blob();
 }
 
-export const prepareExport = (info: AgentInfo, artifactPath: string) =>
+export async function jobArtifactBlob(info: AgentInfo, jobId: string) {
+  return (await request(info, `/v1/jobs/${jobId}/artifact`, {}, 600_000)).blob();
+}
+
+export const prepareExport = (info: AgentInfo, jobId: string) =>
   json<PreparedExport>(info, "/v1/exports", {
     method: "POST",
-    body: JSON.stringify({ artifact_path: artifactPath }),
+    body: JSON.stringify({ job_id: jobId }),
   });
 
 export const savePreparedExport = (exportId: string, suggestedName: string) =>
@@ -299,6 +315,10 @@ export async function deleteProject(info: AgentInfo, projectId: string) {
 
 export async function projectSourceBlob(info: AgentInfo, projectId: string) {
   return (await request(info, `/v1/projects/${projectId}/source`)).blob();
+}
+
+export async function projectCanonicalBlob(info: AgentInfo, projectId: string) {
+  return (await request(info, `/v1/projects/${projectId}/canonical`, {}, 600_000)).blob();
 }
 
 export const segmentProject = (info: AgentInfo, projectId: string, concept: string) =>

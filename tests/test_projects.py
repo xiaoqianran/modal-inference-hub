@@ -1,10 +1,29 @@
 from __future__ import annotations
 
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 from agent.projects import ProjectStore
+
+
+def _png(width: int = 1, height: int = 1) -> bytes:
+    """构造一个合法的 1x1 真彩 PNG（8-bit RGB），供 image_input.describe 解析。"""
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8bit, truecolor
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+    idat = zlib.compress(raw)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
 class ProjectStoreLifecycleTests(unittest.TestCase):
@@ -18,13 +37,13 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
     def test_active_generation_states_cannot_be_deleted(self) -> None:
         for status in ("generating", "running", "connection_required", "cancel_requested"):
             with self.subTest(status=status):
-                project = self.store.create(b"image", f"{status}.png")
+                project = self.store.create(_png(), f"{status}.png")
                 self.store._update(project["id"], status=status)
                 with self.assertRaisesRegex(ValueError, "远程任务活动"):
                     self.store.delete(project["id"])
 
     def test_terminal_project_can_be_deleted(self) -> None:
-        project = self.store.create(b"image", "done.png")
+        project = self.store.create(_png(), "done.png")
         self.store._update(project["id"], status="succeeded")
         self.store.delete(project["id"])
         self.assertEqual(self.store.list(), [])

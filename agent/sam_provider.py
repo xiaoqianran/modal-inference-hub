@@ -12,12 +12,31 @@ class SamProviderUnavailable(RuntimeError):
     pass
 
 
+# SAM Provider 决策表（resolve 依据 sam_mode × 可用性决定实际 provider）：
+#
+#   sam_mode │ Local 可用 │ Cloud 可用 │ 结果
+#   ─────────┼────────────┼────────────┼──────────────────────────
+#   auto     │    是      │   任意     │ local（优先本地）
+#   auto     │    否      │    是      │ cloud（回退云端）
+#   auto     │    否      │    否      │ 抛 SamProviderUnavailable
+#   local    │    是      │   任意     │ local
+#   local    │    否      │   任意     │ 抛 SamProviderUnavailable(原因)
+#   cloud    │   任意     │    是      │ cloud
+#   cloud    │   任意     │    否      │ 抛 SamProviderUnavailable
+#
+# 注意：segment() 在 auto 模式下，若 Local 调用失败且 Cloud 可用，会再回落一次 Cloud；
+# materialize()/refine() 则严格按项目持久化的 provider 执行，不再跨 provider 回退。
+
+
 def resolve() -> str:
-    state = capabilities()["sam"]
-    mode = get_settings()["sam_mode"]
-    effective = state["effective"]
+    state = capabilities()["sam"]          # 获取 SAM 能力状态
+    mode = get_settings()["sam_mode"]      # 用户配置：auto/local/cloud
+
+    effective = state["effective"]         # 云端推荐的有效 provider
     if effective:
-        return effective
+        return effective                    # 云端优先
+
+    # effective 为空时，根据模式降级
     if mode == "local":
         raise SamProviderUnavailable(state["local"]["reason"])
     if mode == "cloud":
@@ -59,7 +78,23 @@ def materialize(
     output_size: int = 1024,
 ) -> dict:
     if provider == "cloud":
-        return sam.materialize(scene_id, selection_id, candidate_id, output_size)
+        value = sam.materialize(scene_id, selection_id, candidate_id, output_size)
+        descriptor = artifacts.describe_remote_png(
+            value["canonical_path"], value.get("canonical_bytes")
+        )
+        expected_sha = value.get("canonical_sha256")
+        expected_id = value.get("canonical_id")
+        if expected_sha is not None and expected_sha != descriptor["sha256"]:
+            raise artifacts.ArtifactValidationError("canonical SHA-256 校验失败")
+        if expected_id is not None and expected_id != descriptor["id"]:
+            raise artifacts.ArtifactValidationError("canonical ID 校验失败")
+        return {
+            **value,
+            "canonical_path": descriptor["path"],
+            "canonical_id": descriptor["id"],
+            "canonical_sha256": descriptor["sha256"],
+            "canonical_bytes": descriptor["bytes"],
+        }
     if provider != "local":
         raise SamProviderUnavailable(f"未知 SAM provider：{provider}")
 
@@ -76,6 +111,8 @@ def materialize(
         "selection_id": selection_id,
         "candidate_id": candidate_id,
         "canonical_path": uploaded["path"],
+        "canonical_id": artifacts.content_id("can", "canonical", uploaded["sha256"]),
+        "canonical_sha256": uploaded["sha256"],
         "canonical_bytes": uploaded["bytes"],
         "local_canonical_bytes": local["canonical_bytes"],
         "canonical": local["canonical"],
