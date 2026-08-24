@@ -44,10 +44,15 @@ if ($LASTEXITCODE -ne 0) {
     throw "Local SAM 预编译 wheel 安装失败，退出码：$LASTEXITCODE"
 }
 
-& $python -m local_sam_runtime.server --check
+$checkOutput = & $python -m local_sam_runtime.server --check
 if ($LASTEXITCODE -ne 0) {
     throw "Local SAM runtime import smoke 失败，退出码：$LASTEXITCODE"
 }
+$check = $checkOutput | ConvertFrom-Json
+if ($check.torch_cuda -ne "12.8") {
+    throw "Local SAM Torch CUDA 版本异常：预期 12.8，实际 $($check.torch_cuda)"
+}
+Write-Host $checkOutput
 
 $installed = [ordered]@{
     version = $manifest.version

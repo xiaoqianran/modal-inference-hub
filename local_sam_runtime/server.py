@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -37,10 +38,54 @@ def _check() -> int:
                 "sam3_builder": bool(sam3.model_builder.build_sam3_image_model),
                 "processor": bool(Sam3Processor),
                 "cuda_available": torch.cuda.is_available(),
+                "torch_cuda": torch.version.cuda,
             }
         )
     )
     return 0
+
+
+
+
+def _watch_windows_parent(parent_pid: int) -> None:
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    infinite = 0xFFFFFFFF
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(synchronize, False, parent_pid)
+    if not handle:
+        return
+    try:
+        kernel32.WaitForSingleObject(handle, infinite)
+    finally:
+        kernel32.CloseHandle(handle)
+    os._exit(0)
+
+
+def _start_parent_watchdog() -> None:
+    value = os.environ.get("MODAL_3D_LOCAL_SAM_PARENT_PID")
+    if not value:
+        return
+    try:
+        parent_pid = int(value)
+    except ValueError:
+        return
+    threading.Thread(
+        target=_watch_windows_parent,
+        args=(parent_pid,),
+        name="local-sam-parent-watchdog",
+        daemon=True,
+    ).start()
 
 
 def main() -> int:
@@ -52,6 +97,7 @@ def main() -> int:
 
     from local_sam_runtime.engine import SamRuntime
 
+    _start_parent_watchdog()
     token = _required_env("MODAL_3D_LOCAL_SAM_TOKEN")
     handshake = Path(_required_env("MODAL_3D_LOCAL_SAM_HANDSHAKE"))
     data_dir = Path(_required_env("MODAL_3D_LOCAL_SAM_DATA_DIR"))
