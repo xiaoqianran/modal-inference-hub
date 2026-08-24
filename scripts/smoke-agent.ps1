@@ -78,7 +78,9 @@ try {
   if ($localUninstall.runtime_installed) { throw "Local SAM 卸载接口应保持未安装状态。" }
 
   $image = Join-Path $dataDir "smoke.png"
-  [IO.File]::WriteAllBytes($image, [byte[]](1, 2, 3, 4))
+  # 1x1 真彩 PNG（合法图片，供 image_input 严格解析通过）。
+  $pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+  [IO.File]::WriteAllBytes($image, [Convert]::FromBase64String($pngBase64))
   $project = Invoke-RestMethod "$base/v1/projects" -Method Post -Headers $headers -Form @{ file = Get-Item $image }
   if ($project.status -ne "draft") { throw "新 Project 状态应为 draft，实际为 $($project.status)。" }
 
