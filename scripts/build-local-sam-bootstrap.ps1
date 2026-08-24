@@ -47,6 +47,32 @@ New-Item -ItemType Directory -Force -Path (Join-Path $stage "sam3-src") | Out-Nu
 Copy-Item -Recurse -LiteralPath (Join-Path $samRoot.FullName "sam3") -Destination (Join-Path $stage "sam3-src\sam3")
 Copy-Item -LiteralPath (Join-Path $samRoot.FullName "LICENSE") -Destination (Join-Path $stage "sam3-src\LICENSE")
 
+# Windows image-only runtime does not use the interactive/video tracker stack. Upstream
+# model_builder imports those modules eagerly, which imports Triton even when
+# enable_inst_interactivity=False. Triton is not required by our image-text path and
+# does not have an official Windows wheel in this pinned stack, so make those imports
+# lazy by removing them from module import time. Future annotations keep the unused
+# tracker/video return annotations from being evaluated during import.
+$modelBuilder = Join-Path $stage "sam3-src\sam3\model_builder.py"
+$modelBuilderText = Get-Content -Raw -LiteralPath $modelBuilder
+$expectedImports = @(
+    "from sam3.model.sam1_task_predictor import SAM3InteractiveImagePredictor",
+    "from sam3.model.sam3_tracking_predictor import Sam3TrackerPredictor",
+    "from sam3.model.sam3_video_inference import Sam3VideoInferenceWithInstanceInteractivity",
+    "from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU",
+    "from sam3.model.video_tracking_multiplex import VideoTrackingDynamicMultiplex"
+)
+foreach ($importLine in $expectedImports) {
+    if (-not $modelBuilderText.Contains($importLine)) {
+        throw "SAM3 Windows image-only patch drifted; missing expected import: $importLine"
+    }
+    $modelBuilderText = $modelBuilderText.Replace("$importLine`n", "")
+}
+if (-not $modelBuilderText.StartsWith("from __future__ import annotations")) {
+    $modelBuilderText = "from __future__ import annotations`n`n" + $modelBuilderText
+}
+Set-Content -LiteralPath $modelBuilder -Value $modelBuilderText -Encoding UTF8
+
 Copy-Item -Recurse -LiteralPath (Join-Path $projectRoot "local_sam_runtime") -Destination (Join-Path $stage "local_sam_runtime")
 Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $stage "manifest.json")
 Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\install-local-sam-runtime.ps1") -Destination (Join-Path $stage "install.ps1")
