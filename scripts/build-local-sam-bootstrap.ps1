@@ -73,6 +73,18 @@ if (-not $modelBuilderText.StartsWith("from __future__ import annotations")) {
 }
 Set-Content -LiteralPath $modelBuilder -Value $modelBuilderText -Encoding UTF8
 
+$sam3Image = Join-Path $stage "sam3-src\sam3\model\sam3_image.py"
+$sam3ImageText = Get-Content -Raw -LiteralPath $sam3Image
+$interactiveImport = "from sam3.model.sam1_task_predictor import SAM3InteractiveImagePredictor"
+if (-not $sam3ImageText.Contains($interactiveImport)) {
+    throw "SAM3 Windows image-only patch drifted; sam3_image import missing"
+}
+$sam3ImageText = $sam3ImageText.Replace("$interactiveImport`n", "")
+if (-not $sam3ImageText.StartsWith("from __future__ import annotations")) {
+    $sam3ImageText = "from __future__ import annotations`n`n" + $sam3ImageText
+}
+Set-Content -LiteralPath $sam3Image -Value $sam3ImageText -Encoding UTF8
+
 Copy-Item -Recurse -LiteralPath (Join-Path $projectRoot "local_sam_runtime") -Destination (Join-Path $stage "local_sam_runtime")
 Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $stage "manifest.json")
 Copy-Item -LiteralPath (Join-Path $projectRoot "scripts\install-local-sam-runtime.ps1") -Destination (Join-Path $stage "install.ps1")
