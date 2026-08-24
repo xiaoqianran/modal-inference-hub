@@ -93,12 +93,30 @@ export type RuntimeCapabilities = {
     effective: "cloud" | "local" | null;
     local: {
       available: boolean;
+      ready: boolean;
       installed: boolean;
+      runtime_installed: boolean;
+      checkpoint_installed: boolean;
+      installing: boolean;
+      state: string;
+      step: string | null;
+      error: string | null;
+      downloaded_bytes: number | null;
       hardware_eligible: boolean;
+      disk_eligible: boolean;
+      min_disk_mib: number;
+      supported_platform: boolean;
       reason: string;
       min_vram_mib: number;
       checkpoint_bytes: number;
       gpu: { name: string; memory_mib: number; driver: string } | null;
+      health: {
+        ready?: boolean;
+        gpu?: string;
+        vram_gib?: number;
+        bf16?: boolean;
+        model_load_s?: number;
+      } | null;
     };
     cloud: { available: boolean };
   };
@@ -277,6 +295,16 @@ export const submitProjectGeneration = (
 
 export const getCapabilities = (info: AgentInfo) =>
   json<RuntimeCapabilities>(info, "/v1/capabilities");
+
+export const installLocalSam = (info: AgentInfo) =>
+  json<Record<string, unknown>>(info, "/v1/local-sam/install", { method: "POST" });
+
+export const startLocalSam = (info: AgentInfo) =>
+  json<Record<string, unknown>>(info, "/v1/local-sam/start", { method: "POST" });
+
+export async function stopLocalSam(info: AgentInfo) {
+  await request(info, "/v1/local-sam/start", { method: "DELETE" });
+}
 
 export const setSamMode = (info: AgentInfo, mode: SamMode) =>
   json<{ sam_mode: SamMode }>(info, "/v1/settings/sam", {

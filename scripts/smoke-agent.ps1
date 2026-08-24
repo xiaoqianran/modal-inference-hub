@@ -67,6 +67,11 @@ try {
   $capabilities = Invoke-RestMethod "$base/v1/capabilities" -Headers $headers
   if ($capabilities.sam.mode -ne "auto") { throw "默认 SAM 模式应为 auto。" }
 
+  $localSam = Invoke-RestMethod "$base/v1/local-sam/status" -Headers $headers
+  if ($localSam.runtime_installed) { throw "CI 临时目录不应预装 Local SAM runtime。" }
+  $localInstall = Invoke-HttpAllowError "$base/v1/local-sam/install" "Post" $headers
+  if ($localInstall.StatusCode -ne 409) { throw "未连接 Modal 时 Local SAM 安装应返回 409，实际为 $($localInstall.StatusCode)。" }
+
   $image = Join-Path $dataDir "smoke.png"
   [IO.File]::WriteAllBytes($image, [byte[]](1, 2, 3, 4))
   $project = Invoke-RestMethod "$base/v1/projects" -Method Post -Headers $headers -Form @{ file = Get-Item $image }

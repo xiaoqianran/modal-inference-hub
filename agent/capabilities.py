@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from agent import local_sam_runtime
 from agent.hardware import detect_hardware
 from agent.modal_client import connected
 from agent.settings import get_settings
-from agent.storage import data_dir
 
 LOCAL_SAM_MIN_VRAM_MIB = 6144
-LOCAL_SAM_CHECKPOINT_BYTES = 3_502_781_787
+LOCAL_SAM_MIN_DISK_MIB = 12 * 1024
+LOCAL_SAM_CHECKPOINT_BYTES = local_sam_runtime.CHECKPOINT_BYTES
 
 
 def local_sam_status(hardware: dict | None = None) -> dict:
     hardware = hardware or detect_hardware()
+    supported_platform = hardware.get("platform") == "Windows" and str(
+        hardware.get("machine", "")
+    ).lower() in {"amd64", "x86_64"}
     eligible_gpu = next(
         (
             gpu
@@ -19,28 +23,48 @@ def local_sam_status(hardware: dict | None = None) -> dict:
         ),
         None,
     )
-    root = data_dir() / "local-sam"
-    manifest = root / "runtime.json"
-    checkpoint = root / "sam3.1_multiplex.pt"
-    installed = manifest.is_file() and checkpoint.is_file()
+    runtime = local_sam_runtime.status()
+    disk_eligible = int(hardware.get("disk_free_mib", 0)) >= LOCAL_SAM_MIN_DISK_MIB
+    installed = runtime["runtime_installed"] and runtime["checkpoint_installed"]
+    ready = bool(runtime["ready"])
 
-    if eligible_gpu is None:
+    if not supported_platform:
+        reason = "Local SAM runtime 当前只支持 Windows x86_64"
+    elif eligible_gpu is None:
         reason = "未检测到至少 6 GiB VRAM 的 NVIDIA GPU"
-    elif not installed:
-        reason = "本地 SAM 3.1 runtime 尚未安装"
+    elif not disk_eligible and not installed:
+        reason = "安装 Local SAM 至少需要 12 GiB 可用磁盘空间"
+    elif runtime["installing"]:
+        reason = "Local SAM 正在安装"
+    elif not runtime["runtime_installed"]:
+        reason = "Local SAM runtime 尚未安装"
+    elif not runtime["checkpoint_installed"]:
+        reason = "SAM 3.1 checkpoint 尚未同步"
+    elif not ready:
+        reason = "Local SAM 已安装，首次使用时将启动并加载模型"
     else:
-        reason = "本地 SAM runtime 包格式尚未启用"
+        reason = "Local SAM 已就绪"
 
-    # The installer/runtime protocol is a separate milestone. Do not report local
-    # availability until the executable contract is implemented and health-checked.
     return {
-        "available": False,
+        "available": bool(supported_platform and eligible_gpu is not None and installed),
+        "ready": ready,
         "installed": installed,
-        "hardware_eligible": eligible_gpu is not None,
+        "runtime_installed": runtime["runtime_installed"],
+        "checkpoint_installed": runtime["checkpoint_installed"],
+        "installing": runtime["installing"],
+        "state": runtime.get("state", "unknown"),
+        "step": runtime.get("step"),
+        "error": runtime.get("error"),
+        "downloaded_bytes": runtime.get("downloaded_bytes"),
+        "hardware_eligible": bool(supported_platform and eligible_gpu is not None),
+        "disk_eligible": disk_eligible,
+        "min_disk_mib": LOCAL_SAM_MIN_DISK_MIB,
+        "supported_platform": supported_platform,
         "reason": reason,
         "min_vram_mib": LOCAL_SAM_MIN_VRAM_MIB,
         "checkpoint_bytes": LOCAL_SAM_CHECKPOINT_BYTES,
         "gpu": eligible_gpu,
+        "health": runtime.get("health"),
     }
 
 

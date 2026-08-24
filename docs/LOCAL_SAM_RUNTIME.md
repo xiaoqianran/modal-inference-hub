@@ -113,14 +113,36 @@ No 3D worker needs Local-SAM-specific logic.
 
 Until then, `Auto` must fall back to Cloud. Explicit `Local` must fail clearly rather than silently using Cloud.
 
+## Release and integrity pins
+
+The first validated bootstrap is published as GitHub Release `local-sam-runtime-v1`.
+
+- bootstrap asset: `modal-3D-local-sam-bootstrap-windows-x86_64-v1.zip`
+- bootstrap bytes: `34,709,811`
+- bootstrap SHA256: `1392402accd8985cbecabe62f766a847aee613c868e3dfb5191253bb4db0d73d`
+- checkpoint bytes: `3,502,755,717`
+- checkpoint SHA256: `0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6`
+
+The Agent embeds both hashes. Runtime installation refuses a changed bootstrap, and checkpoint synchronization writes through a `.part` file, validates bytes + SHA256, then atomically promotes the file.
+
 ## Current milestone
 
-Implemented in source:
+Implemented:
 
 - pure Local SAM engine/server;
 - pinned runtime manifest;
 - Windows bootstrap builder;
-- bootstrap install script;
-- GitHub Windows workflow that validates the pinned wheel set.
+- exact hash-pinned Torch 2.10.0 + cu128 and torchvision 0.25.0 Windows wheels;
+- Windows bootstrap import/CUDA-version validation in GitHub Actions;
+- stable GitHub Release bootstrap;
+- Agent-managed background install lifecycle;
+- checkpoint streaming from the existing Modal Volume with progress and content validation;
+- child-process start/stop, parent watchdog and health endpoint;
+- runtime log capture for startup diagnostics;
+- Project provider routing: Auto prefers a valid Local install and falls back to Cloud only if Local startup fails;
+- local materialize -> canonical PNG -> single upload to `modal-3d-artifacts` -> unchanged 3D worker contract;
+- UI install/progress/start-and-verify controls.
 
-The next milestone after the GitHub bootstrap workflow passes is Agent-managed install/download/start/health lifecycle and then a real NVIDIA Windows inference test.
+Still requiring a physical validation target:
+
+- a full `segment -> refine -> materialize -> 3D` run on a real Windows x86_64 NVIDIA machine. GitHub-hosted Windows runners validate packaging/imports but do not expose an NVIDIA CUDA GPU.

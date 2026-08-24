@@ -20,7 +20,7 @@ from modal.exception import (
 )
 from pydantic import BaseModel, Field, SecretStr
 
-from agent import artifacts, exports, generation, sam, sam_provider
+from agent import artifacts, exports, generation, local_sam_runtime, sam, sam_provider
 from agent.capabilities import capabilities
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
@@ -135,6 +135,35 @@ def runtime_capabilities() -> dict:
     return capabilities()
 
 
+@app.get("/v1/local-sam/status")
+def local_sam_status() -> dict:
+    return local_sam_runtime.status()
+
+
+@app.post("/v1/local-sam/install")
+def local_sam_install() -> dict:
+    if not connected():
+        raise HTTPException(status_code=409, detail="请先连接 Modal，以同步 SAM 3.1 checkpoint")
+    local = capabilities()["sam"]["local"]
+    if not local["hardware_eligible"] or not local["disk_eligible"]:
+        raise HTTPException(status_code=409, detail=local["reason"])
+    return local_sam_runtime.begin_install()
+
+
+@app.post("/v1/local-sam/start")
+def local_sam_start() -> dict:
+    try:
+        return local_sam_runtime.start()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/v1/local-sam/start")
+def local_sam_stop() -> dict:
+    local_sam_runtime.stop()
+    return {"ok": True}
+
+
 @app.get("/v1/settings/sam")
 def sam_settings() -> dict:
     return get_settings()
@@ -225,10 +254,10 @@ def project_segment(project_id: str, request: ProjectSegmentRequest) -> dict:
     if not concept:
         raise HTTPException(status_code=400, detail="请输入要提取的对象")
     try:
-        image = projects.source_bytes(project_id)
+        image_path = projects.source_path(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
-    provider, selection = sam_provider.segment(image, concept, request.max_candidates)
+    provider, selection = sam_provider.segment(image_path, concept, request.max_candidates)
     project = projects.record_segmentation(project_id, concept, provider, selection)
     return {"project": project, "selection": selection, "provider": provider}
 

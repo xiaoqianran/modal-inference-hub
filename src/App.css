@@ -966,3 +966,34 @@ input:focus-visible {
   color: var(--ctp-red);
   background: rgb(231 130 132 / 9%);
 }
+
+.local-sam-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-self: end;
+}
+
+.local-sam-actions button {
+  border: 1px solid var(--ctp-surface-1);
+  padding: 5px 9px;
+  color: var(--ctp-subtext-0);
+  background: rgb(35 38 52 / 45%);
+  font-size: 10px;
+}
+
+.local-sam-actions button:hover:not(:disabled) {
+  border-color: var(--ctp-teal);
+  color: var(--ctp-teal);
+}
+
+.local-ready {
+  color: var(--ctp-green);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .local-sam-actions { justify-self: start; }
+}

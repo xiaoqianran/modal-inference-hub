@@ -12,6 +12,7 @@ import {
   disconnectModal,
   getCapabilities,
   getJob,
+  installLocalSam,
   getProject,
   listModels,
   listProjects,
@@ -26,6 +27,7 @@ import {
   segmentProject,
   setSamMode,
   startAgent,
+  startLocalSam,
   stopAgent,
   submitProjectGeneration,
   type AgentInfo,
@@ -82,6 +84,7 @@ function App() {
 
   const [models, setModels] = useState<ModelSpec[]>([]);
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilities | null>(null);
+  const [localSamActionBusy, setLocalSamActionBusy] = useState(false);
   const [modelId, setModelId] = useState("fastsam3d-plus-plus");
   const [project, setProject] = useState<Project | null>(null);
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
@@ -331,6 +334,72 @@ function App() {
     setPersistence({ ...persistence, stored: false });
     setModalConnected(false);
     setModalMessage("已删除保存的凭据");
+  }
+
+  function localSamProgressLabel() {
+    const local = runtimeCapabilities?.sam.local;
+    if (!local?.installing) return local?.reason ?? "";
+    if (local.step === "checkpoint" && local.downloaded_bytes) {
+      const percent = Math.min(100, (local.downloaded_bytes / local.checkpoint_bytes) * 100);
+      return `正在同步 SAM 3.1 checkpoint · ${percent.toFixed(1)}%`;
+    }
+    if (local.step === "dependencies") return "正在安装预编译 Torch / CUDA runtime…";
+    if (local.step === "health") return "正在启动 Local SAM 并加载模型…";
+    return "正在安装 Local SAM runtime…";
+  }
+
+  async function refreshLocalCapabilities() {
+    if (!agent) return null;
+    const state = await getCapabilities(agent);
+    setRuntimeCapabilities(state);
+    return state;
+  }
+
+  async function installLocalRuntime() {
+    if (!agent) return;
+    try {
+      setLocalSamActionBusy(true);
+      await installLocalSam(agent);
+      setWorkflowMessage("Local SAM 已开始后台安装；Cloud SAM 仍可继续使用。");
+      while (true) {
+        await sleep(1000);
+        const state = await refreshLocalCapabilities();
+        if (!state?.sam.local.installing) {
+          if (state?.sam.local.error) {
+            setWorkflowMessage(`Local SAM 安装失败：${state.sam.local.error}`);
+          } else if (state?.sam.local.ready) {
+            setWorkflowMessage(`Local SAM 已就绪：${state.sam.local.health?.gpu ?? "NVIDIA GPU"}`);
+          } else {
+            setWorkflowMessage(state?.sam.local.reason ?? "Local SAM 安装结束。");
+          }
+          break;
+        }
+      }
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLocalSamActionBusy(false);
+    }
+  }
+
+  async function verifyLocalRuntime() {
+    if (!agent) return;
+    try {
+      setLocalSamActionBusy(true);
+      setWorkflowMessage("正在启动 Local SAM 并加载模型…");
+      await startLocalSam(agent);
+      const state = await refreshLocalCapabilities();
+      setWorkflowMessage(
+        state?.sam.local.ready
+          ? `Local SAM 已就绪：${state.sam.local.health?.gpu ?? "NVIDIA GPU"}`
+          : state?.sam.local.reason ?? "Local SAM 未就绪",
+      );
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+      await refreshLocalCapabilities();
+    } finally {
+      setLocalSamActionBusy(false);
+    }
   }
 
   async function changeSamMode(mode: SamMode) {
@@ -654,7 +723,7 @@ function App() {
                     <button
                       key={mode}
                       className={runtimeCapabilities.sam.mode === mode ? "active" : ""}
-                      disabled={busy || (mode === "local" && !runtimeCapabilities.sam.local.available)}
+                      disabled={busy || localSamActionBusy || (mode === "local" && !runtimeCapabilities.sam.local.available)}
                       title={mode === "local" ? runtimeCapabilities.sam.local.reason : undefined}
                       onClick={() => void changeSamMode(mode)}
                     >
@@ -662,9 +731,25 @@ function App() {
                     </button>
                   ))}
                 </div>
-                {!runtimeCapabilities.sam.local.available && (
-                  <small>{runtimeCapabilities.sam.local.reason}</small>
-                )}
+                <small>{localSamProgressLabel()}</small>
+                <div className="local-sam-actions">
+                  {runtimeCapabilities.sam.local.hardware_eligible && runtimeCapabilities.sam.local.disk_eligible && !runtimeCapabilities.sam.local.installed && (
+                    <button
+                      disabled={localSamActionBusy || runtimeCapabilities.sam.local.installing}
+                      onClick={() => void installLocalRuntime()}
+                    >
+                      {runtimeCapabilities.sam.local.installing ? "安装中…" : "安装 Local"}
+                    </button>
+                  )}
+                  {runtimeCapabilities.sam.local.installed && !runtimeCapabilities.sam.local.ready && (
+                    <button disabled={localSamActionBusy} onClick={() => void verifyLocalRuntime()}>
+                      启动并验证
+                    </button>
+                  )}
+                  {runtimeCapabilities.sam.local.ready && (
+                    <span className="local-ready">● Local ready</span>
+                  )}
+                </div>
               </div>
             )}
 
