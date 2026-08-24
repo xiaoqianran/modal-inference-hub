@@ -27,6 +27,7 @@ def local_sam_status(hardware: dict | None = None) -> dict:
     disk_eligible = int(hardware.get("disk_free_mib", 0)) >= LOCAL_SAM_MIN_DISK_MIB
     installed = runtime["installed"]
     ready = runtime["ready"]
+    update_available = runtime["update_available"]
 
     if not supported_platform:
         reason = "Local SAM runtime 当前只支持 Windows x86_64"
@@ -36,6 +37,8 @@ def local_sam_status(hardware: dict | None = None) -> dict:
         reason = "安装 Local SAM 至少需要 12 GiB 可用磁盘空间"
     elif runtime["installing"]:
         reason = "Local SAM 正在安装"
+    elif update_available:
+        reason = f"Local SAM 可更新：{runtime['installed_version']} → {runtime['expected_version']}"
     elif not runtime["runtime_installed"]:
         reason = "Local SAM runtime 尚未安装"
     elif not runtime["checkpoint_installed"]:
@@ -53,6 +56,9 @@ def local_sam_status(hardware: dict | None = None) -> dict:
         "checkpoint_installed": runtime["checkpoint_installed"],
         "installing": runtime["installing"],
         "state": runtime.get("state", "unknown"),
+        "installed_version": runtime["installed_version"],
+        "expected_version": runtime["expected_version"],
+        "update_available": update_available,
         "step": runtime.get("step"),
         "error": runtime.get("error"),
         "downloaded_bytes": runtime.get("downloaded_bytes"),

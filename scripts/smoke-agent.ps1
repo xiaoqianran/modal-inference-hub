@@ -69,6 +69,8 @@ try {
 
   $localSam = Invoke-RestMethod "$base/v1/local-sam/status" -Headers $headers
   if ($localSam.runtime_installed) { throw "CI 临时目录不应预装 Local SAM runtime。" }
+  if ($localSam.expected_version -ne "1") { throw "Local SAM expected_version 应为 1。" }
+  if ($localSam.update_available) { throw "Fresh CI 环境不应报告 Local SAM 更新。" }
   $localInstall = Invoke-HttpAllowError "$base/v1/local-sam/install" "Post" $headers
   if ($localInstall.StatusCode -ne 409) { throw "未连接 Modal 时 Local SAM 安装应返回 409，实际为 $($localInstall.StatusCode)。" }
 

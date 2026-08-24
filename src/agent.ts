@@ -99,6 +99,9 @@ export type RuntimeCapabilities = {
       checkpoint_installed: boolean;
       installing: boolean;
       state: string;
+      installed_version: string | null;
+      expected_version: string;
+      update_available: boolean;
       step: string | null;
       error: string | null;
       downloaded_bytes: number | null;

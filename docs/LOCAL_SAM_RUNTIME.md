@@ -126,6 +126,31 @@ The first validated bootstrap is published as GitHub Release `local-sam-runtime-
 The Agent embeds both hashes. Runtime installation refuses a changed bootstrap, and checkpoint synchronization writes through a `.part` file, validates bytes + SHA256, then atomically promotes the file.
 
 
+
+## Update semantics
+
+Local SAM updates reuse the existing install endpoint; there is no second updater service.
+
+The runtime reports:
+
+- `installed_version`;
+- `expected_version`;
+- `update_available`.
+
+A version change is installed transactionally:
+
+```text
+bootstrap download + hash verify
+  -> runtime.installing
+  -> dependency install/import validation
+  -> checkpoint validation
+  -> atomic runtime switch
+```
+
+The currently installed runtime is not replaced until the new staging directory has passed dependency/version validation and the checkpoint is valid. During activation, the old runtime is moved to `runtime.old`; if activation fails it is restored. If the process crashes in that narrow switch window, the next status/install check restores an orphaned `runtime.old` automatically.
+
+This keeps the provider/project contract version-agnostic. A future v2 only changes the pinned bootstrap version/release/hash and runtime manifest; the same Agent API and React workflow remain valid.
+
 ## Uninstall semantics
 
 Uninstall is intentionally reversible at the Project level.

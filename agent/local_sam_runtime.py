@@ -118,6 +118,33 @@ def _safe_extract(zip_path: Path, destination: Path) -> None:
     shutil.rmtree(backup, ignore_errors=True)
 
 
+def _recover_runtime_backup() -> None:
+    target = runtime_dir()
+    backup = target.with_name(target.name + ".old")
+    if target.exists() or not backup.exists():
+        return
+    backup.replace(target)
+
+
+def _activate_runtime(staging: Path) -> None:
+    target = runtime_dir()
+    backup = target.with_name(target.name + ".old")
+    _recover_runtime_backup()
+    if backup.exists():
+        shutil.rmtree(backup, ignore_errors=True)
+    moved_old = False
+    try:
+        if target.exists():
+            target.replace(backup)
+            moved_old = True
+        staging.replace(target)
+    except Exception:
+        if moved_old and backup.exists() and not target.exists():
+            backup.replace(target)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -141,19 +168,28 @@ def _checkpoint_valid() -> bool:
         return False
 
 
-def _runtime_files_valid() -> bool:
-    directory = runtime_dir()
+def _runtime_version(directory: Path | None = None) -> str | None:
+    if directory is None:
+        _recover_runtime_backup()
+        directory = runtime_dir()
     manifest = directory / "manifest.json"
     installed = directory / "installed.json"
     python = directory / "python" / "python.exe"
     install = directory / "install.ps1"
     if not all(path.is_file() for path in (manifest, installed, python, install)):
-        return False
+        return None
     try:
-        value = json.loads(manifest.read_text(encoding="utf-8-sig"))
+        manifest_value = json.loads(manifest.read_text(encoding="utf-8-sig"))
+        installed_value = json.loads(installed.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
-        return False
-    return str(value.get("version")) == BOOTSTRAP_VERSION
+        return None
+    manifest_version = str(manifest_value.get("version", ""))
+    installed_version = str(installed_value.get("version", ""))
+    return manifest_version if manifest_version and manifest_version == installed_version else None
+
+
+def _runtime_files_valid(directory: Path | None = None) -> bool:
+    return _runtime_version(directory) == BOOTSTRAP_VERSION
 
 
 def sync_checkpoint() -> dict:
@@ -213,6 +249,7 @@ def install(
     if os.name != "nt":
         raise RuntimeError("Local SAM runtime 目前只支持 Windows x86_64")
     stop()
+    _recover_runtime_backup()
     _write_status(state="installing", step="bootstrap")
     cache = root() / "downloads"
     cache.mkdir(exist_ok=True)
@@ -222,38 +259,48 @@ def install(
     if bootstrap_sha256 is None:
         bootstrap_sha256 = BOOTSTRAP_SHA256
     _download(bootstrap_url, archive, expected_sha256=bootstrap_sha256)
-    _safe_extract(archive, runtime_dir())
+    staging = runtime_dir().with_name(runtime_dir().name + ".installing")
+    shutil.rmtree(staging, ignore_errors=True)
+    _safe_extract(archive, staging)
 
-    _write_status(state="installing", step="dependencies")
-    powershell = shutil.which("pwsh") or shutil.which("powershell")
-    if not powershell:
-        raise RuntimeError("找不到 PowerShell，无法安装 Local SAM runtime")
-    completed = subprocess.run(
-        [
-            powershell,
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(runtime_dir() / "install.ps1"),
-            "-RuntimeDir",
-            str(runtime_dir()),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=1800,
-        check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    if completed.returncode != 0:
-        _write_status(state="error", step="dependencies", error=(completed.stderr or completed.stdout)[-4000:])
-        raise RuntimeError("Local SAM runtime 依赖安装失败")
+    try:
+        _write_status(state="installing", step="dependencies")
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if not powershell:
+            raise RuntimeError("找不到 PowerShell，无法安装 Local SAM runtime")
+        completed = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(staging / "install.ps1"),
+                "-RuntimeDir",
+                str(staging),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout)[-4000:]
+            _write_status(state="error", step="dependencies", error=detail)
+            raise RuntimeError("Local SAM runtime 依赖安装失败")
+        if not _runtime_files_valid(staging):
+            raise RuntimeError("Local SAM runtime 版本验证失败")
 
-    _write_status(state="installing", step="checkpoint")
-    sync_checkpoint()
-    if not _runtime_files_valid() or not _checkpoint_valid():
-        _write_status(state="error", step="verify", error="Local SAM 安装验证失败")
-        raise RuntimeError("Local SAM 安装验证失败")
+        _write_status(state="installing", step="checkpoint")
+        sync_checkpoint()
+        if not _checkpoint_valid():
+            raise RuntimeError("Local SAM checkpoint 验证失败")
+        _activate_runtime(staging)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
     _write_status(state="installed", step="ready")
     return status()
 
@@ -307,6 +354,8 @@ def uninstall() -> dict:
 
     targets = [
         runtime_dir(),
+        runtime_dir().with_name(runtime_dir().name + ".installing"),
+        runtime_dir().with_name(runtime_dir().name + ".old"),
         checkpoint_path(),
         _checkpoint_marker(),
         root() / "downloads",
@@ -461,12 +510,16 @@ def stop() -> None:
 
 
 def installation_state() -> dict:
-    runtime_installed = _runtime_files_valid()
+    installed_version = _runtime_version()
+    runtime_installed = installed_version == BOOTSTRAP_VERSION
     checkpoint_installed = _checkpoint_valid()
     return {
         "runtime_installed": runtime_installed,
         "checkpoint_installed": checkpoint_installed,
         "installed": runtime_installed and checkpoint_installed,
+        "installed_version": installed_version,
+        "expected_version": BOOTSTRAP_VERSION,
+        "update_available": bool(installed_version and installed_version != BOOTSTRAP_VERSION),
     }
 
 

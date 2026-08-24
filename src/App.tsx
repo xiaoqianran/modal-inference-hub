@@ -358,10 +358,11 @@ function App() {
 
   async function installLocalRuntime() {
     if (!agent) return;
+    const updating = runtimeCapabilities?.sam.local.update_available ?? false;
     try {
       setLocalSamActionBusy(true);
       await installLocalSam(agent);
-      setWorkflowMessage("Local SAM 已开始后台安装；Cloud SAM 仍可继续使用。");
+      setWorkflowMessage(`Local SAM 已开始后台${updating ? "更新" : "安装"}；Cloud SAM 仍可继续使用。`);
       while (true) {
         await sleep(1000);
         const state = await refreshLocalCapabilities();
@@ -384,7 +385,7 @@ function App() {
   }
 
   async function uninstallLocalRuntime() {
-    if (!agent || !runtimeCapabilities?.sam.local.installed) return;
+    if (!agent || !(runtimeCapabilities?.sam.local.installed || runtimeCapabilities?.sam.local.update_available)) return;
     if (!window.confirm("卸载 Local SAM？将删除 runtime、Torch/CUDA 依赖和 3.5 GB checkpoint；Project 的本地 selection 数据会保留。")) return;
     try {
       setLocalSamActionBusy(true);
@@ -756,7 +757,11 @@ function App() {
                       disabled={localSamActionBusy || runtimeCapabilities.sam.local.installing}
                       onClick={() => void installLocalRuntime()}
                     >
-                      {runtimeCapabilities.sam.local.installing ? "安装中…" : "安装 Local"}
+                      {runtimeCapabilities.sam.local.installing
+                        ? "处理中…"
+                        : runtimeCapabilities.sam.local.update_available
+                          ? "更新 Local"
+                          : "安装 Local"}
                     </button>
                   )}
                   {runtimeCapabilities.sam.local.installed && !runtimeCapabilities.sam.local.ready && (
@@ -767,7 +772,7 @@ function App() {
                   {runtimeCapabilities.sam.local.ready && (
                     <span className="local-ready">● Local ready</span>
                   )}
-                  {runtimeCapabilities.sam.local.installed && (
+                  {(runtimeCapabilities.sam.local.installed || runtimeCapabilities.sam.local.update_available) && (
                     <button disabled={localSamActionBusy} onClick={() => void uninstallLocalRuntime()}>
                       卸载 Local
                     </button>
