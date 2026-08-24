@@ -36,3 +36,10 @@ def client() -> modal.Client:
         if _client is None:
             raise NotConnectedError("Modal 尚未连接")
         return _client
+
+
+def require_client() -> modal.Client:
+    try:
+        return client()
+    except NotConnectedError as exc:
+        raise RuntimeError("Modal is not connected") from exc

@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from agent import artifacts, exports, generation, local_sam_runtime, sam, sam_provider
 from agent.capabilities import capabilities
+from agent.api_cloud import router as cloud_router
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
@@ -31,6 +32,7 @@ from agent.sam_provider import SamProviderUnavailable
 from agent.settings import get_settings, set_sam_mode
 
 app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
+app.include_router(cloud_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
