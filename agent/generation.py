@@ -3,9 +3,7 @@ from __future__ import annotations
 import modal
 
 from agent.modal_client import client
-from agent.models import options_for
-
-APP_NAME = "modal-3d-gateway"
+from agent.models import APP_NAME, options_for
 
 
 def submit(

@@ -67,6 +67,15 @@ async function waitForModal(info: AgentInfo, attempts: number) {
   return false;
 }
 
+async function listModelsOrEmpty(info: AgentInfo, cloudConnected: boolean) {
+  try {
+    return await listModels(info);
+  } catch (error) {
+    if (cloudConnected) throw error;
+    return [] as ModelSpec[];
+  }
+}
+
 function canonicalFromProject(project: Project): CanonicalAsset | null {
   if (
     !project.scene_id ||
@@ -99,7 +108,7 @@ function App() {
   const [models, setModels] = useState<ModelSpec[]>([]);
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilities | null>(null);
   const [localSamActionBusy, setLocalSamActionBusy] = useState(false);
-  const [modelId, setModelId] = useState("fastsam3d-plus-plus");
+  const [modelId, setModelId] = useState("");
   const [project, setProject] = useState<Project | null>(null);
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
@@ -119,7 +128,9 @@ function App() {
   const restoredAgent = useRef<number | null>(null);
 
   const inTauri = "__TAURI_INTERNALS__" in window;
-  const selectedModel = models.find((model) => model.id === modelId) ?? models[0];
+  const selectedModel = modelId
+    ? models.find((model) => model.id === modelId)
+    : models.find((model) => model.status !== "disabled") ?? models[0];
   const selectedProfile = selectedModel?.profiles[0];
 
   useEffect(() => {
@@ -131,10 +142,8 @@ function App() {
         const [status, saved] = await Promise.all([agentStatus(), credentialsStatus()]);
         const info = status.running ? status : await startAgent();
         await probeAgent(info);
-        const [connected, availableModels] = await Promise.all([
-          waitForModal(info, saved.stored ? 20 : 1),
-          listModels(info),
-        ]);
+        const connected = await waitForModal(info, saved.stored ? 20 : 1);
+        const availableModels = await listModelsOrEmpty(info, connected);
         if (cancelled) return;
         setAgent(info);
         setModels(availableModels);
@@ -254,7 +263,7 @@ function App() {
     try {
       setProject(value);
       setConcept(value.concept ?? "");
-      setModelId(value.model ?? "fastsam3d-plus-plus");
+      setModelId(value.model ?? "");
       setSelection(null);
       setCandidateId(value.candidate_id);
       setRefineMode(null);
@@ -294,10 +303,8 @@ function App() {
       const saved = await credentialsStatus();
       const info = await startAgent();
       await probeAgent(info);
-      const [connected, availableModels] = await Promise.all([
-        waitForModal(info, saved.stored ? 20 : 1),
-        listModels(info),
-      ]);
+      const connected = await waitForModal(info, saved.stored ? 20 : 1);
+      const availableModels = await listModelsOrEmpty(info, connected);
       setAgent(info);
       setModels(availableModels);
       setPersistence(saved);
@@ -338,6 +345,11 @@ function App() {
       setPersistence({ ...persistence, stored });
       setModalConnected(true);
       setModalMessage(saveFailed ? "已连接，但保存 Windows 凭据失败" : stored ? "当前会话已连接 · 已保存到 Windows" : "当前会话已连接");
+      try {
+        setModels(await listModels(agent));
+      } catch (error) {
+        setModalMessage(`已连接，但模型 capability 不可用：${error instanceof Error ? error.message : String(error)}`);
+      }
     } catch (error) {
       setModalConnected(false);
       setModalMessage(error instanceof Error ? error.message : String(error));
@@ -877,7 +889,7 @@ function App() {
 
                 <div className="model-options">
                   {models.map((model) => (
-                    <button key={model.id} className={`model-option ${model.id === selectedModel?.id ? "active" : ""}`} disabled={busy} onClick={() => { setModelId(model.id); resetOutput(); }}>
+                    <button key={model.id} className={`model-option ${model.id === selectedModel?.id ? "active" : ""}`} disabled={busy || model.status === "disabled"} onClick={() => { setModelId(model.id); resetOutput(); }}>
                       <div><strong>{model.name}</strong><span>{model.description}</span></div>
                       <div className="model-meta"><span>Warm ~{model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s</span><span>{model.output === "textured" ? "纹理" : "几何"}</span></div>
                     </button>
@@ -893,7 +905,7 @@ function App() {
                     </button>
                   </div>
                 ) : (
-                  <button className="primary full" disabled={busy || !project || !canonical || !selectedModel} onClick={generate}>使用 {selectedModel?.name ?? "模型"} 生成 GLB</button>
+                  <button className="primary full" disabled={busy || !project || !canonical || !selectedModel || selectedModel.status === "disabled"} onClick={generate}>使用 {selectedModel?.name ?? "模型"} 生成 GLB</button>
                 )}
 
                 {job?.result && (

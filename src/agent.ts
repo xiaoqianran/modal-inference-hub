@@ -71,6 +71,7 @@ export type ModelSpec = {
   id: string;
   name: string;
   description: string;
+  status: "enabled" | "degraded" | "disabled";
   output: "geometry" | "textured";
   warm_seconds: number;
   profiles: ModelProfile[];

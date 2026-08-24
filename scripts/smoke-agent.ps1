@@ -61,8 +61,8 @@ try {
   $bad = Invoke-HttpAllowError "$base/modal/connect" "Post" $headers '{"token_id":"bad","token_secret":"bad"}'
   if ($bad.StatusCode -ne 401) { throw "无效 Modal 凭据应返回 401，实际为 $($bad.StatusCode)。" }
 
-  $models = Invoke-RestMethod "$base/v1/models" -Headers $headers
-  if ($models.Count -ne 4) { throw "模型 registry 应返回 4 个模型，实际为 $($models.Count)。" }
+  $models = Invoke-HttpAllowError "$base/v1/models" "Get" $headers
+  if ($models.StatusCode -ne 503) { throw "Fresh CI 环境未连接 Modal 且无 capability cache 时 /v1/models 应返回 503，实际为 $($models.StatusCode)。" }
 
   $capabilities = Invoke-RestMethod "$base/v1/capabilities" -Headers $headers
   if ($capabilities.sam.mode -ne "auto") { throw "默认 SAM 模式应为 auto。" }

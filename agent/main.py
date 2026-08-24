@@ -25,7 +25,7 @@ from agent.capabilities import capabilities
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
-from agent.models import public_models
+from agent.models import CapabilityError, public_models
 from agent.projects import projects
 from agent.sam_provider import SamProviderUnavailable
 from agent.settings import get_settings, set_sam_mode
@@ -328,6 +328,8 @@ def project_generation(project_id: str, request: ProjectGenerationRequest) -> di
             request.profile,
             request.seed,
         )
+    except CapabilityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     job = jobs.create(remote["model"], remote["call_id"])
@@ -397,7 +399,10 @@ def sam_materialize(request: MaterializeRequest) -> dict:
 
 @app.get("/v1/models")
 def models() -> list[dict]:
-    return public_models()
+    try:
+        return public_models()
+    except CapabilityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/v1/generations")
@@ -409,6 +414,8 @@ def generation_submit(request: GenerationRequest) -> dict:
             request.profile,
             request.seed,
         )
+    except CapabilityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return jobs.create(remote["model"], remote["call_id"])
