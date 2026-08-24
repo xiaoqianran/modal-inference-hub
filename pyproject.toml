@@ -1,6 +1,6 @@
 [project]
 name = "modal-3d-client-agent"
-version = "0.2.0"
+version = "0.3.1"
 description = "Local agent for modal-3D Client"
 requires-python = ">=3.12"
 dependencies = [

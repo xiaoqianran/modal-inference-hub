@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import "./App.css";
 import {
   agentStatus,
@@ -45,6 +45,7 @@ import {
   type SamSelection,
 } from "./agent";
 import { invoke } from "@tauri-apps/api/core";
+import SettingsPanel from "./SettingsPanel";
 
 const GlbViewer = lazy(() => import("./GlbViewer"));
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -106,6 +107,7 @@ function App() {
   const [modalMessage, setModalMessage] = useState("尚未连接");
   const [persistence, setPersistence] = useState<CredentialStatus>({ supported: false, stored: false });
   const [remember, setRemember] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const [models, setModels] = useState<ModelSpec[]>([]);
   const [runtimeCapabilities, setRuntimeCapabilities] = useState<RuntimeCapabilities | null>(null);
@@ -134,6 +136,7 @@ function App() {
     ? models.find((model) => model.id === modelId)
     : models.find((model) => model.status !== "disabled") ?? models[0];
   const selectedProfile = selectedModel?.profiles[0];
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
 
   useEffect(() => {
     if (!inTauri) return;
@@ -154,6 +157,7 @@ function App() {
         setAgentMessage(`本地代理已就绪 · 127.0.0.1:${info.port}`);
         setModalConnected(connected);
         setModalMessage(connected ? "当前会话已连接 · 已从 Windows 恢复" : "尚未连接");
+        if (!connected) setSettingsOpen(true);
       } catch (error) {
         if (!cancelled) setAgentMessage(error instanceof Error ? error.message : String(error));
       }
@@ -349,6 +353,7 @@ function App() {
       setModalMessage(saveFailed ? "已连接，但保存 Windows 凭据失败" : stored ? "当前会话已连接 · 已保存到 Windows" : "当前会话已连接");
       try {
         setModels(await listModels(agent));
+        setSettingsOpen(false);
       } catch (error) {
         setModalMessage(`已连接，但模型 capability 不可用：${error instanceof Error ? error.message : String(error)}`);
       }
@@ -405,6 +410,8 @@ function App() {
       setLocalSamActionBusy(true);
       await installLocalSam(agent);
       setWorkflowMessage(`Local SAM 已开始后台${updating ? "更新" : "安装"}；Cloud SAM 仍可继续使用。`);
+      await refreshLocalCapabilities();
+      setLocalSamActionBusy(false);
       while (true) {
         await sleep(1000);
         const state = await refreshLocalCapabilities();
@@ -708,145 +715,47 @@ function App() {
   }
 
   return (
-    <main className="shell">
-      <header>
-        <div className="header-badge"><span className="badge-dot" />Image → 3D</div>
-        <span className="eyebrow">modal-3D</span>
-        <h1>三维创作客户端</h1>
-        <p>选择对象，生成标准透明资产，再交给云端 GPU 生成 GLB。</p>
-      </header>
-
-      <section className="status">
-        <span className={agent?.running ? "dot" : "dot idle"} />
-        <div className="status-copy">
-          <strong>{agent?.running ? "本地代理运行正常" : "正在初始化运行环境"}</strong>
-          <p>{inTauri ? agentMessage : "请通过 `npm run desktop:dev` 打开桌面客户端。"}</p>
+    <div className="app-shell">
+      <aside className="app-sidebar">
+        <div className="app-brand"><span className="brand-mark">M3</span><div><strong>modal-3D</strong><span>Studio</span></div></div>
+        <nav className="app-nav" aria-label="主导航">
+          <button className="active"><span>◆</span>创作工作台</button>
+        </nav>
+        <div className="sidebar-projects">
+          <div className="sidebar-label"><span>最近项目</span><strong>{recentProjects.length}</strong></div>
+          {recentProjects.length ? recentProjects.slice(0, 8).map((item) => (
+            <div className={`sidebar-project ${item.id === project?.id ? "active" : ""}`} key={item.id}>
+              <button className="sidebar-project-open" disabled={busy} onClick={() => agent && void restoreProject(agent, item)}>
+                <span>{item.title.slice(0, 1).toUpperCase()}</span><div><strong>{item.title}</strong><small>{item.status}</small></div>
+              </button>
+              <button className="sidebar-project-delete" disabled={busy || activeProjectStatuses.has(item.status)} aria-label={`删除项目 ${item.title}`} onClick={() => void deleteProjectEntry(item)}>×</button>
+            </div>
+          )) : <p className="sidebar-empty">创建的项目会出现在这里</p>}
         </div>
-        {inTauri && <button onClick={agent?.running ? stop : start}>{agent?.running ? "停止代理" : "启动代理"}</button>}
-      </section>
+        <div className="sidebar-footer">
+          <div className="sidebar-service"><span className={`service-dot ${agent?.running ? "active" : ""}`} /><div><strong>{agent?.running ? "本地服务正常" : "本地服务离线"}</strong><small>{modalConnected ? "Modal 已连接" : "Modal 未连接"}</small></div></div>
+          <button className="settings-button" onClick={() => setSettingsOpen(true)}><span>⚙</span>设置</button>
+        </div>
+      </aside>
 
-      {!modalConnected && (
-        <section className="credentials">
-          <div>
-            <span className="eyebrow">云端服务</span>
-            <h2>连接 Modal</h2>
-            <p>凭据只交给本地 Agent；Windows 可使用凭据管理器安全保存。</p>
+      <main className="app-main">
+        <header className="app-topbar">
+          <div><span className="eyebrow">Creation workspace</span><h1>{project?.title ?? "新建 3D 资产"}</h1></div>
+          <div className="topbar-actions">
+            <span className={`connection-chip ${modalConnected ? "online" : ""}`}><span />{modalConnected ? "Modal 在线" : "未连接"}</span>
+            <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="打开设置">⚙</button>
           </div>
-          <div className="form">
-            <label>令牌 ID<input value={tokenId} onChange={(event) => setTokenId(event.target.value)} autoComplete="off" placeholder="ak-…" /></label>
-            <label>令牌密钥<input type="password" value={tokenSecret} onChange={(event) => setTokenSecret(event.target.value)} autoComplete="off" placeholder="••••••••••••" /></label>
-            {persistence.supported && <label className="remember"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />在这台 Windows 电脑上记住</label>}
-            <div className="form-actions">
-              <span className="muted">{modalMessage}</span>
-              <button disabled={!agent?.running || !tokenId || !tokenSecret} onClick={connect}>连接云端</button>
-            </div>
-          </div>
-        </section>
-      )}
+        </header>
 
-      {modalConnected && (
-        <>
-          <section className="cloud-bar">
-            <span className="connected">● Modal 已连接</span>
-            <div className="buttons">
-              {persistence.stored && <button className="secondary" onClick={forget}>删除已保存凭据</button>}
-              <button className="secondary" onClick={disconnect}>断开</button>
-            </div>
-          </section>
-
+        {modalConnected ? (
           <section className="workspace">
             <div className="workspace-head">
               <div>
-                <span className="eyebrow">Workspace</span>
-                <h2>{project?.title ?? "从图片生成 3D"}</h2>
+                <span className="eyebrow">Image to 3D</span>
+                <h2>{project ? "继续完善你的资产" : "从图片生成 3D"}</h2>
               </div>
               <span className="workflow-message">{workflowMessage}</span>
             </div>
-
-            {recentProjects.length > 0 && (
-              <div className="project-history">
-                <span>最近项目</span>
-                {recentProjects.slice(0, 6).map((item) => (
-                  <div className="project-chip" key={item.id}>
-                    <button
-                      className={`project-open ${item.id === project?.id ? "active" : ""}`}
-                      disabled={busy}
-                      onClick={() => agent && void restoreProject(agent, item)}
-                    >
-                      <strong>{item.title}</strong>
-                      <small>{item.status}</small>
-                    </button>
-                    <button
-                      className="project-delete"
-                      disabled={busy || activeProjectStatuses.has(item.status)}
-                      title={activeProjectStatuses.has(item.status) ? "请先等待远程任务结束或完成取消" : "删除项目"}
-                      onClick={() => void deleteProjectEntry(item)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-
-            {runtimeCapabilities && (
-              <div className="sam-mode-bar">
-                <div>
-                  <strong>SAM Provider</strong>
-                  <span>
-                    {runtimeCapabilities.sam.mode === "auto"
-                      ? `Auto → ${runtimeCapabilities.sam.effective ?? "不可用"}`
-                      : runtimeCapabilities.sam.mode}
-                  </span>
-                </div>
-                <div className="sam-mode-buttons">
-                  {(["auto", "cloud", "local"] as SamMode[]).map((mode) => (
-                    <button
-                      key={mode}
-                      className={runtimeCapabilities.sam.mode === mode ? "active" : ""}
-                      disabled={busy || localSamActionBusy || (mode === "local" && !runtimeCapabilities.sam.local.available)}
-                      title={mode === "local" ? runtimeCapabilities.sam.local.reason : undefined}
-                      onClick={() => void changeSamMode(mode)}
-                    >
-                      {mode === "auto" ? "Auto" : mode === "cloud" ? "Cloud" : "Local"}
-                    </button>
-                  ))}
-                </div>
-                <small>{localSamProgressLabel()}</small>
-                <small className="local-sam-path">存储：{runtimeCapabilities.sam.local.root_path}</small>
-                <div className="local-sam-actions">
-                  {runtimeCapabilities.sam.local.hardware_eligible && runtimeCapabilities.sam.local.disk_eligible && !runtimeCapabilities.sam.local.installed && (
-                    <button
-                      disabled={localSamActionBusy || runtimeCapabilities.sam.local.installing}
-                      onClick={() => void installLocalRuntime()}
-                    >
-                      {runtimeCapabilities.sam.local.installing
-                        ? "处理中…"
-                        : runtimeCapabilities.sam.local.update_available
-                          ? "更新 Local"
-                          : "安装 Local"}
-                    </button>
-                  )}
-                  {runtimeCapabilities.sam.local.installed && !runtimeCapabilities.sam.local.ready && (
-                    <button disabled={localSamActionBusy} onClick={() => void verifyLocalRuntime()}>
-                      启动并验证
-                    </button>
-                  )}
-                  {runtimeCapabilities.sam.local.ready && (
-                    <span className="local-ready">● Local ready</span>
-                  )}
-                  {(runtimeCapabilities.sam.local.installed || runtimeCapabilities.sam.local.update_available) && (
-                    <button disabled={localSamActionBusy} onClick={() => void uninstallLocalRuntime()}>
-                      卸载 Local
-                    </button>
-                  )}
-                  <button disabled={localSamActionBusy || runtimeCapabilities.sam.local.installing} onClick={() => void migrateLocalRuntime()}>
-                    迁移目录
-                  </button>
-                </div>
-              </div>
-            )}
 
             <div className="workflow-grid">
               <div className="panel">
@@ -950,9 +859,47 @@ function App() {
               </div>
             </div>
           </section>
-        </>
-      )}
-    </main>
+        ) : (
+          <section className="connection-empty-state">
+            <div className="empty-visual"><span>◇</span><span>◆</span><span>○</span></div>
+            <span className="eyebrow">Ready when you are</span>
+            <h2>连接 Modal，开始创建 3D 资产</h2>
+            <p>账号凭据和运行时配置已经统一收纳到设置中心，工作台只专注创作。</p>
+            <button className="primary-button" onClick={() => setSettingsOpen(true)}>打开设置</button>
+          </section>
+        )}
+      </main>
+
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={closeSettings}
+        agent={agent}
+        agentMessage={agentMessage}
+        inTauri={inTauri}
+        onToggleAgent={() => void (agent?.running ? stop() : start())}
+        modalConnected={modalConnected}
+        modalMessage={modalMessage}
+        tokenId={tokenId}
+        setTokenId={setTokenId}
+        tokenSecret={tokenSecret}
+        setTokenSecret={setTokenSecret}
+        persistence={persistence}
+        remember={remember}
+        setRemember={setRemember}
+        onConnect={() => void connect()}
+        onDisconnect={() => void disconnect()}
+        onForget={() => void forget()}
+        runtime={runtimeCapabilities}
+        localBusy={localSamActionBusy}
+        localProgress={localSamProgressLabel()}
+        onRefresh={() => void refreshLocalCapabilities().catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)))}
+        onSamMode={(mode) => void changeSamMode(mode)}
+        onInstall={() => void installLocalRuntime()}
+        onVerify={() => void verifyLocalRuntime()}
+        onUninstall={() => void uninstallLocalRuntime()}
+        onMigrate={() => void migrateLocalRuntime()}
+      />
+    </div>
   );
 }
 
