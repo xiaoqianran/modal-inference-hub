@@ -28,6 +28,7 @@ import {
   setSamMode,
   startAgent,
   startLocalSam,
+  uninstallLocalSam,
   stopAgent,
   submitProjectGeneration,
   type AgentInfo,
@@ -375,6 +376,23 @@ function App() {
           break;
         }
       }
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLocalSamActionBusy(false);
+    }
+  }
+
+  async function uninstallLocalRuntime() {
+    if (!agent || !runtimeCapabilities?.sam.local.installed) return;
+    if (!window.confirm("卸载 Local SAM？将删除 runtime、Torch/CUDA 依赖和 3.5 GB checkpoint；Project 的本地 selection 数据会保留。")) return;
+    try {
+      setLocalSamActionBusy(true);
+      const result = await uninstallLocalSam(agent);
+      const state = await refreshLocalCapabilities();
+      const gib = result.released_bytes / 1024 / 1024 / 1024;
+      const routing = state?.sam.mode === "auto" ? "SAM 已切回 Auto" : "selection 数据已保留";
+      setWorkflowMessage(`Local SAM 已卸载，释放 ${gib.toFixed(2)} GiB；${routing}。`);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -748,6 +766,11 @@ function App() {
                   )}
                   {runtimeCapabilities.sam.local.ready && (
                     <span className="local-ready">● Local ready</span>
+                  )}
+                  {runtimeCapabilities.sam.local.installed && (
+                    <button disabled={localSamActionBusy} onClick={() => void uninstallLocalRuntime()}>
+                      卸载 Local
+                    </button>
                   )}
                 </div>
               </div>

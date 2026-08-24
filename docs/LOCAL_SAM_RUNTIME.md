@@ -125,6 +125,29 @@ The first validated bootstrap is published as GitHub Release `local-sam-runtime-
 
 The Agent embeds both hashes. Runtime installation refuses a changed bootstrap, and checkpoint synchronization writes through a `.part` file, validates bytes + SHA256, then atomically promotes the file.
 
+
+## Uninstall semantics
+
+Uninstall is intentionally reversible at the Project level.
+
+Removed:
+
+- Local SAM bootstrap/runtime;
+- installed Torch/CUDA Python packages;
+- the 3.5 GB checkpoint and integrity marker;
+- bootstrap download cache;
+- runtime log/port files.
+
+Preserved:
+
+- `local-sam/data/scenes/**`;
+- `local-sam/data/selections/**`;
+- Project database records.
+
+This means an older Project that used Local SAM can resume refine/materialize after a later reinstall. If the selected SAM mode is explicitly `local`, uninstall resets it to `auto` so the product does not remain pinned to an unavailable provider.
+
+Uninstall is idempotent and refuses to run while the installer thread is active.
+
 ## Current milestone
 
 Implemented:
@@ -141,7 +164,8 @@ Implemented:
 - runtime log capture for startup diagnostics;
 - Project provider routing: Auto prefers a valid Local install and falls back to Cloud only if Local startup fails;
 - local materialize -> canonical PNG -> single upload to `modal-3d-artifacts` -> unchanged 3D worker contract;
-- UI install/progress/start-and-verify controls.
+- UI install/progress/start-and-verify controls;
+- uninstall lifecycle that stops the child process, removes runtime/Torch/checkpoint/download cache, preserves local scene/selection data for future reinstall, and returns released bytes.
 
 GPU engine validation:
 

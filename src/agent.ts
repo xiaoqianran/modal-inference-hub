@@ -299,6 +299,9 @@ export const getCapabilities = (info: AgentInfo) =>
 export const installLocalSam = (info: AgentInfo) =>
   json<Record<string, unknown>>(info, "/v1/local-sam/install", { method: "POST" });
 
+export const uninstallLocalSam = (info: AgentInfo) =>
+  json<{ released_bytes: number }>(info, "/v1/local-sam/install", { method: "DELETE" });
+
 export const startLocalSam = (info: AgentInfo) =>
   json<Record<string, unknown>>(info, "/v1/local-sam/start", { method: "POST" });
 

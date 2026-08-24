@@ -72,6 +72,9 @@ try {
   $localInstall = Invoke-HttpAllowError "$base/v1/local-sam/install" "Post" $headers
   if ($localInstall.StatusCode -ne 409) { throw "未连接 Modal 时 Local SAM 安装应返回 409，实际为 $($localInstall.StatusCode)。" }
 
+  $localUninstall = Invoke-RestMethod "$base/v1/local-sam/install" -Method Delete -Headers $headers
+  if ($localUninstall.runtime_installed) { throw "Local SAM 卸载接口应保持未安装状态。" }
+
   $image = Join-Path $dataDir "smoke.png"
   [IO.File]::WriteAllBytes($image, [byte[]](1, 2, 3, 4))
   $project = Invoke-RestMethod "$base/v1/projects" -Method Post -Headers $headers -Form @{ file = Get-Item $image }

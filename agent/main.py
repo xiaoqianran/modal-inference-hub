@@ -150,6 +150,17 @@ def local_sam_install() -> dict:
     return local_sam_runtime.begin_install()
 
 
+@app.delete("/v1/local-sam/install")
+def local_sam_uninstall() -> dict:
+    try:
+        result = local_sam_runtime.uninstall()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if get_settings()["sam_mode"] == "local":
+        set_sam_mode("auto")
+    return result
+
+
 @app.post("/v1/local-sam/start")
 def local_sam_start() -> dict:
     try:

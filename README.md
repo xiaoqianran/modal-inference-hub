@@ -34,7 +34,7 @@ Project 可从最近项目列表删除；生成中的 Project 必须先取消任
 
 GLB 导出使用桌面原生保存链路：Agent 从 Modal Volume 流式写入 app-data export 缓存并验证 `glTF Binary v2`，Tauri 再通过系统保存对话框将已验证文件复制到用户选择的位置。大 GLB 不通过 React/Tauri IPC 传输。
 
-SAM 使用 Provider 模式：`Auto / Cloud / Local`。Cloud SAM 已真实启用；Windows x86_64 + NVIDIA 机器可从客户端后台安装独立 Local SAM runtime。bootstrap 来自固定 GitHub Release，Torch/cu128 使用精确 hash-pinned Windows wheels，3.5 GB checkpoint 使用当前 Modal 凭据从 `modal-3d-sam31-weights` Volume 流式同步并校验 SHA256。Auto 在有效 Local 安装上优先尝试 Local，Local 启动失败时才回落 Cloud。每个 Project 都持久化实际使用的 `sam_provider`，确保后续 materialize 与 segmentation 来源一致。
+SAM 使用 Provider 模式：`Auto / Cloud / Local`。Cloud SAM 已真实启用；Windows x86_64 + NVIDIA 机器可从客户端后台安装独立 Local SAM runtime。bootstrap 来自固定 GitHub Release，Torch/cu128 使用精确 hash-pinned Windows wheels，3.5 GB checkpoint 使用当前 Modal 凭据从 `modal-3d-sam31-weights` Volume 流式同步并校验 SHA256。Auto 在有效 Local 安装上优先尝试 Local，Local 启动失败时才回落 Cloud。Local runtime 可随时卸载以释放 runtime/checkpoint 空间，同时保留 scene/selection 数据供以后重装后继续使用。每个 Project 都持久化实际使用的 `sam_provider`，确保后续 materialize 与 segmentation 来源一致。
 
 Cloud SAM 还支持交互式 Refine：候选不理想时可在原图拖多个正框（保留）和负框（排除），提交后生成新的 selection；确认 candidate 后再 materialize canonical RGBA。
 

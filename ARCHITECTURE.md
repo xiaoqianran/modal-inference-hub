@@ -43,4 +43,5 @@ React / TypeScript
 10. ✅ Cloud SAM 支持候选选择与正/负框 Refine，Refine selection 与 canonical 生命周期归属同一 Project/provider。
 11. ✅ GLB 使用 Agent 流式 export 缓存 + Tauri 原生保存对话框；Project 支持本地删除，生成中禁止直接删除。
 12. ✅ Local SAM v1 bootstrap 已由 GitHub Windows workflow 验证并发布；Agent 已实现安装、Modal checkpoint 同步、child-process health 与 Auto fallback。真实 Windows NVIDIA 端到端推理仍需物理 GPU 验收。
-13. 后续 Web Runtime、Local SAM Windows GPU 实机验收与更新/卸载生命周期。
+13. ✅ Local SAM 卸载生命周期完成：停止子进程、清 runtime/checkpoint/cache、保留 scene/selection，并在显式 Local 模式下回退 Auto。
+14. 后续 Web Runtime、Local SAM Windows GPU 实机验收与版本更新生命周期。

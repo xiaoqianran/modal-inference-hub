@@ -282,6 +282,51 @@ def begin_install() -> dict:
     return status()
 
 
+
+
+def _path_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except FileNotFoundError:
+            pass
+    return total
+
+
+def uninstall() -> dict:
+    with _lock:
+        if _install_thread is not None and _install_thread.is_alive():
+            raise RuntimeError("Local SAM 正在安装，请等待安装结束后再卸载")
+    stop()
+
+    targets = [
+        runtime_dir(),
+        checkpoint_path(),
+        _checkpoint_marker(),
+        root() / "downloads",
+        root() / "runtime.log",
+        root() / "runtime.port",
+    ]
+    released = sum(_path_bytes(path) for path in targets)
+    for path in targets:
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+    _write_status(state="not_installed", step="uninstalled")
+    return {
+        **status(),
+        "released_bytes": released,
+        "preserved_data": str(root() / "data"),
+    }
+
+
 def _request(path: str, payload: dict | None = None, *, timeout: float = 30) -> dict:
     with _lock:
         port, token = _port, _token
