@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -153,6 +154,30 @@ class ProjectStore:
                 "SELECT * FROM projects ORDER BY updated_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [self._project(row).public() for row in rows]
+
+    def delete(self, project_id: str) -> dict:
+        project = self.get(project_id)
+        if project["status"] == "generating":
+            raise ValueError("项目仍在生成中，请先取消任务")
+
+        directory = self.assets / project_id
+        tombstone = self.assets / f".delete-{project_id}-{uuid.uuid4().hex}"
+        moved = False
+        if directory.is_dir():
+            directory.replace(tombstone)
+            moved = True
+        try:
+            with self._connect() as db:
+                cursor = db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+                if cursor.rowcount != 1:
+                    raise KeyError(project_id)
+        except Exception:
+            if moved and tombstone.is_dir():
+                tombstone.replace(directory)
+            raise
+        if moved:
+            shutil.rmtree(tombstone, ignore_errors=True)
+        return project
 
     def source_path(self, project_id: str) -> Path:
         with self._connect() as db:

@@ -20,7 +20,7 @@ from modal.exception import (
 )
 from pydantic import BaseModel, Field, SecretStr
 
-from agent import artifacts, generation, sam, sam_provider
+from agent import artifacts, exports, generation, sam, sam_provider
 from agent.capabilities import capabilities
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
@@ -116,6 +116,10 @@ class SamSettingsRequest(BaseModel):
     mode: str
 
 
+class ExportRequest(BaseModel):
+    artifact_path: str
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
@@ -183,6 +187,17 @@ async def project_create(file: Annotated[UploadFile, File()]) -> dict:
 @app.get("/v1/projects")
 def project_list() -> list[dict]:
     return projects.list()
+
+
+@app.delete("/v1/projects/{project_id}")
+def project_delete(project_id: str) -> dict:
+    try:
+        deleted = projects.delete(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"deleted": deleted["id"]}
 
 
 @app.get("/v1/projects/{project_id}")
@@ -278,6 +293,14 @@ def project_generation(project_id: str, request: ProjectGenerationRequest) -> di
     job = jobs.create(remote["model"], remote["call_id"])
     project = projects.record_generation(project_id, request.model, request.profile, job["id"])
     return {"project": project, "job": job}
+
+
+@app.post("/v1/exports")
+def export_prepare(request: ExportRequest) -> dict:
+    try:
+        return exports.prepare(request.artifact_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/v1/assets")

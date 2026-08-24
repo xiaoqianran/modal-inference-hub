@@ -14,7 +14,7 @@ React / TypeScript
      ├─ SAM Provider / Capability Router
      │   ├─ Cloud SAM ✅
      │   └─ Local SAM runtime（可选安装，后续）
-     ├─ Artifact Runtime
+     ├─ Artifact Runtime / Native Export
      └─ 云端 3D 工作节点
 ```
 
@@ -41,4 +41,5 @@ React / TypeScript
 8. ✅ Project Workspace 持久化 source → canonical → model/profile → job → GLB，并支持最近项目恢复。
 9. ✅ SAM Provider / Auto 路由已落地；当前 Auto 在 Local runtime 未安装时透明选择 Cloud，并持久化实际 provider。
 10. ✅ Cloud SAM 支持候选选择与正/负框 Refine，Refine selection 与 canonical 生命周期归属同一 Project/provider。
-11. 构建可选 Local SAM runtime 安装包、健康检查与后续 Web Runtime。
+11. ✅ GLB 使用 Agent 流式 export 缓存 + Tauri 原生保存对话框；Project 支持本地删除，生成中禁止直接删除。
+12. 构建可选 Local SAM runtime 安装包、健康检查与后续 Web Runtime。

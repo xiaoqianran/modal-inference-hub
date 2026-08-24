@@ -793,35 +793,54 @@ input:focus-visible {
   font-weight: 700;
 }
 
-.project-history button {
-  display: grid;
+.project-chip {
+  display: flex;
   flex: 0 0 auto;
+}
+
+.project-open {
+  display: grid;
   gap: 2px;
   min-width: 108px;
   max-width: 170px;
   border: 1px solid var(--ctp-surface-1);
-  padding: 7px 10px;
+  border-radius: 8px 0 0 8px !important;
+  padding: 7px 10px !important;
   color: var(--ctp-subtext-1);
   text-align: left;
   background: rgb(35 38 52 / 40%);
 }
 
-.project-history button strong {
+.project-open strong {
   overflow: hidden;
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.project-history button small {
+.project-open small {
   color: var(--ctp-overlay-1);
   font-size: 9px;
   text-transform: uppercase;
 }
 
-.project-history button.active {
+.project-open.active {
   border-color: var(--ctp-mauve);
   background: rgb(202 158 230 / 10%);
+}
+
+.project-delete {
+  border: 1px solid var(--ctp-surface-1);
+  border-left: 0;
+  border-radius: 0 8px 8px 0 !important;
+  padding: 0 8px !important;
+  color: var(--ctp-overlay-1);
+  background: rgb(35 38 52 / 40%);
+}
+
+.project-delete:hover:not(:disabled) {
+  color: var(--ctp-red);
+  background: rgb(231 130 132 / 8%);
 }
 
 .sam-mode-bar {

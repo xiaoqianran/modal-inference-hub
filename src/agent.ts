@@ -127,6 +127,13 @@ export type Project = {
   updated_at: string;
 };
 
+
+export type PreparedExport = {
+  id: string;
+  bytes: number;
+  sha256: string;
+};
+
 export type GenerationJob = {
   id: string;
   model: string;
@@ -202,6 +209,15 @@ export async function assetBlob(info: AgentInfo, path: string) {
   return (await request(info, `/v1/assets?path=${encodeURIComponent(path)}`)).blob();
 }
 
+export const prepareExport = (info: AgentInfo, artifactPath: string) =>
+  json<PreparedExport>(info, "/v1/exports", {
+    method: "POST",
+    body: JSON.stringify({ artifact_path: artifactPath }),
+  });
+
+export const savePreparedExport = (exportId: string, suggestedName: string) =>
+  invoke<string | null>("export_save", { exportId, suggestedName });
+
 export function createProject(info: AgentInfo, image: File) {
   const form = new FormData();
   form.append("file", image);
@@ -213,6 +229,10 @@ export const listProjects = (info: AgentInfo) =>
 
 export const getProject = (info: AgentInfo, projectId: string) =>
   json<Project>(info, `/v1/projects/${projectId}`);
+
+export async function deleteProject(info: AgentInfo, projectId: string) {
+  return (await request(info, `/v1/projects/${projectId}`, { method: "DELETE" })).json() as Promise<{ deleted: string }>;
+}
 
 export async function projectSourceBlob(info: AgentInfo, projectId: string) {
   return (await request(info, `/v1/projects/${projectId}/source`)).blob();

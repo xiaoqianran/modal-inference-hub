@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{Manager, State};
+use tauri_plugin_dialog::DialogExt;
 #[derive(Clone, Serialize)]
 struct AgentInfo {
     running: bool,
@@ -303,6 +304,66 @@ fn agent_status(state: State<'_, AgentState>) -> Result<AgentInfo, String> {
 }
 
 #[tauri::command]
+async fn export_save(
+    app: tauri::AppHandle,
+    export_id: String,
+    suggested_name: String,
+) -> Result<Option<String>, String> {
+    if export_id.len() != 32 || !export_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("无效的导出 ID".into());
+    }
+
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+    let source = data_dir.join("exports").join(format!("{export_id}.glb"));
+    if !source.is_file() {
+        return Err("导出缓存不存在，请重新生成导出文件".into());
+    }
+
+    let suggested = PathBuf::from(suggested_name);
+    let filename = suggested
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("modal-3d.glb");
+    let selected = app
+        .dialog()
+        .file()
+        .add_filter("glTF Binary", &["glb"])
+        .set_file_name(filename)
+        .blocking_save_file();
+    let Some(selected) = selected else {
+        let _ = fs::remove_file(&source);
+        return Ok(None);
+    };
+    let mut target = selected
+        .into_path()
+        .map_err(|error| format!("无法读取保存路径：{error}"))?;
+    if target
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map_or(true, |extension| !extension.eq_ignore_ascii_case("glb"))
+    {
+        target.set_extension("glb");
+    }
+
+    let expected = fs::metadata(&source)
+        .map_err(|error| format!("无法读取导出缓存：{error}"))?
+        .len();
+    let copied = fs::copy(&source, &target).map_err(|error| format!("保存 GLB 失败：{error}"))?;
+    if copied != expected {
+        let _ = fs::remove_file(&target);
+        return Err(format!(
+            "GLB 写入不完整：预期 {expected} 字节，实际 {copied} 字节"
+        ));
+    }
+    let _ = fs::remove_file(&source);
+    Ok(Some(target.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
 fn agent_stop(state: State<'_, AgentState>) -> Result<(), String> {
     let mut state = state.0.lock().map_err(|_| "无法锁定本地代理状态")?;
     if let Some(mut process) = state.take() {
@@ -313,11 +374,13 @@ fn agent_stop(state: State<'_, AgentState>) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AgentState::default())
         .invoke_handler(tauri::generate_handler![
             agent_start,
             agent_status,
             agent_stop,
+            export_save,
             credentials::credentials_status,
             credentials::credentials_save,
             credentials::credentials_clear

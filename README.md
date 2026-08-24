@@ -30,6 +30,10 @@ Generation Job 会写入客户端 app-data 目录中的 `jobs.sqlite3`。Agent �
 
 客户端同时维护本地 Project Workspace：选中源图片时会在 app-data 中创建 Project 并保存 source image；`concept / SAM scene / canonical path / model / profile / job / GLB` 随工作流逐步写入 `projects.sqlite3`。重启后恢复的是完整作品上下文，而不是孤立 Job。
 
+Project 可从最近项目列表删除；生成中的 Project 必须先取消任务。删除只清理本地 source 与 Workspace 记录，不自动删除共享 Modal Volume 中的 canonical/GLB artifact。
+
+GLB 导出使用桌面原生保存链路：Agent 从 Modal Volume 流式写入 app-data export 缓存并验证 `glTF Binary v2`，Tauri 再通过系统保存对话框将已验证文件复制到用户选择的位置。大 GLB 不通过 React/Tauri IPC 传输。
+
 SAM 已使用 Provider 模式：`Auto / Cloud / Local`。当前 Cloud SAM 已真实启用；Auto 在 Local runtime 不可用时明确回落 Cloud。Local 模式只有在独立 SAM runtime 安装并通过健康检查后才会开放，不把约 3.5 GB checkpoint 和 Torch/CUDA 直接塞进主 Agent。每个 Project 都持久化实际使用的 `sam_provider`，确保后续 materialize 与 segmentation 来源一致。
 
 Cloud SAM 还支持交互式 Refine：候选不理想时可在原图拖多个正框（保留）和负框（排除），提交后生成新的 selection；确认 candidate 后再 materialize canonical RGBA。

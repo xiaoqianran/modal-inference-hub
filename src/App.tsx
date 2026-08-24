@@ -8,6 +8,7 @@ import {
   connectModal,
   createProject,
   credentialsStatus,
+  deleteProject,
   disconnectModal,
   getCapabilities,
   getJob,
@@ -17,9 +18,11 @@ import {
   materializeProject,
   modalStatus,
   probeAgent,
+  prepareExport,
   projectSourceBlob,
   refineProject,
   saveCredentials,
+  savePreparedExport,
   segmentProject,
   setSamMode,
   startAgent,
@@ -171,6 +174,21 @@ function App() {
   function resetOutput() {
     setJob(null);
     setResultUrl(null);
+  }
+
+  function clearWorkspace() {
+    setProject(null);
+    setSourceUrl(null);
+    setConcept("");
+    setSelection(null);
+    setCandidateId(null);
+    setRefineMode(null);
+    setRefineBoxes([]);
+    setDragStart(null);
+    setDragPoint(null);
+    setCanonical(null);
+    setCanonicalUrl(null);
+    resetOutput();
   }
 
   async function followJob(
@@ -329,6 +347,32 @@ function App() {
       );
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function deleteProjectEntry(item: Project) {
+    if (!agent) return;
+    if (item.status === "generating") {
+      setWorkflowMessage("项目仍在生成中，请先取消任务再删除。");
+      return;
+    }
+    if (!window.confirm(`删除项目“${item.title}”？本地源图片会被删除，远程生成结果会保留。`)) return;
+    try {
+      setBusy(true);
+      await deleteProject(agent, item.id);
+      const history = await refreshProjects(agent);
+      if (project?.id === item.id) {
+        if (history[0]) {
+          await restoreProject(agent, history[0]);
+        } else {
+          clearWorkspace();
+        }
+      }
+      setWorkflowMessage("项目已删除，本地源图片已清理；远程 artifact 保留。");
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -503,17 +547,10 @@ function App() {
   async function downloadResult() {
     if (!job?.result || !agent) return;
     try {
-      let url = resultUrl;
-      if (!url) {
-        url = URL.createObjectURL(await assetBlob(agent, job.result.artifact.path));
-        setResultUrl(url);
-      }
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `modal-3d-${job.model}.glb`;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
+      setWorkflowMessage("正在准备 GLB 导出…");
+      const prepared = await prepareExport(agent, job.result.artifact.path);
+      const saved = await savePreparedExport(prepared.id, `modal-3d-${job.model}.glb`);
+      setWorkflowMessage(saved ? `GLB 已保存：${saved}` : "已取消保存。 ");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     }
@@ -579,15 +616,24 @@ function App() {
               <div className="project-history">
                 <span>最近项目</span>
                 {recentProjects.slice(0, 6).map((item) => (
-                  <button
-                    key={item.id}
-                    className={item.id === project?.id ? "active" : ""}
-                    disabled={busy}
-                    onClick={() => agent && void restoreProject(agent, item)}
-                  >
-                    <strong>{item.title}</strong>
-                    <small>{item.status}</small>
-                  </button>
+                  <div className="project-chip" key={item.id}>
+                    <button
+                      className={`project-open ${item.id === project?.id ? "active" : ""}`}
+                      disabled={busy}
+                      onClick={() => agent && void restoreProject(agent, item)}
+                    >
+                      <strong>{item.title}</strong>
+                      <small>{item.status}</small>
+                    </button>
+                    <button
+                      className="project-delete"
+                      disabled={busy || item.status === "generating"}
+                      title={item.status === "generating" ? "请先取消生成任务" : "删除项目"}
+                      onClick={() => void deleteProjectEntry(item)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))}
               </div>
             )}

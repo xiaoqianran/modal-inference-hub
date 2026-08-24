@@ -4,11 +4,14 @@ $agent = (Get-ChildItem -LiteralPath "src-tauri/binaries" -Filter "modal-3d-agen
   Select-Object -First 1).FullName
 if (-not $agent) { throw "找不到已构建的本地代理可执行文件。" }
 $handshake = Join-Path $env:TEMP ("modal-3d-agent-smoke-" + [guid]::NewGuid().ToString("N") + ".port")
+$dataDir = Join-Path $env:TEMP ("modal-3d-agent-smoke-data-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $dataDir | Out-Null
 [byte[]]$tokenBytes = New-Object byte[] 32
 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($tokenBytes)
 $token = [BitConverter]::ToString($tokenBytes).Replace("-", "").ToLowerInvariant()
 $env:MODAL_3D_AGENT_TOKEN = $token
 $env:MODAL_3D_AGENT_HANDSHAKE = $handshake
+$env:MODAL_3D_AGENT_DATA_DIR = $dataDir
 
 function Invoke-HttpAllowError {
   param(
@@ -58,6 +61,25 @@ try {
   $bad = Invoke-HttpAllowError "$base/modal/connect" "Post" $headers '{"token_id":"bad","token_secret":"bad"}'
   if ($bad.StatusCode -ne 401) { throw "无效 Modal 凭据应返回 401，实际为 $($bad.StatusCode)。" }
 
+  $models = Invoke-RestMethod "$base/v1/models" -Headers $headers
+  if ($models.Count -ne 4) { throw "模型 registry 应返回 4 个模型，实际为 $($models.Count)。" }
+
+  $capabilities = Invoke-RestMethod "$base/v1/capabilities" -Headers $headers
+  if ($capabilities.sam.mode -ne "auto") { throw "默认 SAM 模式应为 auto。" }
+
+  $image = Join-Path $dataDir "smoke.png"
+  [IO.File]::WriteAllBytes($image, [byte[]](1, 2, 3, 4))
+  $project = Invoke-RestMethod "$base/v1/projects" -Method Post -Headers $headers -Form @{ file = Get-Item $image }
+  if ($project.status -ne "draft") { throw "新 Project 状态应为 draft，实际为 $($project.status)。" }
+
+  $projects = Invoke-RestMethod "$base/v1/projects" -Headers $headers
+  if ($projects.Count -ne 1 -or $projects[0].id -ne $project.id) { throw "Project 列表未返回刚创建的项目。" }
+
+  $deleted = Invoke-RestMethod "$base/v1/projects/$($project.id)" -Method Delete -Headers $headers
+  if ($deleted.deleted -ne $project.id) { throw "Project 删除返回的 ID 不匹配。" }
+  $missing = Invoke-HttpAllowError "$base/v1/projects/$($project.id)" "Get" $headers
+  if ($missing.StatusCode -ne 404) { throw "已删除 Project 应返回 404，实际为 $($missing.StatusCode)。" }
+
   Write-Host "本地代理冒烟测试通过，随机端口：$port"
 }
 finally {
@@ -65,4 +87,6 @@ finally {
   Remove-Item $handshake -ErrorAction SilentlyContinue
   Remove-Item Env:MODAL_3D_AGENT_TOKEN -ErrorAction SilentlyContinue
   Remove-Item Env:MODAL_3D_AGENT_HANDSHAKE -ErrorAction SilentlyContinue
+  Remove-Item Env:MODAL_3D_AGENT_DATA_DIR -ErrorAction SilentlyContinue
+  Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue
 }
