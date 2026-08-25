@@ -59,6 +59,7 @@ class Project:
     artifact_id: str | None
     artifact_sha256: str | None
     artifact_bytes: int | None
+    artifact_canonical_sha256: str | None
     status: str
     error: str | None
     created_at: str
@@ -92,6 +93,7 @@ class Project:
             "artifact_id": self.artifact_id,
             "artifact_sha256": self.artifact_sha256,
             "artifact_bytes": self.artifact_bytes,
+            "artifact_canonical_sha256": self.artifact_canonical_sha256,
             "status": self.status,
             "error": self.error,
             "created_at": self.created_at,
@@ -145,6 +147,7 @@ class ProjectStore:
                     artifact_id TEXT,
                     artifact_sha256 TEXT,
                     artifact_bytes INTEGER,
+                    artifact_canonical_sha256 TEXT,
                     status TEXT NOT NULL,
                     error TEXT,
                     created_at TEXT NOT NULL,
@@ -164,6 +167,7 @@ class ProjectStore:
                 "canonical_id": "TEXT",
                 "canonical_sha256": "TEXT",
                 "canonical_remote_sha256": "TEXT",
+                "artifact_canonical_sha256": "TEXT",
             }
             for name, definition in migrations.items():
                 if name not in columns:
@@ -347,11 +351,6 @@ class ProjectStore:
             canonical_id=canonical["id"],
             canonical_sha256=canonical["sha256"],
             canonical_bytes=canonical["bytes"],
-            job_id=None,
-            artifact_path=None,
-            artifact_id=None,
-            artifact_sha256=None,
-            artifact_bytes=None,
             status="ready",
             error=None,
         )
@@ -411,6 +410,7 @@ class ProjectStore:
         )
 
     def record_generation(self, project_id: str, model: str, profile: str, job_id: str) -> dict:
+        canonical_sha256 = self.canonical_descriptor(project_id)["sha256"]
         return self._update(
             project_id,
             model=model,
@@ -420,6 +420,7 @@ class ProjectStore:
             artifact_id=None,
             artifact_sha256=None,
             artifact_bytes=None,
+            artifact_canonical_sha256=canonical_sha256,
             status="generating",
             error=None,
         )

@@ -830,6 +830,12 @@ progress::-webkit-progress-value { border-radius: 999px; background: var(--accen
   font-weight: 750;
 }
 
+.asset-badge.outdated {
+  border-color: rgb(230 185 117 / 28%);
+  color: var(--warning);
+  background: rgb(230 185 117 / 7%);
+}
+
 .status-chip:not(.ok) {
   border-color: var(--border);
   color: var(--text-faint);
@@ -851,6 +857,24 @@ progress::-webkit-progress-value { border-radius: 999px; background: var(--accen
   border-radius: 11px;
   background-color: #12151c;
 }
+
+.model-empty-state {
+  border-style: dashed;
+}
+
+.result-version-note {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+  border: 1px solid rgb(230 185 117 / 22%);
+  border-radius: 8px;
+  padding: 8px 9px;
+  color: var(--text-faint);
+  background: rgb(230 185 117 / 5%);
+  font-size: 9px;
+}
+
+.result-version-note strong { color: var(--warning); }
 
 .glb-viewer {
   background:

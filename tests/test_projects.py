@@ -116,6 +116,31 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "不一致"):
             self.store.canonical_remote(project["id"])
 
+    def test_editing_canonical_keeps_the_last_generated_model(self) -> None:
+        project = self.store.create(_png(), "preserve-model.png")
+        canonical = _png(1024, 1024)
+        first = {"id": "can_first", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, first)
+        generated = self.store.record_generation(project["id"], "model-a", "default", "job-1")
+        self.assertEqual(generated["artifact_canonical_sha256"], first["sha256"])
+        self.store._update(
+            project["id"],
+            status="succeeded",
+            artifact_id="artifact-1",
+            artifact_sha256="c" * 64,
+            artifact_bytes=128,
+        )
+
+        second = {"id": "can_second", "sha256": "b" * 64, "bytes": len(canonical)}
+        updated = self.store.save_canonical_selection(
+            project["id"], _png(2, 2), canonical, second, {"selected_component_ids": ["cc-1"]}
+        )
+
+        self.assertEqual(updated["job_id"], "job-1")
+        self.assertEqual(updated["artifact_id"], "artifact-1")
+        self.assertEqual(updated["artifact_canonical_sha256"], first["sha256"])
+        self.assertEqual(updated["status"], "ready")
+
     def test_legacy_sam_columns_are_ignored(self) -> None:
         project = self.store.create(_png(), "legacy.png")
         with self.store._connect() as db:

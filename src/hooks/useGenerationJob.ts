@@ -51,18 +51,22 @@ export function useGenerationJob({
   setWorkflowMessage,
 }: UseGenerationJobOptions) {
   const [job, setJob] = useState<GenerationJob | null>(null);
+  const [resultJob, setResultJob] = useState<GenerationJob | null>(null);
+  const [resultCanonicalSha, setResultCanonicalSha] = useState<string | null>(null);
   const pollIdRef = useRef(0);
   const activeProjectIdRef = useRef<string | null>(null);
 
   const resetOutput = useCallback(() => {
     pollIdRef.current += 1;
     setJob(null);
+    setResultJob(null);
+    setResultCanonicalSha(null);
     activeProjectIdRef.current = null;
     replaceResultUrl(null);
   }, [replaceResultUrl]);
 
   const pollJob = useCallback(
-    async (jobId: string, projectId: string) => {
+    async (jobId: string, projectId: string, canonicalSha?: string | null) => {
       if (!agent?.running) return;
       const pollId = ++pollIdRef.current;
       activeProjectIdRef.current = projectId;
@@ -74,6 +78,8 @@ export function useGenerationJob({
           if (!jobIsActive(value)) {
             if (value.status === "succeeded" && value.result) {
               replaceResultUrl(await jobArtifactBlob(agent, jobId));
+              setResultJob(value);
+              setResultCanonicalSha(canonicalSha ?? null);
               setWorkflowMessage("3D 生成完成，可以检查并导出 GLB。");
             } else if (value.error) {
               setWorkflowMessage(value.error);
@@ -95,8 +101,10 @@ export function useGenerationJob({
   );
 
   const restoreJob = useCallback(
-    (value: GenerationJob | null, projectId: string | null) => {
+    (value: GenerationJob | null, projectId: string | null, canonicalSha?: string | null) => {
       setJob(value);
+      setResultJob(value?.result ? value : null);
+      setResultCanonicalSha(value?.result ? canonicalSha ?? null : null);
       activeProjectIdRef.current = projectId;
     },
     [],
@@ -108,7 +116,7 @@ export function useGenerationJob({
     }
     if (!modalConnected) return false;
 
-    resetOutput();
+    pollIdRef.current += 1;
     setWorkflowMessage("正在上传一次 Canonical RGBA 并提交 3D 任务…");
     try {
       const value = await submitProjectGeneration(
@@ -121,7 +129,7 @@ export function useGenerationJob({
       setJob(value.job);
       activeProjectIdRef.current = value.project.id;
       setWorkflowMessage("Canonical 已上传，云端只负责 3D 重构。");
-      void pollJob(value.job.id, value.project.id);
+      void pollJob(value.job.id, value.project.id, canonical.sha256);
       return true;
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
@@ -133,7 +141,6 @@ export function useGenerationJob({
     modalConnected,
     pollJob,
     project,
-    resetOutput,
     selectedModel,
     selectedProfile,
     setProject,
@@ -152,16 +159,16 @@ export function useGenerationJob({
 
   const downloadResult = useCallback(
     async (title?: string) => {
-      if (!agent?.running || !job?.result) return;
+      if (!agent?.running || !resultJob?.result) return;
       try {
-        const prepared = await prepareExport(agent, job.id);
+        const prepared = await prepareExport(agent, resultJob.id);
         await savePreparedExport(prepared.id, `${title || "modal-3d"}.glb`);
       } catch (error) {
         setWorkflowMessage(error instanceof Error ? error.message : String(error));
       }
     },
-    [agent, job, setWorkflowMessage],
+    [agent, resultJob, setWorkflowMessage],
   );
 
-  return { job, resetOutput, pollJob, restoreJob, generate, cancel, downloadResult };
+  return { job, resultJob, resultCanonicalSha, resetOutput, pollJob, restoreJob, generate, cancel, downloadResult };
 }

@@ -172,6 +172,7 @@ export type Project = {
   artifact_id: string | null;
   artifact_sha256: string | null;
   artifact_bytes: number | null;
+  artifact_canonical_sha256: string | null;
   status:
     | "draft"
     | "segmented"

@@ -13,12 +13,13 @@ function activityLabel(status: GenerationJob["status"]) {
 
 type GenerationPanelProps = {
   canonical: CanonicalAsset | null;
-  canonicalUrl: string | null;
   resultUrl: string | null;
+  resultOutdated: boolean;
   models: ModelSpec[];
   selectedModel?: ModelSpec;
   selectedProfile?: ModelProfile;
   job: GenerationJob | null;
+  resultJob: GenerationJob | null;
   busy: boolean;
   hint: string;
   onSelectModel: (modelId: string) => void;
@@ -30,12 +31,13 @@ type GenerationPanelProps = {
 
 export default function GenerationPanel({
   canonical,
-  canonicalUrl,
   resultUrl,
+  resultOutdated,
   models,
   selectedModel,
   selectedProfile,
   job,
+  resultJob,
   busy,
   hint,
   onSelectModel,
@@ -51,9 +53,9 @@ export default function GenerationPanel({
       <div className="panel-header">
         <div>
           <span className="panel-step">02 · 云端重构</span>
-          <h2 id="generation-title">Canonical 与 3D</h2>
+          <h2 id="generation-title">3D 模型</h2>
         </div>
-        {canonical ? <span className="asset-badge">1024 RGBA</span> : null}
+        {resultUrl ? <span className={`asset-badge ${resultOutdated ? "outdated" : ""}`}>{resultOutdated ? "上一版模型" : "已保存"}</span> : null}
       </div>
 
       <div className="result-viewport">
@@ -62,14 +64,14 @@ export default function GenerationPanel({
             <GlbViewer url={resultUrl} />
           </Suspense>
         ) : (
-          <div className="canonical-preview checker">
-            {canonicalUrl ? <img src={canonicalUrl} alt="1024 Canonical RGBA" /> : <div className="empty-preview"><span>CANONICAL</span><strong>抠图后生成</strong></div>}
+          <div className="glb-viewer model-empty-state">
+            <div className="empty-preview"><span>3D MODEL</span><strong>{canonical ? "选择模型并开始生成" : "图片处理完成后生成"}</strong></div>
           </div>
         )}
       </div>
 
-      {canonical && !resultUrl ? (
-        <div className="asset-meta"><span>透明 Letterbox</span><strong>{(canonical.bytes / 1024).toFixed(0)} KiB</strong></div>
+      {resultOutdated ? (
+        <div className="result-version-note"><strong>模型已保留</strong><span>当前图片有新修改；再次生成前，这里继续展示上一版结果。</span></div>
       ) : null}
 
       <div className="model-section">
@@ -110,12 +112,12 @@ export default function GenerationPanel({
         </div>
       )}
 
-      {job?.result ? (
+      {resultJob?.result ? (
         <div className="result-card">
-          <span><strong>GLB 已就绪</strong><small>{(job.result.artifact.bytes / 1024 / 1024).toFixed(2)} MiB</small></span>
+          <span><strong>GLB 已就绪</strong><small>{(resultJob.result.artifact.bytes / 1024 / 1024).toFixed(2)} MiB</small></span>
           <span className="result-timing">
-            {job.result.timing.inference_s !== undefined ? <small>推理 {job.result.timing.inference_s.toFixed(2)}s</small> : null}
-            {job.result.timing.load_s !== undefined ? <small>加载 {job.result.timing.load_s.toFixed(2)}s</small> : null}
+            {resultJob.result.timing.inference_s !== undefined ? <small>推理 {resultJob.result.timing.inference_s.toFixed(2)}s</small> : null}
+            {resultJob.result.timing.load_s !== undefined ? <small>加载 {resultJob.result.timing.load_s.toFixed(2)}s</small> : null}
           </span>
           <button type="button" className="primary-button" onClick={onExport}>导出 GLB</button>
         </div>

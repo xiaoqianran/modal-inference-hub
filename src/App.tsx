@@ -10,7 +10,6 @@ import {
   jobArtifactBlob,
   listProjects,
   preprocessProject,
-  projectCanonicalBlob,
   projectSelectionBlob,
   projectSourceBlob,
   selectProjectComponents,
@@ -52,7 +51,6 @@ function App() {
   const [sourceUrl, replaceSourceUrl] = useObjectUrl();
   const [matteUrl, replaceMatteUrl] = useObjectUrl();
   const [canonical, setCanonical] = useState<CanonicalAsset | null>(null);
-  const [canonicalUrl, replaceCanonicalUrl] = useObjectUrl();
   const [preprocessMeta, setPreprocessMeta] = useState<PreprocessResult["preprocess"] | null>(null);
   const [modelDownload, setModelDownload] = useState<ModelDownloadState | null>(null);
   const [componentState, setComponentState] = useState<ComponentState | null>(null);
@@ -83,7 +81,7 @@ function App() {
     }
   }, [agent]);
 
-  const { job, resetOutput, pollJob, restoreJob, generate, cancel, downloadResult } = useGenerationJob({
+  const { job, resultJob, resultCanonicalSha, resetOutput, pollJob, restoreJob, generate, cancel, downloadResult } = useGenerationJob({
     agent, project, canonical, selectedModel, selectedProfile, modalConnected,
     replaceResultUrl, setProject, refreshRecent, setWorkflowMessage,
   });
@@ -98,10 +96,9 @@ function App() {
       const previewPromise = savedCanonical
         ? Promise.all([
             projectSelectionBlob(agent, value.id).catch(() => null),
-            projectCanonicalBlob(agent, value.id),
             getProjectComponents(agent, value.id).catch(() => null),
           ])
-        : Promise.resolve([null, null, null] as const);
+        : Promise.resolve([null, null] as const);
       const restoredJobPromise = value.job_id
         ? getJob(agent, value.job_id).then(async (restored) => ({
             restored,
@@ -118,17 +115,16 @@ function App() {
       setProject(value);
       setCanonical(savedCanonical);
       setPreprocessMeta(null);
-      setComponentState(preview[2]?.component_state ?? null);
+      setComponentState(preview[1]?.component_state ?? null);
       setSelectionHistory([]);
       setSelectionFuture([]);
       replaceSourceUrl(source);
       replaceMatteUrl(preview[0]);
-      replaceCanonicalUrl(preview[1]);
-      restoreJob(jobData?.restored ?? null, value.id);
+      restoreJob(jobData?.restored ?? null, value.id, value.artifact_canonical_sha256);
       replaceResultUrl(jobData?.artifact ?? null);
       if (value.model) setModelId(value.model);
       if (jobData?.restored && jobIsActive(jobData.restored)) {
-        void pollJob(jobData.restored.id, value.id);
+        void pollJob(jobData.restored.id, value.id, value.canonical_sha256);
       }
       setWorkflowMessage(
         jobData?.restored.result
@@ -144,7 +140,7 @@ function App() {
     } finally {
       if (requestId === projectRequestRef.current) setBusy(false);
     }
-  }, [agent, pollJob, replaceCanonicalUrl, replaceMatteUrl, replaceResultUrl, replaceSourceUrl, restoreJob]);
+  }, [agent, pollJob, replaceMatteUrl, replaceResultUrl, replaceSourceUrl, restoreJob]);
 
   useEffect(() => {
     if (!modelId && models.length) {
@@ -214,13 +210,8 @@ function App() {
       setComponentState(value.component_state);
       setSelectionHistory([]);
       setSelectionFuture([]);
-      const [matte, canonicalBlob] = await Promise.all([
-        projectSelectionBlob(agent, target.id),
-        projectCanonicalBlob(agent, target.id),
-      ]);
+      const matte = await projectSelectionBlob(agent, target.id);
       replaceMatteUrl(matte);
-      replaceCanonicalUrl(canonicalBlob);
-      resetOutput();
       setWorkflowMessage(
         `本地抠图完成 · ${value.preprocess.provider.toUpperCase()} · ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
       );
@@ -255,7 +246,6 @@ function App() {
       resetOutput();
       replaceSourceUrl(file);
       replaceMatteUrl(null);
-      replaceCanonicalUrl(null);
       setWorkflowMessage("原图已保存在本机，正在自动开始 rembg 预处理…");
       await refreshRecent();
       await runLocalPreprocess(value);
@@ -315,13 +305,8 @@ function App() {
         setSelectionHistory((current) => [...current.slice(-49), previousSelection]);
         setSelectionFuture([]);
       }
-      const [selectionBlob, canonicalBlob] = await Promise.all([
-        projectSelectionBlob(agent, project.id),
-        projectCanonicalBlob(agent, project.id),
-      ]);
+      const selectionBlob = await projectSelectionBlob(agent, project.id);
       replaceMatteUrl(selectionBlob);
-      replaceCanonicalUrl(canonicalBlob);
-      resetOutput();
       const count = value.component_state.selected_component_ids.length;
       const elapsed = value.component_state.selection_elapsed_ms;
       setWorkflowMessage(
@@ -494,7 +479,6 @@ function App() {
         resetOutput();
         replaceSourceUrl(null);
         replaceMatteUrl(null);
-        replaceCanonicalUrl(null);
       }
       await refreshRecent();
     } catch (error) {
@@ -504,6 +488,12 @@ function App() {
 
 
   const stage = resultUrl ? 3 : canonical ? 2 : project ? 1 : 0;
+  const resultOutdated = Boolean(
+    resultUrl && (
+      (job && jobIsActive(job) && !job.result)
+      || (resultCanonicalSha && canonical?.sha256 !== resultCanonicalSha)
+    ),
+  );
   const preprocessHint = !project
     ? "选择 PNG / JPEG / WebP 后会自动本地抠图"
     : canonical
@@ -566,17 +556,17 @@ function App() {
             />
             <GenerationPanel
               canonical={canonical}
-              canonicalUrl={canonicalUrl}
               resultUrl={resultUrl}
+              resultOutdated={resultOutdated}
               models={models}
               selectedModel={selectedModel}
               selectedProfile={selectedProfile}
               job={job}
+              resultJob={resultJob}
               busy={busy}
               hint={generationHint}
               onSelectModel={(nextModelId) => {
                 setModelId(nextModelId);
-                resetOutput();
               }}
               onGenerate={() => { if (!modalConnected) { setSettingsOpen(true); return; } void generate(); }}
               onCancel={() => { void cancel(); }}
