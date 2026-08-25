@@ -59,7 +59,7 @@ export default function SettingsPanel({
 
           {page === "preprocess" ? (
             <section className="settings-page">
-              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>使用 birefnet-general 在本机执行；可在 CPU / NVIDIA GPU 之间切换，不调用云端预处理。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
+              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>使用 birefnet-general 在本机执行；可在 CPU / Windows GPU 之间切换，不调用云端预处理。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
               <div className="provider-options">
                 <button
                   type="button"
@@ -78,8 +78,8 @@ export default function SettingsPanel({
                   onClick={() => void controller.changePreprocessProvider("gpu")}
                 >
                   <span className="provider-radio" />
-                  <div><strong>NVIDIA GPU</strong><p>通过 ONNXRuntime CUDAExecutionProvider 加速本地抠图。</p></div>
-                  <small className={preprocessing?.gpu_available ? "available" : ""}>{preprocessing?.gpu_available ? "可用" : "不可用"}</small>
+                  <div><strong>GPU</strong><p>Windows 使用 ONNXRuntime DirectML，本机 NVIDIA / AMD / Intel GPU 均可参与加速。</p></div>
+                  <small className={preprocessing?.gpu_available ? "available" : ""}>{preprocessing?.gpu_available ? "已安装" : "未安装"}</small>
                 </button>
               </div>
               <div className="diagnostic-grid">

@@ -44,9 +44,9 @@ After global rembg matting, the client performs local 8-connected component anal
 
 - Engine: `rembg`
 - Model: `birefnet-general`
-- Provider preference: CPU by default; optional NVIDIA GPU through ONNXRuntime CUDAExecutionProvider
-- GPU safety: if CUDA provider/hardware initialization is unavailable, rembg falls back to CPU without sending the image to cloud
-- GPU runtime: the app bundles the ONNXRuntime GPU provider on Windows/Linux, but compatible system CUDA 12 + cuDNN 9 libraries are required for actual CUDA execution
+- Provider preference: CPU by default; optional Windows GPU through ONNXRuntime DirectML
+- GPU safety: if the GPU provider cannot initialize, rembg falls back to CPU without sending the image to cloud
+- GPU runtime: Windows uses ONNXRuntime DirectML without bundling CUDA/cuDNN; Linux and macOS currently use CPU
 - Model cache: application data directory under `rembg/`
 - Canonical contract: PNG, 1024×1024, 8-bit RGBA
 - Component rule: 8-connected Alpha analysis; default all selected; tiny fragments remain preserved while all components are selected

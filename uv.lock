@@ -722,8 +722,8 @@ source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "modal", extra = ["api-proxy-support"] },
-    { name = "onnxruntime", marker = "sys_platform == 'darwin'" },
-    { name = "onnxruntime-gpu", marker = "sys_platform != 'darwin'" },
+    { name = "onnxruntime", marker = "sys_platform != 'win32'" },
+    { name = "onnxruntime-directml", marker = "sys_platform == 'win32'" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "python-multipart" },
@@ -744,8 +744,8 @@ dev = [
 requires-dist = [
     { name = "fastapi" },
     { name = "modal", extras = ["api-proxy-support"] },
-    { name = "onnxruntime", marker = "sys_platform == 'darwin'", specifier = ">=1.23.2,<1.26" },
-    { name = "onnxruntime-gpu", marker = "sys_platform != 'darwin'", specifier = ">=1.23.2,<1.26" },
+    { name = "onnxruntime", marker = "sys_platform != 'win32'", specifier = ">=1.23.2,<1.26" },
+    { name = "onnxruntime-directml", marker = "sys_platform == 'win32'", specifier = ">=1.24,<1.25" },
     { name = "pillow", specifier = ">=11,<13" },
     { name = "pydantic" },
     { name = "python-multipart" },
@@ -757,6 +757,15 @@ requires-dist = [
 [package.metadata.requires-dev]
 build = [{ name = "pyinstaller", specifier = ">=6.16,<7" }]
 dev = [{ name = "pytest", specifier = ">=8,<10" }]
+
+[[package]]
+name = "mpmath"
+version = "1.3.0"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple" }
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/e0/47/dd32fa426cc72114383ac549964eecb20ecfd886d1e5ccf5340b55b02f57/mpmath-1.3.0.tar.gz", hash = "sha256:7a28eb2a9774d00c7bc92411c19a89209d5da7c4c9a9e227be8330a23a25b91f" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/43/e3/7d92a15f894aa0c9c4b49b8ee9ac9850d6e63b03c9c32c0367a13ae62209/mpmath-1.3.0-py3-none-any.whl", hash = "sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c" },
+]
 
 [[package]]
 name = "multidict"
@@ -980,29 +989,35 @@ dependencies = [
 ]
 wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/c0/52/8b2a10e8dedf5d486332bc2b3bca0b1ed8049c0b9e4a5cced95413aadfdd/onnxruntime-1.25.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:66e52f7a30d1f780a34aa84d68a0a04d382d9f5b141884ecbf45b7566b9fbde9" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/3f/87/a424d2867477c42ef8c60172709281120797f7b0f1fd33cc36b24329c825/onnxruntime-1.25.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a5f41779f044d1ff75593df5c10a4d311bc82563687796d5218e2685b8f9da25" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/d4/55/7819e64c515f17c86005447ede8122b974ca851255a94125e2119376f0f8/onnxruntime-1.25.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:905409e9eb2ef87f8226e073f56e71faf731c3e480ebd34952cf953730e4a4ff" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/d2/ee/db3ac55ef770347a926ac0f1317df0ab42c8bc604350833b30c7356bf936/onnxruntime-1.25.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:e9d9b3b1694196bc3c5bc66f760a237a5e27d7688aaa2e2c9c0f66abd0486699" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/dc/9a/33225481a94a59906fce44e27ab12fc3bddd2aaecdc6160bd73341ca1aba/onnxruntime-1.25.1-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:311d29b943e46a55ca72ca1ea48d7815c993122bfc359f68215fddeb9583fff4" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/8b/09/f20aac60f6fcf840543be54d4e9252cfeb7e8c2bb6d22477aaeb180e763e/onnxruntime-1.25.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:98016a038b31160db23208706139fa3b99cd60bc1c5ffdade77aafd6a37a92ad" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a8/8a/3b65e7911eec86c125e3d6f43d690a6f68671500543c0390ecd6eb59b771/onnxruntime-1.25.1-cp313-cp313t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:03e800b3a4b48d9f3a2d23aacc4fa95486a3b406b14e51d1a9b8b6981d9adf9c" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/3c/bb/410a760694f8ae7bbfc5fa81ccbeb7da241e6d520ee02a333a439cf462a2/onnxruntime-1.25.1-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fd83ef5c10cfc051a1cb465db692d57b996a1bc75a2a97b161398e29cdbc47ff" },
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/fb/aa/04530bd38e31e26970fa1212346d76cf81705dc16a8ee5e6f4fb24634c11/onnxruntime-1.25.1-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:395eb662c437fa2407f44266e4778b75bff261b17c2a6fef042421f9069f871d" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/ef/7f/ec79ab5cece6a688c944a7fa214a8511d548b9d5142a15d1a3d730b705f1/onnxruntime-1.25.1-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9ae85395f41b291ae3e61780ec5092640181d369ef6c268aa8141c478b509e69" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/67/fe/20428215d822099ea2c1e3cf35c295cf1a58f467bf18b6c607597a39c18a/onnxruntime-1.25.1-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:828e1b12710fbedb6dfab5e7bae6f11563617cddf3c2e7e8d84c64de566a4a3a" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/8d/0e/6c507d1e65b2421fb44e241cbba577c7276792279485024fb1752b43f5c5/onnxruntime-1.25.1-cp314-cp314t-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:06280b06604660595037f783c6d24bc70cbe5c6093975f194cd1482e77d450de" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/df/4e/1c9df57496409dc86b320bd38f29ad7a34b7115e4f35b8fca44a827568a7/onnxruntime-1.25.1-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7e79fd5ce7db10ebcc24e020e2ed0159476e69e2326b9b7828e5aadcf6184212" },
 ]
 
 [[package]]
-name = "onnxruntime-gpu"
-version = "1.25.1"
+name = "onnxruntime-directml"
+version = "1.24.4"
 source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple" }
 dependencies = [
     { name = "flatbuffers" },
     { name = "numpy" },
     { name = "packaging" },
     { name = "protobuf" },
+    { name = "sympy" },
 ]
 wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/54/d9/0dc74ca5d208848e931abacde743d61c0c33ecc916ffac2b54d604b4cfe5/onnxruntime_gpu-1.25.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:264b65ed81c1a32c2e410423ef3e4ba3ebb603c099d5a374c8780fbeb3496239" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/0e/10/2f72ca2a2c606e3245dca27e843f74493e544bf976bf5e97c41b0259d18b/onnxruntime_gpu-1.25.1-cp312-cp312-win_amd64.whl", hash = "sha256:d73660da130e03d6f5bfba2522af01491e26902643589fe466a10f6936dfc71a" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/5b/45/cd3eacbe8b250164f2d3b745d7f66162139ed669b1c51cf4d4b5305bc6bf/onnxruntime_gpu-1.25.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:098a0f1eb7b6b5e0ae1befcb996cddfd67cbe5a0aad2356da162cc3f8213e870" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/4b/e8/252532842000aded7cb9030a99d7564ac5205c6631588fb0807b3d0a6881/onnxruntime_gpu-1.25.1-cp313-cp313-win_amd64.whl", hash = "sha256:a03cc135ad38b249f5c343cc6f80333ba7571ced4c85c940ee282d5f931f207e" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/cc/c1/f97022dcae5b52276117d37c127732abadd5c21d606bf40ef8af279e1906/onnxruntime_gpu-1.25.1-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7d9ba9bc88084a270134c49f20d9d546f372a95bc4bd1bedc22f581a19820a4f" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/77/53/0715544ca64145701e9cb9ff6f459969bd09f81bb7cd4825a019d6bcf2f3/onnxruntime_gpu-1.25.1-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b67c4f61d2ff62683271a2e52ce37e94f1e26ead24492e62ed68fb28aa29882a" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a5/80/0cfd2fba98eadb39cd71e298aa05a0ab175e4b6c85de50d2cc1a24426816/onnxruntime_gpu-1.25.1-cp314-cp314-win_amd64.whl", hash = "sha256:4d69af9d1c4de4a48f3d2a7f5c0d8f25d73febd6f467b02f545c6912005b04e6" },
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/85/01/c863a5f27f17247d1bce7af2d5666bdaae2fd55843e848c2ba3bf2faf44a/onnxruntime_gpu-1.25.1-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:dacff3a1e1590da3caa08f86e65ae12c589b4f0a11205047bad2203948111917" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/88/ea/33814eb0ec96775eda4c1d30b0d86e91d7d2cd0d84c66d3915aef0e06fa3/onnxruntime_directml-1.24.4-cp312-cp312-win_amd64.whl", hash = "sha256:f2ecb68b7b7b259d2ef3112ae760149f9b5a1e7c0fbb73d539da6250a648a614" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/60/53/2bd2696fac19cf8ca55496a0bcfe431f3aff9579eabbb0e231dc238acf6f/onnxruntime_directml-1.24.4-cp313-cp313-win_amd64.whl", hash = "sha256:2f1031cb2281e5b27cca9efe0b9399317c7286e4d226f7a79d4ab79bbd94d19e" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/b7/04/816932a3ade867a687e406716ca76e0774c6b921545b45818e3ebfcc54ce/onnxruntime_directml-1.24.4-cp314-cp314-win_amd64.whl", hash = "sha256:51d86bb949488e572b00422f344990a4a81d982416d73b6c0e4ced2bcd423d19" },
 ]
 
 [[package]]
@@ -1738,6 +1753,18 @@ dependencies = [
 sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/b5/b4/205b0d5241d934e8add0c38aa924c4f9fb7330834ff11e5444db964ec3f9/starlette-1.6.0.tar.gz", hash = "sha256:d4e3ac5e546444960c710297a3c9fc3f7ebae1b7e963f3d36173b49da535be9b" }
 wheels = [
     { url = "https://mirrors.cloud.tencent.com/pypi/packages/c8/cb/6a6a47d5b464bd08695d254f3da6e7986cc70c9fa5d778eda57538edfe56/starlette-1.6.0-py3-none-any.whl", hash = "sha256:a86dd39d14bb45f85a3d18525215a9ef0cfd1f192ac793220e72598c90335f0c" },
+]
+
+[[package]]
+name = "sympy"
+version = "1.14.0"
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple" }
+dependencies = [
+    { name = "mpmath" },
+]
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517" }
+wheels = [
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5" },
 ]
 
 [[package]]

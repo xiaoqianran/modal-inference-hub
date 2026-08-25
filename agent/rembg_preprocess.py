@@ -255,19 +255,10 @@ def _available_ort_providers() -> list[str]:
         return []
 
 
-def _nvidia_gpu_present() -> bool:
-    try:
-        from agent.hardware import detect_hardware
-
-        return bool(detect_hardware().get("gpus"))
-    except Exception:
-        return False
-
-
 def available_providers() -> list[str]:
     providers = _available_ort_providers()
     result = ["cpu"] if "CPUExecutionProvider" in providers else []
-    if "CUDAExecutionProvider" in providers and _nvidia_gpu_present():
+    if "DmlExecutionProvider" in providers or "CUDAExecutionProvider" in providers:
         result.append("gpu")
     return result
 
@@ -304,7 +295,7 @@ def status() -> dict:
     if active is None:
         if preference == "gpu" and "gpu" not in providers:
             active = "cpu"
-            fallback = "CUDAExecutionProvider 不可用，将回退 CPU"
+            fallback = "没有可用的 GPU ExecutionProvider，将回退 CPU"
         else:
             active = preference
     return {
@@ -349,19 +340,21 @@ def _get_session():
         available = ort.get_available_providers()
         requested = ["CPUExecutionProvider"]
         if preference == "gpu":
-            if "CUDAExecutionProvider" not in available:
-                _session_fallback_reason = "CUDAExecutionProvider 不可用，已回退 CPU"
-            elif not _nvidia_gpu_present():
-                _session_fallback_reason = "未检测到 NVIDIA GPU，已回退 CPU"
-            else:
+            if "DmlExecutionProvider" in available:
+                requested = ["DmlExecutionProvider", "CPUExecutionProvider"]
+            elif "CUDAExecutionProvider" in available:
                 requested = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            else:
+                _session_fallback_reason = "没有可用的 GPU ExecutionProvider，已回退 CPU"
 
         try:
             _session = new_session(ENGINE, sess_opts=options, providers=requested)
             actual = list(_session.inner_session.get_providers())
-            _session_provider = "gpu" if "CUDAExecutionProvider" in actual else "cpu"
+            _session_provider = "gpu" if any(
+                provider in actual for provider in ("DmlExecutionProvider", "CUDAExecutionProvider")
+            ) else "cpu"
             if preference == "gpu" and _session_provider != "gpu":
-                _session_fallback_reason = "CUDA provider 初始化后未激活，已回退 CPU"
+                _session_fallback_reason = "GPU provider 初始化后未激活，已回退 CPU"
         except Exception as exc:
             if preference != "gpu":
                 raise

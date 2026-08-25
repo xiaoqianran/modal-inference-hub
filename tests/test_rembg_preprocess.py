@@ -145,19 +145,17 @@ class ProviderPreferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cpu 或 gpu"):
             rembg_preprocess.set_provider_preference("metal")
 
-    def test_gpu_session_activates_cuda_provider_when_available(self) -> None:
+    def test_gpu_session_activates_directml_provider_when_available(self) -> None:
         class Inner:
             @staticmethod
             def get_providers():
-                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                return ["DmlExecutionProvider", "CPUExecutionProvider"]
 
         class Session:
             inner_session = Inner()
 
         rembg_preprocess.reset_session()
-        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
-            "agent.rembg_preprocess._nvidia_gpu_present", return_value=True
-        ), patch("onnxruntime.get_available_providers", return_value=["CUDAExecutionProvider", "CPUExecutionProvider"]), patch(
+        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch("onnxruntime.get_available_providers", return_value=["DmlExecutionProvider", "CPUExecutionProvider"]), patch(
             "rembg.session_factory.new_session", return_value=Session()
         ):
             rembg_preprocess._get_session()
@@ -176,10 +174,8 @@ class ProviderPreferenceTests(unittest.TestCase):
             inner_session = Inner()
 
         rembg_preprocess.reset_session()
-        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
-            "agent.rembg_preprocess._nvidia_gpu_present", return_value=True
-        ), patch("onnxruntime.get_available_providers", return_value=["CUDAExecutionProvider", "CPUExecutionProvider"]), patch(
-            "rembg.session_factory.new_session", side_effect=[RuntimeError("cuda dll missing"), Session()]
+        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch("onnxruntime.get_available_providers", return_value=["DmlExecutionProvider", "CPUExecutionProvider"]), patch(
+            "rembg.session_factory.new_session", side_effect=[RuntimeError("directml init failed"), Session()]
         ):
             rembg_preprocess._get_session()
             self.assertEqual(rembg_preprocess._session_provider, "cpu")
