@@ -28,6 +28,7 @@ ENGINE = "birefnet-general"
 CANONICAL_SIZE = 1024
 _BBOX_ALPHA_THRESHOLD = 8
 _session_lock = threading.RLock()
+_inference_lock = threading.Lock()
 _session = None
 _session_provider: str | None = None
 _session_fallback_reason: str | None = None
@@ -342,6 +343,8 @@ def _get_session():
         if preference == "gpu":
             if "DmlExecutionProvider" in available:
                 requested = ["DmlExecutionProvider", "CPUExecutionProvider"]
+                options.enable_mem_pattern = False
+                options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
             elif "CUDAExecutionProvider" in available:
                 requested = ["CUDAExecutionProvider", "CPUExecutionProvider"]
             else:
@@ -369,7 +372,9 @@ def _get_session():
 
 
 def _predict_mask(image: Image.Image) -> Image.Image:
-    masks = _get_session().predict(image.convert("RGB"))
+    session = _get_session()
+    with _inference_lock:
+        masks = session.predict(image.convert("RGB"))
     if not masks:
         raise RuntimeError("rembg 未返回前景 Alpha 掩码")
     return masks[0].convert("L")

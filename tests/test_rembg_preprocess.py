@@ -164,6 +164,36 @@ class ProviderPreferenceTests(unittest.TestCase):
         self.assertIsNone(current["fallback_reason"])
         rembg_preprocess.reset_session()
 
+    def test_directml_session_uses_required_session_options(self) -> None:
+        import onnxruntime as ort
+
+        class Inner:
+            @staticmethod
+            def get_providers():
+                return ["DmlExecutionProvider", "CPUExecutionProvider"]
+
+        class Session:
+            inner_session = Inner()
+
+        captured = {}
+
+        def fake_new_session(_model, *, sess_opts, providers):
+            captured["enable_mem_pattern"] = sess_opts.enable_mem_pattern
+            captured["execution_mode"] = sess_opts.execution_mode
+            captured["providers"] = list(providers)
+            return Session()
+
+        rembg_preprocess.reset_session()
+        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
+            "onnxruntime.get_available_providers",
+            return_value=["DmlExecutionProvider", "CPUExecutionProvider"],
+        ), patch("rembg.session_factory.new_session", side_effect=fake_new_session):
+            rembg_preprocess._get_session()
+        self.assertFalse(captured["enable_mem_pattern"])
+        self.assertEqual(captured["execution_mode"], ort.ExecutionMode.ORT_SEQUENTIAL)
+        self.assertEqual(captured["providers"][0], "DmlExecutionProvider")
+        rembg_preprocess.reset_session()
+
     def test_gpu_session_failure_falls_back_to_cpu(self) -> None:
         class Inner:
             @staticmethod

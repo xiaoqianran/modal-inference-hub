@@ -7,6 +7,7 @@ Windows-first desktop client for local 2D preprocessing and Modal-backed 3D gene
 ```text
 Source image (local only)
       │
+      ├── preprocessing starts automatically after import
       ▼
 rembg / birefnet-general / CPU
       │
@@ -65,7 +66,7 @@ Model discovery is capability-driven. The client does not hard-code the active m
 
 ## Project workspace
 
-Each imported source image creates a local project in app-data. The project stores:
+Each imported source image creates a local project in app-data and immediately starts local rembg preprocessing. If preprocessing fails, the source project remains intact and can be retried without re-importing. The project stores:
 
 - original source image
 - local `matte.png`

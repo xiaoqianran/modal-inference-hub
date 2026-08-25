@@ -206,6 +206,32 @@ function App() {
     if (resultUrl) URL.revokeObjectURL(resultUrl);
   }, [sourceUrl, matteUrl, canonicalUrl, resultUrl]);
 
+  async function runLocalPreprocess(target: Project) {
+    if (!agent?.running) return;
+    const cached = runtimeController.runtime?.preprocessing.model_downloaded;
+    setWorkflowMessage(
+      cached
+        ? "正在本机执行 birefnet-general 抠图…"
+        : "首次使用：正在准备 birefnet-general 本地模型并执行抠图…",
+    );
+    const value = await preprocessProject(agent, target.id);
+    setProject(value.project);
+    setCanonical(value.canonical);
+    setPreprocessMeta(value.preprocess);
+    setComponentState(value.component_state);
+    const [matte, canonicalBlob] = await Promise.all([
+      projectMatteBlob(agent, target.id),
+      projectCanonicalBlob(agent, target.id),
+    ]);
+    replaceUrl(setMatteUrl, matte);
+    replaceUrl(setCanonicalUrl, canonicalBlob);
+    resetOutput();
+    setWorkflowMessage(
+      `本地抠图完成 · ${value.preprocess.provider.toUpperCase()} · ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
+    );
+    await refreshRecent();
+  }
+
   async function chooseImage(file: File | null) {
     if (!agent?.running || !file) return;
     setBusy(true);
@@ -219,10 +245,13 @@ function App() {
       replaceUrl(setSourceUrl, file);
       replaceUrl(setMatteUrl, null);
       replaceUrl(setCanonicalUrl, null);
-      setWorkflowMessage("原图只保存在本机。下一步执行 rembg 全局显著性抠图。");
+      setWorkflowMessage("原图已保存在本机，正在自动开始 rembg 预处理…");
       await refreshRecent();
+      await runLocalPreprocess(value);
     } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+      setWorkflowMessage(
+        `${error instanceof Error ? error.message : String(error)}；原图已保留，可点击“重新本地抠图”重试。`,
+      );
     } finally {
       setBusy(false);
     }
@@ -231,24 +260,8 @@ function App() {
   async function preprocess() {
     if (!agent?.running || !project) return;
     setBusy(true);
-    setWorkflowMessage("正在本机执行 birefnet-general 抠图…");
     try {
-      const value = await preprocessProject(agent, project.id);
-      setProject(value.project);
-      setCanonical(value.canonical);
-      setPreprocessMeta(value.preprocess);
-      setComponentState(value.component_state);
-      const [matte, canonicalBlob] = await Promise.all([
-        projectMatteBlob(agent, project.id),
-        projectCanonicalBlob(agent, project.id),
-      ]);
-      replaceUrl(setMatteUrl, matte);
-      replaceUrl(setCanonicalUrl, canonicalBlob);
-      resetOutput();
-      setWorkflowMessage(
-        `本地抠图完成 · 检测到 ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
-      );
-      await refreshRecent();
+      await runLocalPreprocess(project);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -455,10 +468,10 @@ function App() {
 
   const stage = resultUrl || job?.status === "succeeded" ? 3 : canonical ? 2 : project ? 1 : 0;
   const preprocessHint = !project
-    ? "先选择 PNG / JPEG / WebP"
+    ? "选择 PNG / JPEG / WebP 后会自动本地抠图"
     : canonical
       ? "本地抠图完成，原图仍未上传"
-      : "首次使用会下载 birefnet-general 模型到本地应用数据目录";
+      : "预处理失败时可在这里重试；首次使用会准备本地模型";
   const generationHint = !canonical
     ? "先完成本地 rembg 预处理"
     : !modalConnected

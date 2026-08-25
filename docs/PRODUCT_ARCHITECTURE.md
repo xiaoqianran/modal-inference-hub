@@ -4,7 +4,7 @@
 ┌──────────────────────── modal-3D-client / local ────────────────────────┐
 │                                                                        │
 │  Source image                                                         │
-│      │                                                                 │
+│      │  import triggers local preprocessing automatically              │
 │      ▼                                                                 │
 │  rembg / birefnet-general / CPU or Windows GPU                         │
 │      │                                                                 │
