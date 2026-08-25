@@ -79,7 +79,7 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
 
         updated_descriptor = {"id": "can_b", "sha256": "b" * 64, "bytes": len(canonical)}
         updated_state = {**state, "selection_elapsed_ms": 3.5}
-        self.store.save_canonical_selection(project["id"], canonical, updated_descriptor, updated_state)
+        self.store.save_canonical_selection(project["id"], matte, canonical, updated_descriptor, updated_state)
         self.assertEqual(self.store.component_state(project["id"]), updated_state)
         with self.assertRaisesRegex(RuntimeError, "尚未上传"):
             self.store.canonical_remote(project["id"])

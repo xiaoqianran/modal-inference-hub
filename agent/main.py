@@ -327,11 +327,38 @@ def project_component_selection(project_id: str, request: ProjectComponentSelect
     }
     project = projects.save_canonical_selection(
         project_id,
+        result["selection_bytes"],
         result["canonical_bytes"],
         descriptor,
         state,
     )
     return {"project": project, "canonical": descriptor, "component_state": state}
+
+
+@app.get("/v1/projects/{project_id}/selection")
+def project_selection(project_id: str):
+    try:
+        path = projects.selection_path(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    except FileNotFoundError:
+        try:
+            matte_bytes = projects.matte_path(project_id).read_bytes()
+            state = projects.component_state(project_id)
+            selected = state.get("selected_component_ids") or [
+                item["id"] for item in state.get("components", [])
+            ]
+            result = rembg_preprocess.canonicalize_components(
+                matte_bytes,
+                selected,
+                component_state=state,
+            )
+            path = projects.save_selection_preview(project_id, result["selection_bytes"])
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="项目不存在") from exc
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail="项目尚无可恢复的前景选择预览") from exc
+    return FileResponse(path, media_type="image/png")
 
 
 @app.get("/v1/projects/{project_id}/matte")

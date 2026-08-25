@@ -221,6 +221,7 @@ def canonicalize_components(
 
     bbox = _foreground_bbox(filtered.getchannel("A"))
     canonical = _letterbox_rgba(filtered, bbox)
+    selection_bytes = _png_bytes(filtered, compress_level=1)
     canonical_bytes = _png_bytes(canonical, compress_level=1)
     visible = []
     for item in analysis["components"]:
@@ -229,6 +230,7 @@ def canonicalize_components(
         updated.pop("label", None)
         visible.append(updated)
     return {
+        "selection_bytes": selection_bytes,
         "canonical_bytes": canonical_bytes,
         "canonical_sha256": hashlib.sha256(canonical_bytes).hexdigest(),
         "source_size": analysis["source_size"],

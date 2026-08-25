@@ -75,6 +75,15 @@ class ComponentSelectionTests(unittest.TestCase):
         self.assertEqual(actual.size, expected.size)
         self.assertEqual(actual.tobytes(), expected.tobytes())
 
+    def test_selection_preview_hides_unselected_objects_in_source_coordinates(self) -> None:
+        matte = self._matte()
+        analysis = rembg_preprocess.analyze_components(matte)
+        first = analysis["components"][0]
+        result = rembg_preprocess.canonicalize_components(matte, [first["id"]])
+        preview = Image.open(io.BytesIO(result["selection_bytes"])).convert("RGBA")
+        self.assertEqual(preview.size, (400, 200))
+        self.assertEqual(preview.getchannel("A").getbbox(), tuple(first["bbox"]))
+
     def test_selecting_one_object_removes_the_other_and_reboxes(self) -> None:
         matte = self._matte()
         analysis = rembg_preprocess.analyze_components(matte)

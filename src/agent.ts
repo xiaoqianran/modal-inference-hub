@@ -331,6 +331,10 @@ export async function projectMatteBlob(info: AgentInfo, projectId: string) {
   return (await request(info, `/v1/projects/${projectId}/matte`, {}, 600_000)).blob();
 }
 
+export async function projectSelectionBlob(info: AgentInfo, projectId: string) {
+  return (await request(info, `/v1/projects/${projectId}/selection`, {}, 600_000)).blob();
+}
+
 export const preprocessProject = (info: AgentInfo, projectId: string) =>
   json<PreprocessResult>(info, `/v1/projects/${projectId}/preprocess`, {
     method: "POST",

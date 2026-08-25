@@ -13,7 +13,7 @@ import {
   prepareExport,
   preprocessProject,
   projectCanonicalBlob,
-  projectMatteBlob,
+  projectSelectionBlob,
   projectSourceBlob,
   savePreparedExport,
   selectProjectComponents,
@@ -139,7 +139,7 @@ function App() {
     setPreprocessMeta(null);
     if (savedCanonical) {
       const [matte, canonicalBlob, components] = await Promise.all([
-        projectMatteBlob(agent, value.id).catch(() => null),
+        projectSelectionBlob(agent, value.id).catch(() => null),
         projectCanonicalBlob(agent, value.id),
         getProjectComponents(agent, value.id).catch(() => null),
       ]);
@@ -253,7 +253,7 @@ function App() {
       setPreprocessMeta(value.preprocess);
       setComponentState(value.component_state);
       const [matte, canonicalBlob] = await Promise.all([
-        projectMatteBlob(agent, target.id),
+        projectSelectionBlob(agent, target.id),
         projectCanonicalBlob(agent, target.id),
       ]);
       replaceUrl(setMatteUrl, matte);
@@ -328,7 +328,12 @@ function App() {
       setProject(value.project);
       setCanonical(value.canonical);
       setComponentState(value.component_state);
-      replaceUrl(setCanonicalUrl, await projectCanonicalBlob(agent, project.id));
+      const [selectionBlob, canonicalBlob] = await Promise.all([
+        projectSelectionBlob(agent, project.id),
+        projectCanonicalBlob(agent, project.id),
+      ]);
+      replaceUrl(setMatteUrl, selectionBlob);
+      replaceUrl(setCanonicalUrl, canonicalBlob);
       resetOutput();
       const count = value.component_state.selected_component_ids.length;
       const elapsed = value.component_state.selection_elapsed_ms;
@@ -594,7 +599,7 @@ function App() {
                   {sourceUrl ? <img src={sourceUrl} alt="Source" /> : <div className="empty-image">原图不会上传到 Modal</div>}
                 </div>
                 <div className="image-stage compact checker component-stage">
-                  <span className="preview-label">Full RGBA · 连通域</span>
+                  <span className="preview-label">当前选择 RGBA · 连通域</span>
                   {matteUrl && componentState ? (
                     <svg
                       className={`component-overlay ${selectionBox ? "dragging" : ""}`}

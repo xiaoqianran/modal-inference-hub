@@ -278,6 +278,19 @@ class ProjectStore:
             raise FileNotFoundError(path)
         return path
 
+    def selection_path(self, project_id: str) -> Path:
+        path = self._asset_path(project_id, "selection.png")
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+
+    def save_selection_preview(self, project_id: str, data: bytes) -> Path:
+        path = self._asset_path(project_id, "selection.png")
+        temporary = path.with_suffix(".png.tmp")
+        temporary.write_bytes(data)
+        temporary.replace(path)
+        return path
+
     def canonical_local_path(self, project_id: str) -> Path:
         path = self._asset_path(project_id, "canonical.png")
         if not path.is_file():
@@ -309,6 +322,7 @@ class ProjectStore:
     ) -> dict:
         paths = (
             (self._asset_path(project_id, "matte.png"), matte_bytes),
+            (self._asset_path(project_id, "selection.png"), matte_bytes),
             (self._asset_path(project_id, "canonical.png"), canonical_bytes),
         )
         for path, data in paths:
@@ -322,10 +336,12 @@ class ProjectStore:
     def save_canonical_selection(
         self,
         project_id: str,
+        selection_bytes: bytes,
         canonical_bytes: bytes,
         descriptor: dict,
         component_state: dict,
     ) -> dict:
+        self.save_selection_preview(project_id, selection_bytes)
         path = self._asset_path(project_id, "canonical.png")
         temporary = path.with_suffix(".png.tmp")
         temporary.write_bytes(canonical_bytes)
