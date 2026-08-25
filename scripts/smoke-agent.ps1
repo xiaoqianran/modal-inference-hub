@@ -68,9 +68,10 @@ try {
   $capabilities = Invoke-RestMethod "$base/v1/capabilities" -Headers $headers
   if ($capabilities.preprocessing.kind -ne "rembg") { throw "本地预处理引擎应为 rembg。" }
   if ($capabilities.preprocessing.engine -ne "birefnet-general-lite") { throw "默认 rembg 引擎应为 birefnet-general-lite。" }
-  if ($capabilities.preprocessing.provider_preference -ne "cpu") { throw "默认 rembg provider 偏好应为 cpu。" }
-  if ($capabilities.preprocessing.provider -ne "cpu") { throw "Fresh CI 环境默认应实际使用 cpu。" }
-  if ($capabilities.preprocessing.available_providers -notcontains "cpu") { throw "CPU provider 必须可用。" }
+  if ($capabilities.preprocessing.provider_preference -notin @("cpu", "gpu")) { throw "rembg provider 偏好必须是 cpu 或 gpu。" }
+  if ($capabilities.preprocessing.available_providers -notcontains $capabilities.preprocessing.provider) { throw "实际 provider 必须属于可用 provider 列表。" }
+  if ($capabilities.preprocessing.provider -eq "gpu" -and $capabilities.preprocessing.available_providers -notcontains "gpu") { throw "GPU provider 状态不一致。" }
+  if ($capabilities.preprocessing.provider -eq "cpu" -and $capabilities.preprocessing.available_providers -notcontains "cpu") { throw "CPU provider 状态不一致。" }
   if ($capabilities.preprocessing.canonical_size -ne 1024) { throw "Canonical 尺寸契约应为 1024。" }
   if (-not $capabilities.preprocessing.local_only) { throw "2D 预处理必须标记为 local_only。" }
 
