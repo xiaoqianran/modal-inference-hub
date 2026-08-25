@@ -13,6 +13,7 @@ $token = [BitConverter]::ToString($tokenBytes).Replace("-", "").ToLowerInvariant
 $env:MODAL_3D_AGENT_TOKEN = $token
 $env:MODAL_3D_AGENT_HANDSHAKE = $handshake
 $env:MODAL_3D_AGENT_DATA_DIR = $dataDir
+$env:MODAL_3D_AGENT_SMOKE = "1"
 
 function Invoke-HttpAllowError {
   param(

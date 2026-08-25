@@ -8,6 +8,7 @@ from pathlib import Path
 
 import uvicorn
 
+from agent import rembg_preprocess
 from agent.main import app
 from agent.modal_client import connect
 
@@ -85,6 +86,8 @@ def main() -> None:
     tmp.write_text(str(port), encoding="utf-8")
     os.replace(tmp, path)
     print(f"[agent] listening port={port}", flush=True)
+    if os.environ.get("MODAL_3D_AGENT_SMOKE") != "1" and rembg_preprocess.warmup_gpu_async():
+        print("[agent] GPU preprocess warmup scheduled", flush=True)
 
     config = uvicorn.Config(
         app,

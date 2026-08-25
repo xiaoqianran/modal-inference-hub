@@ -30,6 +30,7 @@ $outputName = "modal-3d-agent-$TargetTriple"
 $outputDirectory = Join-Path $outputRoot $outputName
 $outputPath = Join-Path $outputDirectory "$outputName.exe"
 $workDirectory = Join-Path $projectRoot "build\pyinstaller"
+$hookDirectory = Join-Path $projectRoot "scripts\pyinstaller-hooks"
 
 $inputPaths = @(
     (Join-Path $projectRoot "pyproject.toml"),
@@ -37,6 +38,8 @@ $inputPaths = @(
     $PSCommandPath
 )
 $inputPaths += Get-ChildItem -LiteralPath (Join-Path $projectRoot "agent") -Recurse -File -Filter "*.py" |
+    Select-Object -ExpandProperty FullName
+$inputPaths += Get-ChildItem -LiteralPath $hookDirectory -File -Filter "*.py" |
     Select-Object -ExpandProperty FullName
 
 if (-not $Force -and (Test-Path -LiteralPath $outputPath)) {
@@ -81,11 +84,12 @@ try {
         --workpath $workDirectory `
         --specpath $workDirectory `
         --paths $projectRoot `
+        --additional-hooks-dir $hookDirectory `
         --collect-data rembg `
         --collect-submodules rembg.sessions `
         --copy-metadata rembg `
         --copy-metadata pymatting `
-        --collect-binaries onnxruntime `
+        --exclude-module numba.np.ufunc.tbbpool `
         --hidden-import nvidia.cublas `
         --hidden-import nvidia.cuda_runtime `
         --hidden-import nvidia.cudnn `
@@ -111,14 +115,11 @@ if (-not (Test-Path -LiteralPath $outputPath)) {
     throw "本地代理打包完成，但没有生成预期文件：$outputPath"
 }
 
-# 只支持 CUDA/CPU；移除 ORT wheel 自带但本项目不使用的 TensorRT provider。
-Get-ChildItem -LiteralPath $outputDirectory -Recurse -File -Filter "onnxruntime_providers_tensorrt.dll" |
-    Remove-Item -Force
-
 $smokeToken = [Guid]::NewGuid().ToString("N")
 $smokeHandshake = Join-Path $workDirectory "smoke-$smokeToken.port"
 $env:MODAL_3D_AGENT_TOKEN = $smokeToken
 $env:MODAL_3D_AGENT_HANDSHAKE = $smokeHandshake
+$env:MODAL_3D_AGENT_SMOKE = "1"
 $agentProcess = Start-Process -FilePath $outputPath -WindowStyle Hidden -PassThru
 try {
     $deadline = [DateTime]::UtcNow.AddSeconds(90)

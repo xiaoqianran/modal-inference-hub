@@ -106,7 +106,7 @@ export default function SettingsPanel({
 
           {page === "preprocess" ? (
             <section className="settings-page">
-              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>默认使用 birefnet-general-lite 在本机执行；可在 CPU / Windows GPU 之间切换，不调用云端预处理。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
+              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>默认启用 Windows GPU，并在 Agent 启动后后台准备模型、常驻预热 CUDA Session；只有在这里明确切换到 CPU 才会关闭 GPU 预热。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
               <div className="provider-options">
                 <button
                   type="button"
@@ -125,15 +125,15 @@ export default function SettingsPanel({
                   onClick={() => void controller.changePreprocessProvider("gpu")}
                 >
                   <span className="provider-radio" />
-                  <div><strong>GPU</strong><p>Windows 使用 ONNXRuntime CUDA（cuDNN），仅 NVIDIA GPU 加速，运行库随 Agent 打包。</p></div>
-                  <small className={preprocessing?.gpu_available ? "available" : ""}>{preprocessing?.gpu_available ? "已安装" : "未安装"}</small>
+                  <div><strong>GPU</strong><p>Windows 使用 ONNXRuntime CUDA（cuDNN）；选中后常驻预热，首次启动会后台准备模型。</p></div>
+                  <small className={preprocessing?.gpu_available ? "available" : ""}>{preprocessing?.gpu_warm ? "已预热" : preprocessing?.gpu_available ? "可用" : "未安装"}</small>
                 </button>
               </div>
               <div className="diagnostic-grid">
                 <div><span>引擎</span><strong>{preprocessing?.engine ?? "birefnet-general-lite"}</strong></div>
                 <div><span>实际执行</span><strong>{preprocessing?.provider?.toUpperCase() ?? "CPU"}</strong></div>
                 <div><span>Canonical</span><strong>{preprocessing ? `${preprocessing.canonical_size}×${preprocessing.canonical_size}` : "1024×1024"}</strong></div>
-                <div><span>模型状态</span><strong>{preprocessing?.model_downloaded ? (preprocessing.download?.integrity === "verified" ? "已缓存 · 已校验" : "已缓存") : preprocessing?.download?.resumable ? "可断点续传" : "首次抠图自动下载"}</strong></div>
+                <div><span>模型状态</span><strong>{preprocessing?.model_downloaded ? (preprocessing.download?.integrity === "verified" ? "已缓存 · 已校验" : "已缓存") : preprocessing?.download?.resumable ? "可断点续传" : preprocessing?.provider_preference === "gpu" ? "启动后自动准备" : "首次抠图自动下载"}</strong></div>
                 <div className="wide"><span>ONNXRuntime Providers</span><code>{preprocessing?.ort_providers?.join(" · ") || "启动 Agent 后检测"}</code></div>
                 <div className="wide"><span>模型目录</span><code>{preprocessing?.model_home ?? "启动 Agent 后显示"}</code></div>
               </div>

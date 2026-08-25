@@ -88,6 +88,7 @@ export type PreprocessRuntimeStatus = {
   available_providers: ("cpu" | "gpu")[];
   ort_providers: string[];
   gpu_available: boolean;
+  gpu_warm: boolean;
   fallback_reason: string | null;
   model_home: string;
   model_path: string;

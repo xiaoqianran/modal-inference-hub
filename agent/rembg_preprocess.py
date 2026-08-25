@@ -14,6 +14,7 @@ provider_preference = runtime.provider_preference
 available_providers = runtime.available_providers
 set_provider_preference = runtime.set_provider_preference
 reset_session = runtime.reset_session
+warmup_gpu_async = runtime.warmup_gpu_async
 def prepare_model_async() -> dict:
     model_store.prepare_model_async()
     return status()

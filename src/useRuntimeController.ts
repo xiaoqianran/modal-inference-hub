@@ -143,8 +143,13 @@ export function useRuntimeController() {
     let timer = 0;
     async function heartbeat() {
       try {
-        await probeAgent(info);
-        if (!cancelled) setAgentMessage(`本地服务正常 · 127.0.0.1:${info.port}`);
+        const [, preprocessing] = await Promise.all([probeAgent(info), getPreprocessStatus(info)]);
+        if (!cancelled) {
+          setAgentMessage(`本地服务正常 · 127.0.0.1:${info.port}`);
+          setRuntime((current) => current
+            ? { ...current, preprocessing: { ...preprocessing, kind: "rembg" } }
+            : current);
+        }
       } catch (error) {
         if (!cancelled) setAgentMessage(`本地服务响应异常 · ${errorText(error)}`);
       } finally {

@@ -138,7 +138,7 @@ class ProviderPreferenceTests(unittest.TestCase):
         ), patch(
             "agent.preprocess.runtime._available_ort_providers",
             return_value=["CPUExecutionProvider"],
-        ):
+        ), patch("agent.preprocess.runtime.warmup_gpu_async"):
             gpu = rembg_preprocess.set_provider_preference("gpu")
             self.assertEqual(rembg_preprocess.provider_preference(), "gpu")
             self.assertEqual(gpu["provider_preference"], "gpu")
@@ -154,6 +154,75 @@ class ProviderPreferenceTests(unittest.TestCase):
     def test_invalid_provider_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "cpu 或 gpu"):
             rembg_preprocess.set_provider_preference("metal")
+
+    def test_gpu_is_default_when_no_preference_file_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.preprocess.model_store.rembg_home", return_value=Path(temporary)
+        ):
+            self.assertEqual(runtime.provider_preference(), "gpu")
+
+    def test_cpu_preference_disables_gpu_warmup(self) -> None:
+        with patch("agent.preprocess.runtime.provider_preference", return_value="cpu"), patch(
+            "agent.preprocess.runtime._get_session"
+        ) as get_session:
+            self.assertFalse(runtime.warmup_gpu_async())
+            get_session.assert_not_called()
+
+    def test_gpu_warmup_keeps_cuda_session_resident(self) -> None:
+        rembg_preprocess.reset_session()
+
+        def warm_session():
+            runtime._session = object()
+            runtime._session_provider = "gpu"
+            runtime._session_ort_provider = "CUDAExecutionProvider"
+            return runtime._session
+
+        with patch("agent.preprocess.runtime.provider_preference", return_value="gpu"), patch(
+            "agent.preprocess.runtime._get_session", side_effect=warm_session
+        ):
+            self.assertTrue(runtime.warmup_gpu_async())
+            thread = runtime._warmup_thread
+            self.assertIsNotNone(thread)
+            thread.join(timeout=1)
+            self.assertFalse(thread.is_alive())
+            self.assertTrue(runtime.status()["gpu_warm"])
+            self.assertIsNotNone(runtime._session)
+
+        rembg_preprocess.reset_session()
+
+    def test_switching_to_cpu_releases_warm_gpu_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.preprocess.model_store.rembg_home", return_value=Path(temporary)
+        ), patch("agent.preprocess.runtime._available_ort_providers", return_value=["CPUExecutionProvider"]):
+            runtime._session = object()
+            runtime._session_provider = "gpu"
+            runtime._session_ort_provider = "CUDAExecutionProvider"
+            result = rembg_preprocess.set_provider_preference("cpu")
+            self.assertIsNone(runtime._session)
+            self.assertEqual(result["provider_preference"], "cpu")
+            self.assertFalse(result["gpu_warm"])
+
+    def test_session_build_discards_stale_gpu_when_preference_changes(self) -> None:
+        preference = {"value": "gpu"}
+        built: list[str] = []
+
+        def build(provider: str):
+            built.append(provider)
+            if provider == "gpu":
+                preference["value"] = "cpu"
+                return object(), "gpu", "CUDAExecutionProvider", None
+            return object(), "cpu", "CPUExecutionProvider", None
+
+        rembg_preprocess.reset_session()
+        with patch("agent.preprocess.runtime.provider_preference", side_effect=lambda: preference["value"]), patch(
+            "agent.preprocess.model_store.ensure_model_ready"
+        ), patch("agent.preprocess.runtime._build_session", side_effect=build):
+            runtime._get_session()
+
+        self.assertEqual(built, ["gpu", "cpu"])
+        self.assertEqual(runtime._session_provider, "cpu")
+        self.assertEqual(runtime._session_ort_provider, "CPUExecutionProvider")
+        rembg_preprocess.reset_session()
 
     def test_gpu_session_activates_cuda_provider_when_available(self) -> None:
         class Inner:
