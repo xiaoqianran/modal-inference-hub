@@ -9,7 +9,9 @@ dependencies = [
     "pillow>=11,<13",
     "pydantic",
     "python-multipart",
-    "rembg[cpu]>=2.0.70,<3",
+    "onnxruntime>=1.23.2,<1.26; sys_platform == 'darwin'",
+    "onnxruntime-gpu>=1.23.2,<1.26; sys_platform != 'darwin'",
+    "rembg>=2.0.70,<3",
     "scipy>=1.12,<2",
     "uvicorn",
 ]

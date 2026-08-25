@@ -67,12 +67,17 @@ try {
   $capabilities = Invoke-RestMethod "$base/v1/capabilities" -Headers $headers
   if ($capabilities.preprocessing.kind -ne "rembg") { throw "本地预处理引擎应为 rembg。" }
   if ($capabilities.preprocessing.engine -ne "birefnet-general") { throw "默认 rembg 引擎应为 birefnet-general。" }
-  if ($capabilities.preprocessing.provider -ne "cpu") { throw "测试阶段默认 rembg provider 应为 cpu。" }
+  if ($capabilities.preprocessing.provider_preference -ne "cpu") { throw "默认 rembg provider 偏好应为 cpu。" }
+  if ($capabilities.preprocessing.provider -ne "cpu") { throw "Fresh CI 环境默认应实际使用 cpu。" }
+  if ($capabilities.preprocessing.available_providers -notcontains "cpu") { throw "CPU provider 必须可用。" }
   if ($capabilities.preprocessing.canonical_size -ne 1024) { throw "Canonical 尺寸契约应为 1024。" }
   if (-not $capabilities.preprocessing.local_only) { throw "2D 预处理必须标记为 local_only。" }
 
   $preprocess = Invoke-RestMethod "$base/v1/preprocess/status" -Headers $headers
   if ($preprocess.engine -ne "birefnet-general") { throw "预处理状态引擎不匹配。" }
+  $providerBody = @{ provider = "cpu" } | ConvertTo-Json
+  $provider = Invoke-RestMethod "$base/v1/preprocess/provider" -Headers $headers -Method Post -ContentType "application/json" -Body $providerBody
+  if ($provider.provider_preference -ne "cpu") { throw "CPU provider 设置未持久化。" }
   if ($preprocess.model_downloaded) { throw "Fresh CI 环境不应预装 birefnet-general 模型。" }
 
   $image = Join-Path $dataDir "smoke.png"

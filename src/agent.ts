@@ -83,10 +83,16 @@ export type RuntimeCapabilities = {
     kind: "rembg";
     engine: string;
     provider: "cpu" | "gpu";
+    provider_preference: "cpu" | "gpu";
+    available_providers: ("cpu" | "gpu")[];
+    ort_providers: string[];
+    gpu_available: boolean;
+    fallback_reason: string | null;
     model_home: string;
     model_path: string;
     model_downloaded: boolean;
     canonical_size: number;
+    cpu_threads: number;
     local_only: boolean;
   };
 };
@@ -346,6 +352,15 @@ export const submitProjectGeneration = (
 
 export const getCapabilities = (info: AgentInfo) =>
   json<RuntimeCapabilities>(info, "/v1/capabilities");
+
+export const setPreprocessProvider = (
+  info: AgentInfo,
+  provider: "cpu" | "gpu",
+) =>
+  json<RuntimeCapabilities["preprocessing"]>(info, "/v1/preprocess/provider", {
+    method: "POST",
+    body: JSON.stringify({ provider }),
+  });
 
 export const listModels = (info: AgentInfo) =>
   json<ModelSpec[]>(info, "/v1/models");

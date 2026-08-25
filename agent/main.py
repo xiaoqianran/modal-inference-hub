@@ -88,6 +88,10 @@ class ModalCredentials(BaseModel):
     token_secret: SecretStr
 
 
+class PreprocessProviderRequest(BaseModel):
+    provider: str
+
+
 class ProjectComponentSelectionRequest(BaseModel):
     selected_component_ids: list[str]
 
@@ -120,6 +124,14 @@ def runtime_capabilities() -> dict:
 @app.get("/v1/preprocess/status")
 def preprocess_status() -> dict:
     return rembg_preprocess.status()
+
+
+@app.post("/v1/preprocess/provider")
+def preprocess_provider(request: PreprocessProviderRequest) -> dict:
+    try:
+        return rembg_preprocess.set_provider_preference(request.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/modal/status")
@@ -273,6 +285,7 @@ def project_component_selection(project_id: str, request: ProjectComponentSelect
         if current["status"] in {"generating", "running", "connection_required", "cancel_requested"}:
             raise HTTPException(status_code=409, detail="远程生成任务活动期间不能修改前景选择")
         matte_bytes = projects.matte_path(project_id).read_bytes()
+        component_state = projects.component_state(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
     except FileNotFoundError as exc:
@@ -281,6 +294,7 @@ def project_component_selection(project_id: str, request: ProjectComponentSelect
         result = rembg_preprocess.canonicalize_components(
             matte_bytes,
             request.selected_component_ids,
+            component_state=component_state,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

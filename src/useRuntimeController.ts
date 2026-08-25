@@ -12,6 +12,7 @@ import {
   probeAgent,
   saveCredentials,
   revealAppData,
+  setPreprocessProvider,
   startAgent,
   stopAgent,
   type AgentInfo,
@@ -23,7 +24,7 @@ import {
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-export type RuntimeAction = "agent" | "connect" | "disconnect" | "forget" | "refresh";
+export type RuntimeAction = "agent" | "connect" | "disconnect" | "forget" | "refresh" | "provider";
 export type RuntimeNotice = { tone: "info" | "success" | "error"; text: string };
 
 function errorText(error: unknown) {
@@ -257,6 +258,23 @@ export function useRuntimeController() {
     }
   }, [agent, begin, finish]);
 
+  const changePreprocessProvider = useCallback(async (provider: "cpu" | "gpu") => {
+    if (!agent?.running || !begin("provider")) return;
+    try {
+      const preprocessing = await setPreprocessProvider(agent, provider);
+      setRuntime((current) => current ? { ...current, preprocessing } : current);
+      const fallback = preprocessing.fallback_reason ? `；${preprocessing.fallback_reason}` : "";
+      setNotice({
+        tone: preprocessing.provider === provider ? "success" : "info",
+        text: `本地预处理已选择 ${provider.toUpperCase()}，实际执行 ${preprocessing.provider.toUpperCase()}${fallback}`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: errorText(error) });
+    } finally {
+      finish("provider");
+    }
+  }, [agent, begin, finish]);
+
   const openDataDirectory = useCallback(async () => {
     try {
       await revealAppData();
@@ -291,6 +309,7 @@ export function useRuntimeController() {
     disconnect,
     forget,
     refresh,
+    changePreprocessProvider,
     openDataDirectory,
   };
 }

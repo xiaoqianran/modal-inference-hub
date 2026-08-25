@@ -59,14 +59,38 @@ export default function SettingsPanel({
 
           {page === "preprocess" ? (
             <section className="settings-page">
-              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>当前测试阶段固定使用 birefnet-general + CPU；不调用云端预处理。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
+              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>使用 birefnet-general 在本机执行；可在 CPU / NVIDIA GPU 之间切换，不调用云端预处理。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
+              <div className="provider-options">
+                <button
+                  type="button"
+                  className={preprocessing?.provider_preference === "cpu" ? "selected" : ""}
+                  disabled={!agent?.running || busy}
+                  onClick={() => void controller.changePreprocessProvider("cpu")}
+                >
+                  <span className="provider-radio" />
+                  <div><strong>CPU</strong><p>兼容性最高；使用最多 {preprocessing?.cpu_threads ?? 8} 个本地线程。</p></div>
+                  <small className="available">可用</small>
+                </button>
+                <button
+                  type="button"
+                  className={preprocessing?.provider_preference === "gpu" ? "selected" : ""}
+                  disabled={!agent?.running || busy || !preprocessing?.gpu_available}
+                  onClick={() => void controller.changePreprocessProvider("gpu")}
+                >
+                  <span className="provider-radio" />
+                  <div><strong>NVIDIA GPU</strong><p>通过 ONNXRuntime CUDAExecutionProvider 加速本地抠图。</p></div>
+                  <small className={preprocessing?.gpu_available ? "available" : ""}>{preprocessing?.gpu_available ? "可用" : "不可用"}</small>
+                </button>
+              </div>
               <div className="diagnostic-grid">
                 <div><span>引擎</span><strong>{preprocessing?.engine ?? "birefnet-general"}</strong></div>
-                <div><span>执行设备</span><strong>{preprocessing?.provider?.toUpperCase() ?? "CPU"}</strong></div>
+                <div><span>实际执行</span><strong>{preprocessing?.provider?.toUpperCase() ?? "CPU"}</strong></div>
                 <div><span>Canonical</span><strong>{preprocessing ? `${preprocessing.canonical_size}×${preprocessing.canonical_size}` : "1024×1024"}</strong></div>
                 <div><span>模型状态</span><strong>{preprocessing?.model_downloaded ? "已缓存" : "首次抠图自动下载"}</strong></div>
+                <div className="wide"><span>ONNXRuntime Providers</span><code>{preprocessing?.ort_providers?.join(" · ") || "启动 Agent 后检测"}</code></div>
                 <div className="wide"><span>模型目录</span><code>{preprocessing?.model_home ?? "启动 Agent 后显示"}</code></div>
               </div>
+              {preprocessing?.fallback_reason ? <div className="settings-explainer"><strong>Provider 回退</strong><p>{preprocessing.fallback_reason}</p></div> : null}
               <div className="settings-explainer"><strong>Canonical 规则</strong><p>rembg 只生成全局 Alpha；随后按前景联合包围盒严格保持高宽比，等比缩放并透明 Letterbox 到 1024×1024。</p></div>
               <div className="settings-actions"><button type="button" className="quiet-button" disabled={!agent?.running || busy} onClick={() => void controller.refresh()}>{active("refresh") ? "刷新中…" : "刷新状态"}</button></div>
             </section>

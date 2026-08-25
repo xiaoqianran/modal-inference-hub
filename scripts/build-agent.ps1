@@ -66,7 +66,7 @@ try {
         --specpath $workDirectory `
         --paths $projectRoot `
         --collect-all rembg `
-        --collect-all onnxruntime `
+        --collect-binaries onnxruntime `
         (Join-Path $projectRoot "agent\server.py")
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller 打包失败，退出码：$LASTEXITCODE"

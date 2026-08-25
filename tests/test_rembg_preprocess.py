@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import tempfile
 import unittest
 from unittest.mock import patch
+from pathlib import Path
 
 from PIL import Image
 
@@ -69,7 +71,9 @@ class ComponentSelectionTests(unittest.TestCase):
                 rgba.convert("RGBA"),
                 rembg_preprocess._foreground_bbox(rgba.getchannel("A")),
             )
-        self.assertEqual(selected["canonical_bytes"], rembg_preprocess._png_bytes(expected))
+        actual = Image.open(io.BytesIO(selected["canonical_bytes"])).convert("RGBA")
+        self.assertEqual(actual.size, expected.size)
+        self.assertEqual(actual.tobytes(), expected.tobytes())
 
     def test_selecting_one_object_removes_the_other_and_reboxes(self) -> None:
         matte = self._matte()
@@ -90,6 +94,97 @@ class ComponentSelectionTests(unittest.TestCase):
     def test_unknown_component_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "未知前景组件"):
             rembg_preprocess.canonicalize_components(self._matte(), ["cc-99999"])
+
+    def test_in_memory_cache_avoids_connected_component_reanalysis(self) -> None:
+        matte = self._matte()
+        analysis = rembg_preprocess.analyze_components(matte)
+        state = {
+            **analysis,
+            "components": [
+                {key: value for key, value in item.items() if key != "label"}
+                for item in analysis["components"]
+            ],
+        }
+        first = state["components"][0]["id"]
+        rembg_preprocess.clear_selection_cache()
+        rembg_preprocess.canonicalize_components(matte, [first], component_state=state)
+        with patch(
+            "agent.rembg_preprocess._label_components",
+            side_effect=AssertionError("cache miss"),
+        ):
+            result = rembg_preprocess.canonicalize_components(
+                matte,
+                [first],
+                component_state=state,
+            )
+        self.assertEqual(result["selected_component_ids"], [first])
+
+
+class ProviderPreferenceTests(unittest.TestCase):
+    def test_provider_preference_is_persisted_and_gpu_falls_back_when_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.rembg_preprocess.rembg_home",
+            return_value=Path(temporary),
+        ), patch(
+            "agent.rembg_preprocess._available_ort_providers",
+            return_value=["CPUExecutionProvider"],
+        ):
+            gpu = rembg_preprocess.set_provider_preference("gpu")
+            self.assertEqual(rembg_preprocess.provider_preference(), "gpu")
+            self.assertEqual(gpu["provider_preference"], "gpu")
+            self.assertEqual(gpu["provider"], "cpu")
+            self.assertFalse(gpu["gpu_available"])
+            self.assertIn("回退 CPU", gpu["fallback_reason"] or "")
+
+            cpu = rembg_preprocess.set_provider_preference("cpu")
+            self.assertEqual(rembg_preprocess.provider_preference(), "cpu")
+            self.assertEqual(cpu["provider"], "cpu")
+            self.assertIsNone(cpu["fallback_reason"])
+
+    def test_invalid_provider_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cpu 或 gpu"):
+            rembg_preprocess.set_provider_preference("metal")
+
+    def test_gpu_session_activates_cuda_provider_when_available(self) -> None:
+        class Inner:
+            @staticmethod
+            def get_providers():
+                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+        class Session:
+            inner_session = Inner()
+
+        rembg_preprocess.reset_session()
+        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
+            "agent.rembg_preprocess._nvidia_gpu_present", return_value=True
+        ), patch("onnxruntime.get_available_providers", return_value=["CUDAExecutionProvider", "CPUExecutionProvider"]), patch(
+            "rembg.session_factory.new_session", return_value=Session()
+        ):
+            rembg_preprocess._get_session()
+            current = rembg_preprocess.status()
+        self.assertEqual(current["provider"], "gpu")
+        self.assertIsNone(current["fallback_reason"])
+        rembg_preprocess.reset_session()
+
+    def test_gpu_session_failure_falls_back_to_cpu(self) -> None:
+        class Inner:
+            @staticmethod
+            def get_providers():
+                return ["CPUExecutionProvider"]
+
+        class Session:
+            inner_session = Inner()
+
+        rembg_preprocess.reset_session()
+        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
+            "agent.rembg_preprocess._nvidia_gpu_present", return_value=True
+        ), patch("onnxruntime.get_available_providers", return_value=["CUDAExecutionProvider", "CPUExecutionProvider"]), patch(
+            "rembg.session_factory.new_session", side_effect=[RuntimeError("cuda dll missing"), Session()]
+        ):
+            rembg_preprocess._get_session()
+            self.assertEqual(rembg_preprocess._session_provider, "cpu")
+            self.assertIn("GPU 初始化失败", rembg_preprocess._session_fallback_reason or "")
+        rembg_preprocess.reset_session()
 
 
 if __name__ == "__main__":

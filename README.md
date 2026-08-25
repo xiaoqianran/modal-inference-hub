@@ -44,11 +44,15 @@ After global rembg matting, the client performs local 8-connected component anal
 
 - Engine: `rembg`
 - Model: `birefnet-general`
-- Current provider: CPU
+- Provider preference: CPU by default; optional NVIDIA GPU through ONNXRuntime CUDAExecutionProvider
+- GPU safety: if CUDA provider/hardware initialization is unavailable, rembg falls back to CPU without sending the image to cloud
+- GPU runtime: the app bundles the ONNXRuntime GPU provider on Windows/Linux, but compatible system CUDA 12 + cuDNN 9 libraries are required for actual CUDA execution
 - Model cache: application data directory under `rembg/`
 - Canonical contract: PNG, 1024×1024, 8-bit RGBA
 - Component rule: 8-connected Alpha analysis; default all selected; tiny fragments remain preserved while all components are selected
 - Interaction: checkbox/click selection and drag-box component selection are local-only
+- Selection performance: decoded matte/label data uses a 64 MiB process-local LRU cache; oversized images automatically bypass the cache
+- Interactive canonical PNGs use fast compression so selection updates do not spend most of their time in PNG compression
 - Geometry rule: preserve original aspect ratio; use transparent letterbox padding to center the remaining foreground
 
 The client does not use BRIA RMBG-2.0. The current rembg session is `birefnet-general`.
