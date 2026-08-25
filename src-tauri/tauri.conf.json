@@ -27,8 +27,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": [
-      "binaries/modal-3d-agent"
+    "resources": [
+      "binaries/modal-3d-agent-x86_64-pc-windows-msvc"
     ],
     "windows": {
       "wix": {

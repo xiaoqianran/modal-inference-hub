@@ -1,6 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 
-$agent = (Get-ChildItem -LiteralPath "src-tauri/binaries" -Filter "modal-3d-agent-*.exe" -File |
+$agent = (Get-ChildItem -LiteralPath "src-tauri/binaries" -Filter "modal-3d-agent-*.exe" -File -Recurse |
+  Where-Object { $_.Directory.Name -like "modal-3d-agent-*" } |
   Select-Object -First 1).FullName
 if (-not $agent) { throw "找不到已构建的本地代理可执行文件。" }
 $handshake = Join-Path $env:TEMP ("modal-3d-agent-smoke-" + [guid]::NewGuid().ToString("N") + ".port")

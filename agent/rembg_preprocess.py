@@ -59,12 +59,9 @@ _cuda_runtime_loaded = False
 _cuda_dll_directory_handles: list[object] = []
 _CUDA_PACKAGE_MODULES = (
     "cublas",
-    "cuda_nvrtc",
     "cuda_runtime",
     "cudnn",
     "cufft",
-    "curand",
-    "nvjitlink",
 )
 _selection_cache_lock = threading.RLock()
 _selection_cache: OrderedDict[str, tuple[Image.Image, np.ndarray, int]] = OrderedDict()

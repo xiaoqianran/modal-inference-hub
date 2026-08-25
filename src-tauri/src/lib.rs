@@ -96,21 +96,24 @@ fn reveal_app_data(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn agent_command() -> Result<Command, String> {
+fn agent_command(app: &tauri::AppHandle) -> Result<Command, String> {
     if let Some(path) = std::env::var_os("MODAL_3D_AGENT_EXECUTABLE") {
         return Ok(Command::new(path));
     }
 
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("无法定位桌面客户端可执行文件：{error}"))?;
-    let executable_dir = executable.parent().ok_or("无法定位桌面客户端所在目录")?;
     #[cfg(target_os = "windows")]
-    let bundled_agent = executable_dir.join("modal-3d-agent.exe");
-    #[cfg(not(target_os = "windows"))]
-    let bundled_agent = executable_dir.join("modal-3d-agent");
-
-    if bundled_agent.is_file() {
-        return Ok(Command::new(bundled_agent));
+    {
+        let resource_dir = app
+            .path()
+            .resource_dir()
+            .map_err(|error| format!("无法定位客户端资源目录：{error}"))?;
+        let bundled_agent = resource_dir
+            .join("binaries")
+            .join("modal-3d-agent-x86_64-pc-windows-msvc")
+            .join("modal-3d-agent-x86_64-pc-windows-msvc.exe");
+        if bundled_agent.is_file() {
+            return Ok(Command::new(bundled_agent));
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -127,10 +130,7 @@ fn agent_command() -> Result<Command, String> {
     }
 
     #[cfg(not(debug_assertions))]
-    Err(format!(
-        "在客户端目录中找不到已捆绑的本地代理：{}",
-        bundled_agent.display()
-    ))
+    Err("在客户端资源目录中找不到已捆绑的本地代理".into())
 }
 
 fn terminate_child(child: &mut Child) {
@@ -257,7 +257,7 @@ fn agent_start_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
     let log = data_dir.join("agent.log");
     let _ = fs::remove_file(&handshake);
 
-    let mut command = agent_command()?;
+    let mut command = agent_command(app)?;
     command.env("MODAL_3D_AGENT_DATA_DIR", &data_dir);
     if let Ok(Some((token_id, token_secret))) = credentials::load() {
         command
