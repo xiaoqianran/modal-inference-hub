@@ -103,6 +103,23 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(value["status"], "expired")
         self.assertEqual(value["error_code"], "remote.output_expired")
 
+    def test_not_found_confirmation_survives_manager_restart(self) -> None:
+        job = self.create()
+        value, _ = self.poll_with(job["id"], error=NotFoundError())
+        self.assertEqual(value["status"], "connection_required")
+
+        restarted = JobManager(self.db)
+        call = Mock()
+        call.get.side_effect = NotFoundError()
+        with (
+            patch("agent.jobs.client", return_value=Mock()),
+            patch("agent.jobs.modal.FunctionCall.from_id", return_value=call),
+        ):
+            value = restarted.poll(job["id"])
+
+        self.assertEqual(value["status"], "expired")
+        self.assertEqual(value["error_code"], "remote.output_expired")
+
     def test_pending_remote_resets_not_found_confirmation(self) -> None:
         job = self.create()
         value, _ = self.poll_with(job["id"], error=NotFoundError())

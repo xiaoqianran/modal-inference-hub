@@ -391,6 +391,8 @@ def project_canonical(project_id: str):
 def project_generation(project_id: str, request: ProjectGenerationRequest) -> dict:
     try:
         project = projects.get(project_id)
+        if project["status"] in {"generating", "running", "connection_required", "cancel_requested"}:
+            raise HTTPException(status_code=409, detail="该项目已有远程生成任务正在活动")
         descriptor, local_path = projects.canonical_local(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
