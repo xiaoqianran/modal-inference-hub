@@ -31,7 +31,7 @@ class RembgPreprocessTests(unittest.TestCase):
         self.assertEqual(alpha.getbbox(), (0, 256, 1024, 768))
         self.assertEqual(result["foreground_bbox"], [100, 100, 700, 400])
         self.assertEqual(result["engine"], "birefnet-general-lite")
-        self.assertEqual(result["provider"], "cpu")
+        self.assertEqual(result["provider"], "gpu")
 
     def test_no_foreground_is_rejected(self) -> None:
         mask = Image.new("L", (800, 400), 0)

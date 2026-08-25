@@ -278,9 +278,9 @@ def provider_preference() -> str:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return "cpu"
+        return "gpu"
     provider = value.get("provider") if isinstance(value, dict) else None
-    return provider if provider in {"cpu", "gpu"} else "cpu"
+    return provider if provider in {"cpu", "gpu"} else "gpu"
 
 
 def _available_ort_providers() -> list[str]:
