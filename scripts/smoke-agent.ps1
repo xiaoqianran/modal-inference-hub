@@ -79,6 +79,11 @@ try {
   $provider = Invoke-RestMethod "$base/v1/preprocess/provider" -Headers $headers -Method Post -ContentType "application/json" -Body $providerBody
   if ($provider.provider_preference -ne "cpu") { throw "CPU provider 设置未持久化。" }
   if ($preprocess.model_downloaded) { throw "Fresh CI 环境不应预装 birefnet-general 模型。" }
+  if ($preprocess.model_bytes -lt 900000000) { throw "birefnet-general 预期模型大小异常。" }
+  if ($preprocess.download.status -ne "idle") { throw "Fresh CI 模型下载状态应为 idle。" }
+  if ($preprocess.download.downloaded_bytes -ne 0) { throw "Fresh CI 不应存在 partial 模型字节。" }
+  if ($preprocess.download.total_bytes -ne $preprocess.model_bytes) { throw "下载总字节数应与模型大小一致。" }
+  if ($preprocess.download.resumable) { throw "Fresh CI 不应标记为可续传。" }
 
   $image = Join-Path $dataDir "smoke.png"
   # 1x1 真彩 PNG（合法图片，供 image_input 严格解析通过）。

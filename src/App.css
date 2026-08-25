@@ -1207,3 +1207,8 @@ input:focus-visible {
   color: var(--ctp-overlay-1);
   font-size: 10px;
 }
+
+.download-progress .download-error {
+  color: var(--ctp-red);
+  overflow-wrap: anywhere;
+}

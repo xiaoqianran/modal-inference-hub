@@ -71,6 +71,34 @@ export type ModelSpec = {
 
 
 
+export type ModelDownloadState = {
+  status: "idle" | "downloading" | "verifying" | "ready" | "failed";
+  downloaded_bytes: number;
+  total_bytes: number;
+  progress: number;
+  resumable: boolean;
+  error: string | null;
+  integrity: "unverified" | "verifying" | "verified" | "failed";
+};
+
+export type PreprocessRuntimeStatus = {
+  engine: string;
+  provider: "cpu" | "gpu";
+  provider_preference: "cpu" | "gpu";
+  available_providers: ("cpu" | "gpu")[];
+  ort_providers: string[];
+  gpu_available: boolean;
+  fallback_reason: string | null;
+  model_home: string;
+  model_path: string;
+  model_downloaded: boolean;
+  model_bytes: number;
+  download: ModelDownloadState;
+  canonical_size: number;
+  cpu_threads: number;
+  local_only: boolean;
+};
+
 export type RuntimeCapabilities = {
   hardware: {
     platform: string;
@@ -79,22 +107,7 @@ export type RuntimeCapabilities = {
     disk_free_mib: number;
     gpus: { name: string; memory_mib: number; driver: string }[];
   };
-  preprocessing: {
-    kind: "rembg";
-    engine: string;
-    provider: "cpu" | "gpu";
-    provider_preference: "cpu" | "gpu";
-    available_providers: ("cpu" | "gpu")[];
-    ort_providers: string[];
-    gpu_available: boolean;
-    fallback_reason: string | null;
-    model_home: string;
-    model_path: string;
-    model_downloaded: boolean;
-    canonical_size: number;
-    cpu_threads: number;
-    local_only: boolean;
-  };
+  preprocessing: PreprocessRuntimeStatus & { kind: "rembg" };
 };
 
 export type ForegroundComponent = {
@@ -353,11 +366,14 @@ export const submitProjectGeneration = (
 export const getCapabilities = (info: AgentInfo) =>
   json<RuntimeCapabilities>(info, "/v1/capabilities");
 
+export const getPreprocessStatus = (info: AgentInfo) =>
+  json<PreprocessRuntimeStatus>(info, "/v1/preprocess/status");
+
 export const setPreprocessProvider = (
   info: AgentInfo,
   provider: "cpu" | "gpu",
 ) =>
-  json<RuntimeCapabilities["preprocessing"]>(info, "/v1/preprocess/provider", {
+  json<PreprocessRuntimeStatus>(info, "/v1/preprocess/provider", {
     method: "POST",
     body: JSON.stringify({ provider }),
   });

@@ -86,7 +86,7 @@ export default function SettingsPanel({
                 <div><span>引擎</span><strong>{preprocessing?.engine ?? "birefnet-general"}</strong></div>
                 <div><span>实际执行</span><strong>{preprocessing?.provider?.toUpperCase() ?? "CPU"}</strong></div>
                 <div><span>Canonical</span><strong>{preprocessing ? `${preprocessing.canonical_size}×${preprocessing.canonical_size}` : "1024×1024"}</strong></div>
-                <div><span>模型状态</span><strong>{preprocessing?.model_downloaded ? "已缓存" : "首次抠图自动下载"}</strong></div>
+                <div><span>模型状态</span><strong>{preprocessing?.model_downloaded ? (preprocessing.download?.integrity === "verified" ? "已缓存 · 已校验" : "已缓存") : preprocessing?.download?.resumable ? "可断点续传" : "首次抠图自动下载"}</strong></div>
                 <div className="wide"><span>ONNXRuntime Providers</span><code>{preprocessing?.ort_providers?.join(" · ") || "启动 Agent 后检测"}</code></div>
                 <div className="wide"><span>模型目录</span><code>{preprocessing?.model_home ?? "启动 Agent 后显示"}</code></div>
               </div>

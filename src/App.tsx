@@ -7,6 +7,7 @@ import {
   getJob,
   getProject,
   getProjectComponents,
+  getPreprocessStatus,
   jobArtifactBlob,
   listProjects,
   prepareExport,
@@ -21,6 +22,7 @@ import {
   type ComponentState,
   type GenerationJob,
   type GenerationJobStatus,
+  type ModelDownloadState,
   type PreprocessResult,
   type Project,
 } from "./agent";
@@ -91,6 +93,7 @@ function App() {
   const [canonical, setCanonical] = useState<CanonicalAsset | null>(null);
   const [canonicalUrl, setCanonicalUrl] = useState<string | null>(null);
   const [preprocessMeta, setPreprocessMeta] = useState<PreprocessResult["preprocess"] | null>(null);
+  const [modelDownload, setModelDownload] = useState<ModelDownloadState | null>(null);
   const [componentState, setComponentState] = useState<ComponentState | null>(null);
   const [selectionBox, setSelectionBox] = useState<{ start: [number, number]; current: [number, number] } | null>(null);
   const [job, setJob] = useState<GenerationJob | null>(null);
@@ -212,24 +215,66 @@ function App() {
     setWorkflowMessage(
       cached
         ? "正在本机执行 birefnet-general 抠图…"
-        : "首次使用：正在准备 birefnet-general 本地模型并执行抠图…",
+        : "首次使用：正在准备 birefnet-general 本地模型…",
     );
-    const value = await preprocessProject(agent, target.id);
-    setProject(value.project);
-    setCanonical(value.canonical);
-    setPreprocessMeta(value.preprocess);
-    setComponentState(value.component_state);
-    const [matte, canonicalBlob] = await Promise.all([
-      projectMatteBlob(agent, target.id),
-      projectCanonicalBlob(agent, target.id),
-    ]);
-    replaceUrl(setMatteUrl, matte);
-    replaceUrl(setCanonicalUrl, canonicalBlob);
-    resetOutput();
-    setWorkflowMessage(
-      `本地抠图完成 · ${value.preprocess.provider.toUpperCase()} · ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
-    );
-    await refreshRecent();
+
+    let timer: number | null = null;
+    let polling = !cached;
+    const updateDownload = async () => {
+      if (!agent?.running || !polling) return;
+      try {
+        const status = await getPreprocessStatus(agent);
+        setModelDownload(status.download);
+        if (status.download.status === "downloading") {
+          const percent = Math.floor(status.download.progress * 100);
+          setWorkflowMessage(`正在下载 birefnet-general · ${percent}%`);
+        } else if (status.download.status === "verifying") {
+          setWorkflowMessage("模型下载完成，正在校验完整性…");
+        } else if (status.download.status === "failed") {
+          const suffix = status.download.resumable ? "，下次将继续断点续传" : "";
+          setWorkflowMessage(`模型准备失败${suffix}`);
+        }
+      } catch {
+        // The long-running preprocess request remains authoritative; polling is best-effort UI only.
+      }
+    };
+
+    if (polling) {
+      void updateDownload();
+      timer = window.setInterval(() => void updateDownload(), 500);
+    } else {
+      setModelDownload(null);
+    }
+
+    try {
+      const value = await preprocessProject(agent, target.id);
+      setProject(value.project);
+      setCanonical(value.canonical);
+      setPreprocessMeta(value.preprocess);
+      setComponentState(value.component_state);
+      const [matte, canonicalBlob] = await Promise.all([
+        projectMatteBlob(agent, target.id),
+        projectCanonicalBlob(agent, target.id),
+      ]);
+      replaceUrl(setMatteUrl, matte);
+      replaceUrl(setCanonicalUrl, canonicalBlob);
+      resetOutput();
+      setWorkflowMessage(
+        `本地抠图完成 · ${value.preprocess.provider.toUpperCase()} · ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
+      );
+      await refreshRecent();
+    } finally {
+      polling = false;
+      if (timer !== null) window.clearInterval(timer);
+      if (!cached) {
+        try {
+          const finalStatus = await getPreprocessStatus(agent);
+          setModelDownload(finalStatus.download);
+        } catch {
+          // Keep the last known progress state.
+        }
+      }
+    }
   }
 
   async function chooseImage(file: File | null) {
@@ -241,6 +286,7 @@ function App() {
       setCanonical(null);
       setPreprocessMeta(null);
       setComponentState(null);
+      setModelDownload(null);
       resetOutput();
       replaceUrl(setSourceUrl, file);
       replaceUrl(setMatteUrl, null);
@@ -250,7 +296,7 @@ function App() {
       await runLocalPreprocess(value);
     } catch (error) {
       setWorkflowMessage(
-        `${error instanceof Error ? error.message : String(error)}；原图已保留，可点击“重新本地抠图”重试。`,
+        `${error instanceof Error ? error.message : String(error)}；原图已保留，可直接重试本地抠图。`,
       );
     } finally {
       setBusy(false);
@@ -527,6 +573,21 @@ function App() {
                 {sourceUrl ? "选择新图片" : "选择图片"}
               </label>
 
+              {modelDownload && modelDownload.status !== "ready" && (modelDownload.downloaded_bytes > 0 || modelDownload.status === "failed" || modelDownload.status === "verifying") ? (
+                <div className="download-progress model-download-progress">
+                  <div>
+                    <span>{modelDownload.status === "verifying" ? "正在校验模型" : modelDownload.status === "failed" ? "模型下载中断" : "下载 birefnet-general"}</span>
+                    <strong>{Math.floor(modelDownload.progress * 100)}%</strong>
+                  </div>
+                  <progress max={1} value={modelDownload.progress} />
+                  <small>
+                    {(modelDownload.downloaded_bytes / 1024 / 1024).toFixed(1)} / {(modelDownload.total_bytes / 1024 / 1024).toFixed(1)} MiB
+                    {modelDownload.resumable && modelDownload.status === "failed" ? " · 已保留断点，可重试续传" : ""}
+                  </small>
+                  {modelDownload.error ? <small className="download-error">{modelDownload.error}</small> : null}
+                </div>
+              ) : null}
+
               <div className="preprocess-grid">
                 <div className="image-stage compact">
                   <span className="preview-label">原图</span>
@@ -594,7 +655,11 @@ function App() {
               ) : null}
 
               <button className="primary full" disabled={busy || !project || !agent?.running} onClick={() => void preprocess()}>
-                {busy ? "处理中…" : canonical ? "重新本地抠图" : "本地 rembg 抠图"}
+                {busy
+                  ? "处理中…"
+                  : modelDownload?.status === "failed"
+                    ? modelDownload.resumable ? "续传模型并重试抠图" : "重试本地抠图"
+                    : canonical ? "重新本地抠图" : "本地 rembg 抠图"}
               </button>
               <p className="action-guidance">{preprocessHint}</p>
               {preprocessMeta ? (

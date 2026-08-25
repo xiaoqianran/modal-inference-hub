@@ -213,5 +213,114 @@ class ProviderPreferenceTests(unittest.TestCase):
         rembg_preprocess.reset_session()
 
 
+class ModelDownloadTests(unittest.TestCase):
+    class FakeResponse:
+        def __init__(self, data: bytes, status: int = 200, fail_after: int | None = None):
+            self.data = data
+            self.status = status
+            self.offset = 0
+            self.fail_after = fail_after
+
+        def getcode(self):
+            return self.status
+
+        def read(self, size: int) -> bytes:
+            if self.fail_after is not None and self.offset >= self.fail_after:
+                raise ConnectionError("network interrupted")
+            if self.offset >= len(self.data):
+                return b""
+            end = min(len(self.data), self.offset + size)
+            chunk = self.data[self.offset:end]
+            self.offset = end
+            return chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def setUp(self) -> None:
+        rembg_preprocess.reset_session()
+        rembg_preprocess._verified_model_signature = None
+        rembg_preprocess._set_download_state(
+            status="idle",
+            downloaded_bytes=0,
+            total_bytes=rembg_preprocess.MODEL_BYTES,
+            error=None,
+            integrity="unverified",
+        )
+
+    def test_interrupted_download_resumes_with_range_and_verifies(self) -> None:
+        payload = b"abcdefghij" * 100
+        digest = __import__("hashlib").md5(payload).hexdigest()
+        requests = []
+        first_response = self.FakeResponse(payload[:400], status=200, fail_after=400)
+
+        def first_urlopen(request, timeout):
+            requests.append(request)
+            return first_response
+
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.rembg_preprocess.rembg_home", return_value=Path(temporary)
+        ), patch.object(rembg_preprocess, "MODEL_BYTES", len(payload)), patch.object(
+            rembg_preprocess, "MODEL_MD5", digest
+        ), patch("urllib.request.urlopen", side_effect=first_urlopen):
+            with self.assertRaisesRegex(RuntimeError, "可继续重试"):
+                rembg_preprocess.ensure_model_ready()
+            partial = rembg_preprocess.partial_model_path()
+            self.assertEqual(partial.read_bytes(), payload[:400])
+            self.assertTrue(rembg_preprocess._download_status()["resumable"])
+
+            def second_urlopen(request, timeout):
+                requests.append(request)
+                self.assertEqual(request.headers.get("Range"), "bytes=400-")
+                return self.FakeResponse(payload[400:], status=206)
+
+            with patch("urllib.request.urlopen", side_effect=second_urlopen):
+                path = rembg_preprocess.ensure_model_ready()
+            self.assertEqual(path.read_bytes(), payload)
+            state = rembg_preprocess._download_status()
+            self.assertEqual(state["status"], "ready")
+            self.assertEqual(state["integrity"], "verified")
+            self.assertEqual(state["progress"], 1.0)
+
+    def test_complete_partial_is_verified_without_network_request(self) -> None:
+        payload = b"complete partial model"
+        digest = __import__("hashlib").md5(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.rembg_preprocess.rembg_home", return_value=Path(temporary)
+        ), patch.object(rembg_preprocess, "MODEL_BYTES", len(payload)), patch.object(
+            rembg_preprocess, "MODEL_MD5", digest
+        ):
+            partial = rembg_preprocess.partial_model_path()
+            partial.parent.mkdir(parents=True, exist_ok=True)
+            partial.write_bytes(payload)
+            with patch("urllib.request.urlopen", side_effect=AssertionError("network should not be used")):
+                path = rembg_preprocess.ensure_model_ready()
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertFalse(partial.exists())
+            self.assertEqual(rembg_preprocess._download_status()["integrity"], "verified")
+
+    def test_bad_checksum_deletes_completed_partial(self) -> None:
+        payload = b"broken model bytes"
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.rembg_preprocess.rembg_home", return_value=Path(temporary)
+        ), patch.object(rembg_preprocess, "MODEL_BYTES", len(payload)), patch.object(
+            rembg_preprocess, "MODEL_MD5", "0" * 32
+        ), patch(
+            "urllib.request.urlopen",
+            return_value=self.FakeResponse(payload),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "MD5"):
+                rembg_preprocess.ensure_model_ready()
+            self.assertFalse(rembg_preprocess.partial_model_path().exists())
+            self.assertFalse(rembg_preprocess.model_path().exists())
+            state = rembg_preprocess._download_status()
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["integrity"], "failed")
+            self.assertFalse(state["resumable"])
+
+
 if __name__ == "__main__":
     unittest.main()

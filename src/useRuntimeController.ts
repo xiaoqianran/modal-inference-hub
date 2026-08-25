@@ -262,7 +262,7 @@ export function useRuntimeController() {
     if (!agent?.running || !begin("provider")) return;
     try {
       const preprocessing = await setPreprocessProvider(agent, provider);
-      setRuntime((current) => current ? { ...current, preprocessing } : current);
+      setRuntime((current) => current ? { ...current, preprocessing: { ...preprocessing, kind: "rembg" } } : current);
       const fallback = preprocessing.fallback_reason ? `；${preprocessing.fallback_reason}` : "";
       setNotice({
         tone: preprocessing.provider === provider ? "success" : "info",
