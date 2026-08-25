@@ -42,6 +42,26 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "远程任务活动"):
                     self.store.delete(project["id"])
 
+    def test_local_canonical_is_saved_before_remote_upload(self) -> None:
+        project = self.store.create(_png(), "source.png")
+        matte = _png(2, 2)
+        canonical = _png(1024, 1024)
+        descriptor = {
+            "id": "can_test",
+            "sha256": "a" * 64,
+            "bytes": len(canonical),
+        }
+        updated = self.store.save_preprocessed(project["id"], matte, canonical, descriptor)
+        self.assertEqual(updated["status"], "ready")
+        public, local = self.store.canonical_local(project["id"])
+        self.assertEqual(public["id"], "can_test")
+        self.assertEqual(local.read_bytes(), canonical)
+        with self.assertRaisesRegex(RuntimeError, "尚未上传"):
+            self.store.canonical_remote(project["id"])
+        self.store.record_remote_canonical(project["id"], "client-inputs/test.png")
+        _, remote = self.store.canonical_remote(project["id"])
+        self.assertEqual(remote, "client-inputs/test.png")
+
     def test_terminal_project_can_be_deleted(self) -> None:
         project = self.store.create(_png(), "done.png")
         self.store._update(project["id"], status="succeeded")

@@ -75,4 +75,4 @@ jobs:
           gh release create $env:GITHUB_REF_NAME @releaseAssets `
             --verify-tag `
             --title "modal-3D 三维创作客户端 $env:GITHUB_REF_NAME" `
-            --notes "Windows 优先预览版本，包含本地代理和 Windows 凭据管理器支持。本版本暂不包含本地 SAM 3.1。安装包尚未签名，首次启动时 Windows SmartScreen 可能显示警告。"
+            --notes "Windows 优先预览版本，包含本地 rembg 预处理、本地代理和 Windows 凭据管理器支持。原图预处理不上传云端；生成时仅上传 1024×1024 Canonical RGBA。安装包尚未签名，首次启动时 Windows SmartScreen 可能显示警告。"

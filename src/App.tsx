@@ -1,36 +1,42 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import "./App.css";
 import {
-  jobArtifactBlob,
   cancelJob,
   createProject,
   deleteProject,
   getJob,
   getProject,
+  jobArtifactBlob,
   listProjects,
-  materializeProject,
   prepareExport,
+  preprocessProject,
   projectCanonicalBlob,
+  projectMatteBlob,
   projectSourceBlob,
-  refineProject,
   savePreparedExport,
-  segmentProject,
   submitProjectGeneration,
-  type AgentInfo,
   type CanonicalAsset,
   type GenerationJob,
   type GenerationJobStatus,
+  type PreprocessResult,
   type Project,
-  type RefinementBox,
-  type SamSelection,
 } from "./agent";
 import SettingsPanel from "./SettingsPanel";
 import { useRuntimeController } from "./useRuntimeController";
 
 const GlbViewer = lazy(() => import("./GlbViewer"));
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
-const activeJobStatuses = new Set<GenerationJobStatus>(["running", "connection_required", "cancel_requested"]);
-const activeProjectStatuses = new Set<Project["status"]>(["generating", "running", "connection_required", "cancel_requested"]);
+const activeJobStatuses = new Set<GenerationJobStatus>([
+  "running",
+  "connection_required",
+  "cancel_requested",
+]);
+const activeProjectStatuses = new Set<Project["status"]>([
+  "generating",
+  "running",
+  "connection_required",
+  "cancel_requested",
+]);
 
 function jobIsActive(value: GenerationJob) {
   return activeJobStatuses.has(value.status);
@@ -44,9 +50,17 @@ function jobActivityLabel(status: GenerationJobStatus) {
 
 function projectStatusLabel(status: Project["status"]) {
   const labels: Record<Project["status"], string> = {
-    draft: "待识别", segmented: "已识别", ready: "可生成", generating: "提交中",
-    running: "生成中", connection_required: "等待连接", cancel_requested: "取消中",
-    succeeded: "已完成", failed: "失败", cancelled: "已取消", expired: "已过期",
+    draft: "待抠图",
+    segmented: "旧项目",
+    ready: "可生成",
+    generating: "提交中",
+    running: "生成中",
+    connection_required: "等待连接",
+    cancel_requested: "取消中",
+    succeeded: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+    expired: "已过期",
   };
   return labels[status];
 }
@@ -64,25 +78,21 @@ function canonicalFromProject(project: Project): CanonicalAsset | null {
 
 function App() {
   const runtimeController = useRuntimeController();
-  const { agent, modalConnected, models, runtime: runtimeCapabilities } = runtimeController;
+  const { agent, modalConnected, models } = runtimeController;
   const [settingsOpen, setSettingsOpen] = useState(false);
-
   const [modelId, setModelId] = useState("");
   const [project, setProject] = useState<Project | null>(null);
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
-  const [concept, setConcept] = useState("");
-  const [selection, setSelection] = useState<SamSelection | null>(null);
-  const [candidateId, setCandidateId] = useState<string | null>(null);
-  const [refineMode, setRefineMode] = useState<"positive" | "negative" | null>(null);
-  const [refineBoxes, setRefineBoxes] = useState<RefinementBox[]>([]);
-  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
-  const [dragPoint, setDragPoint] = useState<{ x: number; y: number } | null>(null);
+  const [matteUrl, setMatteUrl] = useState<string | null>(null);
   const [canonical, setCanonical] = useState<CanonicalAsset | null>(null);
   const [canonicalUrl, setCanonicalUrl] = useState<string | null>(null);
+  const [preprocessMeta, setPreprocessMeta] = useState<PreprocessResult["preprocess"] | null>(null);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
-  const [workflowMessage, setWorkflowMessage] = useState("导入图片并输入要提取的对象。");
+  const [workflowMessage, setWorkflowMessage] = useState(
+    "选择图片后，在本机完成 rembg 抠图和 Canonical 规范化。",
+  );
   const [busy, setBusy] = useState(false);
   const restoredAgent = useRef<number | null>(null);
 
@@ -90,190 +100,117 @@ function App() {
     ? models.find((model) => model.id === modelId)
     : models.find((model) => model.status !== "disabled") ?? models[0];
   const selectedProfile = selectedModel?.profiles[0];
-  const closeSettings = useCallback(() => setSettingsOpen(false), []);
-  const workflowStage = resultUrl || job?.status === "succeeded" ? 4 : job || canonical ? 3 : selection ? 2 : project ? 1 : 0;
-  const segmentHint = !project ? "先选择一张主体清晰的图片" : !concept.trim() ? "描述要提取的对象，例如 cup、chair 或 plant" : selection ? `已找到 ${selection.candidate_count} 个候选，可继续识别或调整` : "准备就绪，可以开始识别";
-  const candidateHint = !selection ? "完成识别后选择目标候选" : !candidateId ? "点击图片中的框或候选编号" : "目标已选择，确认后会生成透明标准图";
-  const generationHint = !canonical ? "先在左侧确认对象" : !selectedModel ? "暂无可用模型，请刷新 Modal 连接" : "模型与推荐参数已就绪";
+
+  const replaceUrl = useCallback((setter: Dispatch<SetStateAction<string | null>>, blob: Blob | null) => {
+    setter((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return blob ? URL.createObjectURL(blob) : null;
+    });
+  }, []);
+
+  const resetOutput = useCallback(() => {
+    setJob(null);
+    replaceUrl(setResultUrl, null);
+  }, [replaceUrl]);
+
+  const refreshRecent = useCallback(async () => {
+    if (!agent?.running) return;
+    try {
+      setRecentProjects(await listProjects(agent));
+    } catch {
+      // Recent projects are auxiliary and must not block the workspace.
+    }
+  }, [agent]);
+
+  const loadPreview = useCallback(async (value: Project) => {
+    if (!agent?.running) return;
+    replaceUrl(setSourceUrl, await projectSourceBlob(agent, value.id));
+    const savedCanonical = canonicalFromProject(value);
+    setCanonical(savedCanonical);
+    setPreprocessMeta(null);
+    if (savedCanonical) {
+      const [matte, canonicalBlob] = await Promise.all([
+        projectMatteBlob(agent, value.id).catch(() => null),
+        projectCanonicalBlob(agent, value.id),
+      ]);
+      replaceUrl(setMatteUrl, matte);
+      replaceUrl(setCanonicalUrl, canonicalBlob);
+    } else {
+      replaceUrl(setMatteUrl, null);
+      replaceUrl(setCanonicalUrl, null);
+    }
+  }, [agent, replaceUrl]);
+
+  const restoreProject = useCallback(async (projectId: string) => {
+    if (!agent?.running) return;
+    setBusy(true);
+    try {
+      const value = await getProject(agent, projectId);
+      setProject(value);
+      await loadPreview(value);
+      resetOutput();
+      if (value.model) setModelId(value.model);
+      if (value.job_id) {
+        const restored = await getJob(agent, value.job_id);
+        setJob(restored);
+        if (restored.result) {
+          replaceUrl(setResultUrl, await jobArtifactBlob(agent, restored.id));
+        }
+      }
+      setWorkflowMessage(
+        value.canonical_id
+          ? "已恢复本地 Canonical，可继续生成。"
+          : "已恢复原图，请执行本地 rembg 抠图。",
+      );
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [agent, loadPreview, replaceUrl, resetOutput]);
 
   useEffect(() => {
-    if (runtimeController.initialized && !runtimeController.modalConnected) setSettingsOpen(true);
-  }, [runtimeController.initialized, runtimeController.modalConnected]);
+    if (!modelId && models.length) {
+      setModelId(models.find((model) => model.status !== "disabled")?.id ?? models[0].id);
+    }
+  }, [modelId, models]);
+
+  useEffect(() => {
+    void refreshRecent();
+  }, [refreshRecent]);
+
+  useEffect(() => {
+    if (!agent?.running || !agent.port || restoredAgent.current === agent.port) return;
+    restoredAgent.current = agent.port;
+    void listProjects(agent)
+      .then((items) => {
+        setRecentProjects(items);
+        if (items[0]) void restoreProject(items[0].id);
+      })
+      .catch(() => undefined);
+  }, [agent, restoreProject]);
 
   useEffect(() => () => {
     if (sourceUrl) URL.revokeObjectURL(sourceUrl);
-  }, [sourceUrl]);
-  useEffect(() => () => {
+    if (matteUrl) URL.revokeObjectURL(matteUrl);
     if (canonicalUrl) URL.revokeObjectURL(canonicalUrl);
-  }, [canonicalUrl]);
-  useEffect(() => () => {
     if (resultUrl) URL.revokeObjectURL(resultUrl);
-  }, [resultUrl]);
-
-  useEffect(() => {
-    if (!agent?.running || !agent.port || !modalConnected || restoredAgent.current === agent.port) return;
-    restoredAgent.current = agent.port;
-    void listProjects(agent)
-      .then(async (history) => {
-        setRecentProjects(history);
-        if (history[0]) await restoreProject(agent, history[0], true);
-      })
-      .catch((error) => setWorkflowMessage(error instanceof Error ? error.message : String(error)));
-  }, [agent, modalConnected]);
-
-  async function refreshProjects(info: AgentInfo) {
-    const history = await listProjects(info);
-    setRecentProjects(history);
-    return history;
-  }
-
-  function resetOutput() {
-    setJob(null);
-    setResultUrl(null);
-  }
-
-  function clearWorkspace() {
-    setProject(null);
-    setSourceUrl(null);
-    setConcept("");
-    setSelection(null);
-    setCandidateId(null);
-    setRefineMode(null);
-    setRefineBoxes([]);
-    setDragStart(null);
-    setDragPoint(null);
-    setCanonical(null);
-    setCanonicalUrl(null);
-    resetOutput();
-  }
-
-  async function followJob(
-    info: AgentInfo,
-    initial: GenerationJob,
-    restored = false,
-    projectId?: string,
-  ) {
-    let current = initial;
-    setJob(current);
-    setModelId(current.model);
-    if (restored && jobIsActive(current)) {
-      setWorkflowMessage(`正在恢复 ${current.model} 的远程任务…`);
-    }
-    while (jobIsActive(current)) {
-      const previousStatus = current.status;
-      await sleep(current.status === "connection_required" ? 2000 : 1000);
-      current = await getJob(info, current.id);
-      setJob(current);
-      if (current.status === previousStatus) continue;
-      if (current.status === "connection_required") {
-        setWorkflowMessage(current.error ?? "云端连接中断，远端任务可能仍在运行；重新连接后会继续恢复。");
-      } else if (current.status === "cancel_requested") {
-        setWorkflowMessage("取消请求已发送，正在等待远端确认…");
-      } else if (current.status === "running" && previousStatus === "connection_required") {
-        setWorkflowMessage("云端连接已恢复，继续等待生成结果…");
-      }
-    }
-    if (projectId) {
-      const updated = await getProject(info, projectId);
-      setProject(updated);
-      await refreshProjects(info);
-    }
-    if (current.status !== "succeeded" || !current.result) {
-      setWorkflowMessage(current.error || `任务已结束：${current.status}`);
-      return;
-    }
-    setWorkflowMessage(restored ? "已恢复最近的 3D 结果，正在加载预览…" : "3D 已生成，正在加载预览…");
-    const blob = await jobArtifactBlob(info, current.id);
-    setResultUrl(URL.createObjectURL(blob));
-    setWorkflowMessage(restored ? "已恢复最近的 3D 结果。" : "3D 生成完成。");
-  }
-
-  async function restoreProject(info: AgentInfo, value: Project, restored = false) {
-    setBusy(true);
-    try {
-      setProject(value);
-      setConcept(value.concept ?? "");
-      setModelId(value.model ?? "");
-      setSelection(null);
-      setCandidateId(value.candidate_id);
-      setRefineMode(null);
-      setRefineBoxes([]);
-      setDragStart(null);
-      setDragPoint(null);
-      resetOutput();
-
-      const source = await projectSourceBlob(info, value.id);
-      setSourceUrl(URL.createObjectURL(source));
-
-      const savedCanonical = canonicalFromProject(value);
-      setCanonical(savedCanonical);
-      if (savedCanonical) {
-        setCanonicalUrl(URL.createObjectURL(await projectCanonicalBlob(info, value.id)));
-      } else {
-        setCanonicalUrl(null);
-      }
-
-      if (value.job_id) {
-        const savedJob = await getJob(info, value.job_id);
-        await followJob(info, savedJob, restored, value.id);
-      } else if (value.status === "segmented") {
-        setWorkflowMessage("已恢复项目。候选框未持久化，请重新识别对象。");
-      } else if (savedCanonical) {
-        setWorkflowMessage("已恢复 Canonical RGBA，可以继续生成 3D。");
-      } else {
-        setWorkflowMessage("已恢复项目，可以继续识别对象。");
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function deleteProjectEntry(item: Project) {
-    if (!agent) return;
-    if (item.status === "generating") {
-      setWorkflowMessage("项目仍在生成中，请先取消任务再删除。");
-      return;
-    }
-    if (!window.confirm(`删除项目“${item.title}”？本地源图片会被删除，远程生成结果会保留。`)) return;
-    try {
-      setBusy(true);
-      await deleteProject(agent, item.id);
-      const history = await refreshProjects(agent);
-      if (project?.id === item.id) {
-        if (history[0]) {
-          await restoreProject(agent, history[0]);
-        } else {
-          clearWorkspace();
-        }
-      }
-      setWorkflowMessage("项目已删除，本地源图片已清理；远程 artifact 保留。");
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
+  }, [sourceUrl, matteUrl, canonicalUrl, resultUrl]);
 
   async function chooseImage(file: File | null) {
-    if (!agent || !file) return;
+    if (!agent?.running || !file) return;
+    setBusy(true);
     try {
-      setBusy(true);
-      setWorkflowMessage("正在创建本地项目…");
-      const created = await createProject(agent, file);
-      setProject(created);
-      setSourceUrl(URL.createObjectURL(file));
-      setConcept("");
-      setSelection(null);
-      setCandidateId(null);
-      setRefineMode(null);
-      setRefineBoxes([]);
-      setDragStart(null);
-      setDragPoint(null);
+      const value = await createProject(agent, file);
+      setProject(value);
       setCanonical(null);
-      setCanonicalUrl(null);
+      setPreprocessMeta(null);
       resetOutput();
-      await refreshProjects(agent);
-      setWorkflowMessage("项目已创建。输入对象名称后开始分割。");
+      replaceUrl(setSourceUrl, file);
+      replaceUrl(setMatteUrl, null);
+      replaceUrl(setCanonicalUrl, null);
+      setWorkflowMessage("原图只保存在本机。下一步执行 rembg 全局显著性抠图。");
+      await refreshRecent();
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -281,110 +218,26 @@ function App() {
     }
   }
 
-  async function segment() {
-    if (!agent || !project || !concept.trim()) return;
+  async function preprocess() {
+    if (!agent?.running || !project) return;
+    setBusy(true);
+    setWorkflowMessage("正在本机执行 birefnet-general 抠图…");
     try {
-      setBusy(true);
-      const effective = runtimeCapabilities?.sam.effective ?? "cloud";
-      setWorkflowMessage(`${effective === "local" ? "Local" : "Cloud"} SAM 正在识别对象…`);
-      const value = await segmentProject(agent, project.id, concept.trim());
-      setProject(value.project);
-      setSelection(value.selection);
-      setCandidateId(value.selection.candidates[0]?.candidate_id ?? null);
-      setRefineMode(null);
-      setRefineBoxes([]);
-      setDragStart(null);
-      setDragPoint(null);
-      setCanonical(null);
-      setCanonicalUrl(null);
-      resetOutput();
-      await refreshProjects(agent);
-      setWorkflowMessage(value.selection.candidate_count ? `${value.provider === "local" ? "Local" : "Cloud"} SAM 找到 ${value.selection.candidate_count} 个候选，请选择目标。` : "没有找到候选对象，请换一个描述。");
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function refinementPoint(event: ReactPointerEvent<HTMLDivElement>) {
-    const rect = event.currentTarget.getBoundingClientRect();
-    return {
-      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
-      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
-    };
-  }
-
-  function beginRefinement(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!refineMode || !selection || event.button !== 0) return;
-    const point = refinementPoint(event);
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setDragStart(point);
-    setDragPoint(point);
-  }
-
-  function moveRefinement(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!refineMode || !dragStart) return;
-    setDragPoint(refinementPoint(event));
-  }
-
-  function endRefinement(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!refineMode || !dragStart) return;
-    const end = refinementPoint(event);
-    const width = Math.abs(end.x - dragStart.x);
-    const height = Math.abs(end.y - dragStart.y);
-    if (width >= 0.01 && height >= 0.01) {
-      setRefineBoxes((boxes) => [
-        ...boxes,
-        {
-          cx: (end.x + dragStart.x) / 2,
-          cy: (end.y + dragStart.y) / 2,
-          width,
-          height,
-          positive: refineMode === "positive",
-        },
-      ]);
-    }
-    setDragStart(null);
-    setDragPoint(null);
-  }
-
-  async function applyRefinement() {
-    if (!agent || !project || refineBoxes.length === 0) return;
-    try {
-      setBusy(true);
-      setWorkflowMessage("正在使用提示框 Refine…");
-      const value = await refineProject(agent, project.id, refineBoxes);
-      setProject(value.project);
-      setSelection(value.selection);
-      setCandidateId(value.selection.candidates[0]?.candidate_id ?? null);
-      setCanonical(null);
-      setCanonicalUrl(null);
-      resetOutput();
-      setRefineBoxes([]);
-      setRefineMode(null);
-      await refreshProjects(agent);
-      setWorkflowMessage(`${value.provider === "local" ? "Local" : "Cloud"} SAM Refine 完成，找到 ${value.selection.candidate_count} 个候选。`);
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function materialize() {
-    if (!agent || !project || !candidateId) return;
-    try {
-      setBusy(true);
-      setWorkflowMessage("正在生成标准 Canonical RGBA…");
-      const value = await materializeProject(agent, project.id, candidateId);
-      const blob = await projectCanonicalBlob(agent, project.id);
+      const value = await preprocessProject(agent, project.id);
       setProject(value.project);
       setCanonical(value.canonical);
-      setCanonicalUrl(URL.createObjectURL(blob));
+      setPreprocessMeta(value.preprocess);
+      const [matte, canonicalBlob] = await Promise.all([
+        projectMatteBlob(agent, project.id),
+        projectCanonicalBlob(agent, project.id),
+      ]);
+      replaceUrl(setMatteUrl, matte);
+      replaceUrl(setCanonicalUrl, canonicalBlob);
       resetOutput();
-      await refreshProjects(agent);
-      setWorkflowMessage("Canonical RGBA 已确认，可以生成 3D。");
+      setWorkflowMessage(
+        `本地抠图完成 · ${value.preprocess.engine} / ${value.preprocess.provider.toUpperCase()} · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
+      );
+      await refreshRecent();
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -392,16 +245,45 @@ function App() {
     }
   }
 
+  const pollJob = useCallback(async (jobId: string) => {
+    if (!agent?.running) return;
+    while (true) {
+      const value = await getJob(agent, jobId);
+      setJob(value);
+      if (!jobIsActive(value)) {
+        if (value.status === "succeeded" && value.result) {
+          replaceUrl(setResultUrl, await jobArtifactBlob(agent, jobId));
+          setWorkflowMessage("3D 生成完成。");
+        } else if (value.error) {
+          setWorkflowMessage(value.error);
+        }
+        await refreshRecent();
+        return;
+      }
+      await sleep(1400);
+    }
+  }, [agent, refreshRecent, replaceUrl]);
+
   async function generate() {
-    if (!agent || !project || !canonical || !selectedModel || !selectedProfile) return;
+    if (!agent?.running || !project || !canonical || !selectedModel || !selectedProfile) return;
+    if (!modalConnected) {
+      setSettingsOpen(true);
+      return;
+    }
+    setBusy(true);
+    resetOutput();
+    setWorkflowMessage("正在上传一次 Canonical RGBA 并提交 3D 任务…");
     try {
-      setBusy(true);
-      resetOutput();
-      setWorkflowMessage(`已提交 ${selectedModel.name}，等待云端生成…`);
-      const value = await submitProjectGeneration(agent, project.id, selectedModel.id, selectedProfile.id);
+      const value = await submitProjectGeneration(
+        agent,
+        project.id,
+        selectedModel.id,
+        selectedProfile.id,
+      );
       setProject(value.project);
-      await refreshProjects(agent);
-      await followJob(agent, value.job, false, project.id);
+      setJob(value.job);
+      setWorkflowMessage("Canonical 已上传，云端只负责 3D 重构。");
+      void pollJob(value.job.id);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -410,205 +292,196 @@ function App() {
   }
 
   async function cancel() {
-    if (!agent || !job || !jobIsActive(job) || job.status === "cancel_requested") return;
+    if (!agent?.running || !job) return;
     try {
-      const current = await cancelJob(agent, job.id);
-      setJob(current);
-      if (project) setProject(await getProject(agent, project.id));
-      await refreshProjects(agent);
-      setWorkflowMessage(
-        current.status === "cancelled"
-          ? "任务已取消。"
-          : current.error ?? "取消请求已发送，正在等待远端确认…",
-      );
+      setJob(await cancelJob(agent, job.id));
+      setWorkflowMessage("取消请求已发送。");
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
   async function downloadResult() {
-    if (!job?.result || !agent) return;
+    if (!agent?.running || !job?.result) return;
     try {
-      setWorkflowMessage("正在准备 GLB 导出…");
       const prepared = await prepareExport(agent, job.id);
-      const saved = await savePreparedExport(prepared.id, `modal-3d-${job.model}.glb`);
-      setWorkflowMessage(saved ? `GLB 已保存：${saved}` : "已取消保存。 ");
+      await savePreparedExport(prepared.id, `${project?.title || "modal-3d"}.glb`);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
+  async function removeProject(value: Project) {
+    if (!agent?.running) return;
+    if (activeProjectStatuses.has(value.status)) {
+      setWorkflowMessage("该项目仍有远程任务活动，请先等待或取消。");
+      return;
+    }
+    try {
+      await deleteProject(agent, value.id);
+      if (project?.id === value.id) {
+        setProject(null);
+        setCanonical(null);
+        setPreprocessMeta(null);
+        resetOutput();
+        replaceUrl(setSourceUrl, null);
+        replaceUrl(setMatteUrl, null);
+        replaceUrl(setCanonicalUrl, null);
+      }
+      await refreshRecent();
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  const stage = resultUrl || job?.status === "succeeded" ? 3 : canonical ? 2 : project ? 1 : 0;
+  const preprocessHint = !project
+    ? "先选择 PNG / JPEG / WebP"
+    : canonical
+      ? "本地抠图完成，原图仍未上传"
+      : "首次使用会下载 birefnet-general 模型到本地应用数据目录";
+  const generationHint = !canonical
+    ? "先完成本地 rembg 预处理"
+    : !modalConnected
+      ? "Canonical 已准备好；连接 Modal 后再生成"
+      : !selectedModel
+        ? "暂无可用模型"
+        : "点击生成时仅上传一次 1024×1024 Canonical RGBA";
+
   return (
     <div className="app-shell">
-      <aside className="app-sidebar">
-        <div className="app-brand"><span className="brand-mark">M3</span><div><strong>modal-3D</strong><span>Studio</span></div></div>
-        <nav className="app-nav" aria-label="主导航">
-          <button className="active"><span>◆</span>创作工作台</button>
-        </nav>
-        <div className="sidebar-projects">
-          <div className="sidebar-label"><span>最近项目</span><strong>{recentProjects.length}</strong></div>
-          {recentProjects.length ? recentProjects.slice(0, 8).map((item) => (
-            <div className={`sidebar-project ${item.id === project?.id ? "active" : ""}`} key={item.id}>
-              <button className="sidebar-project-open" disabled={busy} onClick={() => agent && void restoreProject(agent, item)}>
-                <span>{item.title.slice(0, 1).toUpperCase()}</span><div><strong>{item.title}</strong><small>{projectStatusLabel(item.status)}</small></div>
-              </button>
-              <button className="sidebar-project-delete" disabled={busy || activeProjectStatuses.has(item.status)} aria-label={`删除项目 ${item.title}`} onClick={() => void deleteProjectEntry(item)}>×</button>
-            </div>
-          )) : <p className="sidebar-empty">创建的项目会出现在这里</p>}
+      <header className="app-header">
+        <div>
+          <span className="eyebrow">Local-first 2D → Cloud 3D</span>
+          <h1>modal-3D</h1>
         </div>
-        <div className="sidebar-footer">
-          <div className="sidebar-service"><span className={`service-dot ${agent?.running ? "active" : ""}`} /><div><strong>{agent?.running ? "本地服务正常" : "本地服务离线"}</strong><small>{modalConnected ? "Modal 已连接" : "Modal 未连接"}</small></div></div>
-          <button className="settings-button" onClick={() => setSettingsOpen(true)}><span>⚙</span>设置</button>
+        <div className="header-actions">
+          <span className={`connection-dot ${modalConnected ? "online" : ""}`} />
+          <span>{modalConnected ? "Modal 已连接" : "Modal 未连接"}</span>
+          <button type="button" className="quiet-button" onClick={() => setSettingsOpen(true)}>设置</button>
         </div>
-      </aside>
+      </header>
 
-      <main className="app-main">
-        <header className="app-topbar">
-          <div><span className="eyebrow">Creation workspace</span><h1>{project?.title ?? "新建 3D 资产"}</h1></div>
-          <div className="topbar-actions">
-            <span className={`connection-chip ${modalConnected ? "online" : ""}`}><span />{modalConnected ? "Modal 在线" : "未连接"}</span>
-            <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="打开设置">⚙</button>
+      <main className="main-layout">
+        <aside className="project-sidebar">
+          <div className="sidebar-title"><strong>最近项目</strong><span>{recentProjects.length}</span></div>
+          <div className="recent-projects">
+            {recentProjects.map((item) => (
+              <div key={item.id} className={`recent-project ${project?.id === item.id ? "active" : ""}`}>
+                <button type="button" onClick={() => void restoreProject(item.id)} disabled={busy}>
+                  <strong>{item.title}</strong><span>{projectStatusLabel(item.status)}</span>
+                </button>
+                <button type="button" className="delete-project" onClick={() => void removeProject(item)} disabled={busy || activeProjectStatuses.has(item.status)}>×</button>
+              </div>
+            ))}
           </div>
-        </header>
+        </aside>
 
-        {modalConnected ? (
-          <section className="workspace">
-            <div className="workspace-head">
-              <div>
-                <span className="eyebrow">Image to 3D</span>
-                <h2>{project ? "继续完善你的资产" : "从图片生成 3D"}</h2>
+        <section className="workspace">
+          <div className="workflow-progress">
+            {["原图", "本地抠图", "3D 生成"].map((label, index) => (
+              <div key={label} className={stage >= index + 1 ? "active" : ""}>
+                <span>{index + 1}</span><strong>{label}</strong>
               </div>
-              <span className="workflow-message">{workflowMessage}</span>
+            ))}
+          </div>
+          <p className="workflow-message">{workflowMessage}</p>
+
+          <div className="workspace-columns">
+            <div className="panel">
+              <div className="panel-title"><span>1</span><strong>本地 rembg 预处理</strong></div>
+              <label className="upload">
+                <input disabled={busy || !agent?.running} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void chooseImage(event.target.files?.[0] ?? null)} />
+                {sourceUrl ? "选择新图片" : "选择图片"}
+              </label>
+
+              <div className="preprocess-grid">
+                <div className="image-stage compact">
+                  <span className="preview-label">原图</span>
+                  {sourceUrl ? <img src={sourceUrl} alt="Source" /> : <div className="empty-image">原图不会上传到 Modal</div>}
+                </div>
+                <div className="image-stage compact checker">
+                  <span className="preview-label">Full RGBA</span>
+                  {matteUrl ? <img src={matteUrl} alt="Local rembg matte" /> : <div className="empty-image">rembg 后显示</div>}
+                </div>
+              </div>
+
+              <button className="primary full" disabled={busy || !project || !agent?.running} onClick={() => void preprocess()}>
+                {busy ? "处理中…" : canonical ? "重新本地抠图" : "本地 rembg 抠图"}
+              </button>
+              <p className="action-guidance">{preprocessHint}</p>
+              {preprocessMeta ? (
+                <div className="asset-meta">
+                  <span>{preprocessMeta.engine} · {preprocessMeta.provider.toUpperCase()}</span>
+                  <strong>{preprocessMeta.elapsed_ms.toFixed(0)} ms</strong>
+                </div>
+              ) : null}
+              <div className="settings-explainer">
+                <strong>隐私边界</strong>
+                <p>抠图、Alpha、裁切和 Letterbox 全在本机完成。当前测试阶段保留 rembg 的整张前景结果，不做单物体选择。</p>
+              </div>
             </div>
 
-            <ol className="workflow-steps" aria-label="创作进度">
-              {["导入图片", "选择对象", "生成 3D", "导出 GLB"].map((label, index) => (
-                <li key={label} className={`${workflowStage === index + 1 ? "active" : ""} ${workflowStage > index + 1 ? "done" : ""}`}><span>{workflowStage > index + 1 ? "✓" : index + 1}</span>{label}</li>
-              ))}
-            </ol>
-
-            <div className="workflow-grid">
-              <div className="panel">
-                <div className="panel-title"><span>1</span><strong>选择对象</strong></div>
-                <label className="upload"><input disabled={busy} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => void chooseImage(event.target.files?.[0] ?? null)} />{sourceUrl ? "新建项目" : "选择图片"}</label>
-                <div className="concept-row">
-                  <input value={concept} onChange={(event) => setConcept(event.target.value)} placeholder="例如：cup、chair、plant" onKeyDown={(event) => { if (event.key === "Enter") void segment(); }} />
-                  <button disabled={busy || !project || !concept.trim()} onClick={segment}>识别</button>
+            <div className="panel">
+              <div className="panel-title"><span>2</span><strong>Canonical 与 3D</strong></div>
+              {resultUrl ? (
+                <Suspense fallback={<div className="glb-viewer"><span className="viewer-message">正在加载 3D 引擎…</span></div>}>
+                  <GlbViewer url={resultUrl} />
+                </Suspense>
+              ) : (
+                <div className="canonical-preview checker">
+                  {canonicalUrl ? <img src={canonicalUrl} alt="1024 Canonical RGBA" /> : <div>本地抠图后显示 1024×1024 Canonical RGBA。</div>}
                 </div>
-                <p className="action-guidance">{segmentHint}</p>
+              )}
+              {canonical && !resultUrl ? (
+                <div className="asset-meta"><span>1024×1024 · RGBA · Letterbox</span><strong>{(canonical.bytes / 1024).toFixed(0)} KiB</strong></div>
+              ) : null}
 
-                {sourceUrl && (
-                  <div
-                    className={`image-stage ${refineMode ? "refining" : ""}`}
-                    style={selection ? { aspectRatio: `${selection.image_size[0]} / ${selection.image_size[1]}` } : undefined}
-                    onPointerDown={beginRefinement}
-                    onPointerMove={moveRefinement}
-                    onPointerUp={endRefinement}
-                  >
-                    <img src={sourceUrl} alt="源图片" />
-                    {selection?.candidates.map((candidate) => {
-                      const [x0, y0, x1, y1] = candidate.model_bbox_xyxy_norm;
-                      return <button key={candidate.candidate_id} className={`candidate ${candidateId === candidate.candidate_id ? "selected" : ""}`} style={{ left: `${x0 * 100}%`, top: `${y0 * 100}%`, width: `${(x1 - x0) * 100}%`, height: `${(y1 - y0) * 100}%` }} onClick={() => setCandidateId(candidate.candidate_id)} title={`score ${candidate.score.toFixed(3)}`} />;
-                    })}
-                    {refineBoxes.map((box, index) => (
-                      <div
-                        key={`${box.positive ? "p" : "n"}-${index}`}
-                        className={`refine-box ${box.positive ? "positive" : "negative"}`}
-                        style={{
-                          left: `${(box.cx - box.width / 2) * 100}%`,
-                          top: `${(box.cy - box.height / 2) * 100}%`,
-                          width: `${box.width * 100}%`,
-                          height: `${box.height * 100}%`,
-                        }}
-                      />
-                    ))}
-                    {dragStart && dragPoint && (
-                      <div
-                        className={`refine-box preview ${refineMode === "negative" ? "negative" : "positive"}`}
-                        style={{
-                          left: `${Math.min(dragStart.x, dragPoint.x) * 100}%`,
-                          top: `${Math.min(dragStart.y, dragPoint.y) * 100}%`,
-                          width: `${Math.abs(dragPoint.x - dragStart.x) * 100}%`,
-                          height: `${Math.abs(dragPoint.y - dragStart.y) * 100}%`,
-                        }}
-                      />
-                    )}
+              <div className="model-options">
+                {models.map((model) => (
+                  <button key={model.id} className={`model-option ${model.id === selectedModel?.id ? "active" : ""}`} disabled={busy || model.status === "disabled"} onClick={() => { setModelId(model.id); resetOutput(); }}>
+                    <div><strong>{model.name}</strong><span>{model.description}</span></div>
+                    <div className="model-meta"><span>Warm ~{model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s</span><span>{model.output === "textured" ? "纹理" : "几何"}</span></div>
+                  </button>
+                ))}
+                {!models.length ? (
+                  <div className="workspace-recovery">
+                    <strong>暂无云端模型</strong>
+                    <span>本地抠图不依赖 Modal；生成前再连接即可。</span>
+                    <button type="button" className="quiet-button" onClick={() => setSettingsOpen(true)}>打开设置</button>
                   </div>
-                )}
-
-                {selection && <div className="candidate-list">{selection.candidates.map((candidate) => <button key={candidate.candidate_id} className={candidateId === candidate.candidate_id ? "active" : ""} onClick={() => setCandidateId(candidate.candidate_id)}>#{candidate.rank + 1} · {(candidate.score * 100).toFixed(1)}%</button>)}</div>}
-                {selection && (
-                  <div className="refine-toolbar">
-                    <span>候选不准？在图上拖框</span>
-                    <button className={refineMode === "positive" ? "active positive" : ""} disabled={busy} onClick={() => setRefineMode(refineMode === "positive" ? null : "positive")}>+ 保留</button>
-                    <button className={refineMode === "negative" ? "active negative" : ""} disabled={busy} onClick={() => setRefineMode(refineMode === "negative" ? null : "negative")}>− 排除</button>
-                    <button disabled={busy || refineBoxes.length === 0} onClick={() => void applyRefinement()}>应用 Refine ({refineBoxes.length})</button>
-                    {refineBoxes.length > 0 && <button disabled={busy} onClick={() => setRefineBoxes([])}>清除</button>}
-                  </div>
-                )}
-                <button className="primary full" disabled={busy || !project || !candidateId} onClick={materialize}>确认对象</button>
-                <p className="action-guidance">{candidateHint}</p>
+                ) : null}
               </div>
 
-              <div className="panel">
-                <div className="panel-title"><span>2</span><strong>选择模型并生成</strong></div>
-                {resultUrl ? <Suspense fallback={<div className="glb-viewer"><span className="viewer-message">正在加载 3D 引擎…</span></div>}><GlbViewer url={resultUrl} /></Suspense> : (
-                  <div className="canonical-preview">{canonicalUrl ? <img src={canonicalUrl} alt="Canonical RGBA" /> : <div>确认对象后，这里会显示标准透明 RGBA。</div>}</div>
-                )}
-                {canonical && !resultUrl && <div className="asset-meta"><span>Canonical RGBA</span><strong>{(canonical.bytes / 1024).toFixed(0)} KiB</strong></div>}
-
-                <div className="model-options">
-                  {models.map((model) => (
-                    <button key={model.id} className={`model-option ${model.id === selectedModel?.id ? "active" : ""}`} disabled={busy || model.status === "disabled"} onClick={() => { setModelId(model.id); resetOutput(); }}>
-                      <div><strong>{model.name}</strong><span>{model.description}</span></div>
-                      <div className="model-meta"><span>Warm ~{model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s</span><span>{model.output === "textured" ? "纹理" : "几何"}</span></div>
-                    </button>
-                  ))}
-                  {!models.length ? <div className="workspace-recovery"><strong>未取得云端模型列表</strong><span>检查 Modal 连接后刷新状态。</span><button type="button" className="quiet-button" onClick={() => setSettingsOpen(true)}>打开设置</button></div> : null}
+              {selectedProfile ? <div className="profile-row"><span>Profile</span><strong>{selectedProfile.name}</strong></div> : null}
+              {job && jobIsActive(job) ? (
+                <div className="generation-actions">
+                  <button className="primary" disabled>{jobActivityLabel(job.status)}…</button>
+                  <button className="danger" disabled={job.status === "cancel_requested"} onClick={() => void cancel()}>{job.status === "cancel_requested" ? "取消确认中" : "取消"}</button>
                 </div>
+              ) : (
+                <button className="primary full" disabled={busy || !project || !canonical || !selectedModel || selectedModel.status === "disabled"} onClick={() => void generate()}>
+                  使用 {selectedModel?.name ?? "模型"} 生成 GLB
+                </button>
+              )}
+              {!job || !jobIsActive(job) ? <p className="action-guidance">{generationHint}</p> : null}
 
-                {selectedProfile && <div className="profile-row"><span>Profile</span><strong>{selectedProfile.name}</strong></div>}
-                {job && jobIsActive(job) ? (
-                  <div className="generation-actions">
-                    <button className="primary" disabled>{jobActivityLabel(job.status)}…</button>
-                    <button className="danger" disabled={job.status === "cancel_requested"} onClick={cancel}>
-                      {job.status === "cancel_requested" ? "取消确认中" : "取消"}
-                    </button>
+              {job?.result ? (
+                <div className="result-card">
+                  <div><span>生成完成</span><strong>{(job.result.artifact.bytes / 1024 / 1024).toFixed(2)} MiB</strong></div>
+                  <div className="result-timing">
+                    {job.result.timing.inference_s !== undefined ? <span>推理 {job.result.timing.inference_s.toFixed(2)}s</span> : null}
+                    {job.result.timing.load_s !== undefined ? <span>加载 {job.result.timing.load_s.toFixed(2)}s</span> : null}
                   </div>
-                ) : (
-                  <button className="primary full" disabled={busy || !project || !canonical || !selectedModel || selectedModel.status === "disabled"} onClick={generate}>使用 {selectedModel?.name ?? "模型"} 生成 GLB</button>
-                )}
-                {!job || !jobIsActive(job) ? <p className="action-guidance">{generationHint}</p> : null}
-
-                {job?.result && (
-                  <div className="result-card">
-                    <div><span>生成完成</span><strong>{(job.result.artifact.bytes / 1024 / 1024).toFixed(2)} MiB</strong></div>
-                    <div className="result-timing">
-                      {job.result.timing.inference_s !== undefined && <span>推理 {job.result.timing.inference_s.toFixed(2)}s</span>}
-                      {job.result.timing.load_s !== undefined && <span>加载 {job.result.timing.load_s.toFixed(2)}s</span>}
-                    </div>
-                    <button className="primary" onClick={downloadResult}>下载 GLB</button>
-                  </div>
-                )}
-              </div>
+                  <button className="primary" onClick={() => void downloadResult()}>下载 GLB</button>
+                </div>
+              ) : null}
             </div>
-          </section>
-        ) : (
-          <section className="connection-empty-state">
-            <div className="empty-visual"><span>◇</span><span>◆</span><span>○</span></div>
-            <span className="eyebrow">Ready when you are</span>
-            <h2>连接 Modal，开始创建 3D 资产</h2>
-            <p>账号凭据和运行时配置已经统一收纳到设置中心，工作台只专注创作。</p>
-            <button className="primary-button" onClick={() => setSettingsOpen(true)}>打开设置</button>
-          </section>
-        )}
+          </div>
+        </section>
       </main>
 
-      <SettingsPanel
-        open={settingsOpen}
-        onClose={closeSettings}
-        controller={runtimeController}
-      />
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} controller={runtimeController} />
     </div>
   );
 }

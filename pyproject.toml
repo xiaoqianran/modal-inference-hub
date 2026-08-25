@@ -6,8 +6,10 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "modal[api-proxy-support]",
+    "pillow>=11,<13",
     "pydantic",
     "python-multipart",
+    "rembg[cpu]>=2.0.70,<3",
     "uvicorn",
 ]
 

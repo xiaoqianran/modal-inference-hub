@@ -17,8 +17,17 @@ def capability_fixture() -> dict:
         "generation": {
             "app": models.APP_NAME,
             "submit_function": "submit",
-            "pipeline_function": "generate_from_raw",
             "job_transport": "modal.FunctionCall",
+            "input_contract": {
+                "role": "canonical_rgba",
+                "mime": "image/png",
+                "mode": "RGBA",
+                "width": 1024,
+                "height": 1024,
+                "bit_depth": 8,
+                "layout": "letterbox",
+                "alpha": "channel_required",
+            },
         },
         "models": [
             {
@@ -29,7 +38,16 @@ def capability_fixture() -> dict:
                 "worker_app": "modal-3d-fastsam3d",
                 "output": "geometry",
                 "artifact": {"mime": "model/gltf-binary", "extension": ".glb"},
-                "input": {"role": "canonical_rgba", "mime": "image/png", "alpha": "required"},
+                "input": {
+                    "role": "canonical_rgba",
+                    "mime": "image/png",
+                    "mode": "RGBA",
+                    "width": 1024,
+                    "height": 1024,
+                    "bit_depth": 8,
+                    "layout": "letterbox",
+                    "alpha": "channel_required",
+                },
                 "reference": {"warm_seconds": 6.06},
                 "profiles": [
                     {
@@ -52,7 +70,16 @@ def capability_fixture() -> dict:
                 "worker_app": "modal-3d-pixal3d",
                 "output": "textured",
                 "artifact": {"mime": "model/gltf-binary", "extension": ".glb"},
-                "input": {"role": "canonical_rgba", "mime": "image/png", "alpha": "required"},
+                "input": {
+                    "role": "canonical_rgba",
+                    "mime": "image/png",
+                    "mode": "RGBA",
+                    "width": 1024,
+                    "height": 1024,
+                    "bit_depth": 8,
+                    "layout": "letterbox",
+                    "alpha": "channel_required",
+                },
                 "reference": {"warm_seconds": 108.92},
                 "profiles": [
                     {
@@ -67,7 +94,6 @@ def capability_fixture() -> dict:
                 },
             },
         ],
-        "sam": {"cloud": {"app": "modal-3d-sam31"}},
     }
 
 
@@ -115,7 +141,7 @@ class ModelCapabilityTests(unittest.TestCase):
         cached = capability_fixture()
         (Path(self.temp.name) / "generation-capabilities.json").write_text(json.dumps(cached))
         incompatible = capability_fixture()
-        incompatible["contract"] = "modal-3d.capabilities.v2"
+        incompatible["contract"] = "modal-3d.capabilities.v1"
         fn = Mock()
         fn.remote.return_value = incompatible
         with (
@@ -125,6 +151,11 @@ class ModelCapabilityTests(unittest.TestCase):
             self.assertRaisesRegex(models.IncompatibleCapability, "incompatible"),
         ):
             models.capabilities_document()
+
+    def test_source_input_limits_are_local_not_cloud_sam(self) -> None:
+        self.assertEqual(models.source_input_limits()["max_bytes"], 20 * 1024 * 1024)
+        self.assertEqual(models.source_input_limits()["max_pixels"], 40_000_000)
+        self.assertEqual(models.source_input_limits()["mime"], ["image/png", "image/jpeg", "image/webp"])
 
     def test_public_models_are_projection_not_local_facts(self) -> None:
         with patch("agent.models.capabilities_document", return_value=capability_fixture()):

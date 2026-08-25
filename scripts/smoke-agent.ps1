@@ -65,17 +65,15 @@ try {
   if ($models.StatusCode -ne 503) { throw "Fresh CI 环境未连接 Modal 且无 capability cache 时 /v1/models 应返回 503，实际为 $($models.StatusCode)。" }
 
   $capabilities = Invoke-RestMethod "$base/v1/capabilities" -Headers $headers
-  if ($capabilities.sam.mode -ne "auto") { throw "默认 SAM 模式应为 auto。" }
+  if ($capabilities.preprocessing.kind -ne "rembg") { throw "本地预处理引擎应为 rembg。" }
+  if ($capabilities.preprocessing.engine -ne "birefnet-general") { throw "默认 rembg 引擎应为 birefnet-general。" }
+  if ($capabilities.preprocessing.provider -ne "cpu") { throw "测试阶段默认 rembg provider 应为 cpu。" }
+  if ($capabilities.preprocessing.canonical_size -ne 1024) { throw "Canonical 尺寸契约应为 1024。" }
+  if (-not $capabilities.preprocessing.local_only) { throw "2D 预处理必须标记为 local_only。" }
 
-  $localSam = Invoke-RestMethod "$base/v1/local-sam/status" -Headers $headers
-  if ($localSam.runtime_installed) { throw "CI 临时目录不应预装 Local SAM runtime。" }
-  if ($localSam.expected_version -ne "1") { throw "Local SAM expected_version 应为 1。" }
-  if ($localSam.update_available) { throw "Fresh CI 环境不应报告 Local SAM 更新。" }
-  $localInstall = Invoke-HttpAllowError "$base/v1/local-sam/install" "Post" $headers
-  if ($localInstall.StatusCode -ne 409) { throw "未连接 Modal 时 Local SAM 安装应返回 409，实际为 $($localInstall.StatusCode)。" }
-
-  $localUninstall = Invoke-RestMethod "$base/v1/local-sam/install" -Method Delete -Headers $headers
-  if ($localUninstall.runtime_installed) { throw "Local SAM 卸载接口应保持未安装状态。" }
+  $preprocess = Invoke-RestMethod "$base/v1/preprocess/status" -Headers $headers
+  if ($preprocess.engine -ne "birefnet-general") { throw "预处理状态引擎不匹配。" }
+  if ($preprocess.model_downloaded) { throw "Fresh CI 环境不应预装 birefnet-general 模型。" }
 
   $image = Join-Path $dataDir "smoke.png"
   # 1x1 真彩 PNG（合法图片，供 image_input 严格解析通过）。

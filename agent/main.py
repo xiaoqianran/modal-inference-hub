@@ -22,15 +22,13 @@ from modal.exception import (
 )
 from pydantic import BaseModel, Field, SecretStr
 
-from agent import artifacts, exports, generation, local_sam_runtime, sam_provider
+from agent import artifacts, exports, generation, rembg_preprocess
 from agent.capabilities import capabilities
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
 from agent.models import CapabilityError, public_models, source_input_limits
 from agent.projects import projects
-from agent.sam_provider import SamProviderUnavailable
-from agent.settings import get_settings, set_sam_mode
 
 app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -85,43 +83,15 @@ async def modal_required(_request: Request, exc: NotConnectedError):
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
-@app.exception_handler(SamProviderUnavailable)
-async def sam_provider_required(_request: Request, exc: SamProviderUnavailable):
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-
 class ModalCredentials(BaseModel):
     token_id: str
     token_secret: SecretStr
-
-
-class ProjectSegmentRequest(BaseModel):
-    concept: str
-    max_candidates: int = Field(default=8, ge=1, le=16)
-
-
-class ProjectRefineRequest(BaseModel):
-    boxes: list[dict] = Field(min_length=1, max_length=16)
-    max_candidates: int = Field(default=8, ge=1, le=16)
-
-
-class ProjectMaterializeRequest(BaseModel):
-    candidate_id: str
-    output_size: int = Field(default=1024, ge=256, le=2048)
 
 
 class ProjectGenerationRequest(BaseModel):
     model: str
     profile: str = "recommended"
     seed: int = 42
-
-
-class SamSettingsRequest(BaseModel):
-    mode: str
-
-
-class LocalSamLocationRequest(BaseModel):
-    path: str
 
 
 class ExportRequest(BaseModel):
@@ -143,65 +113,9 @@ def runtime_capabilities() -> dict:
     return capabilities()
 
 
-@app.get("/v1/local-sam/status")
-def local_sam_status() -> dict:
-    return local_sam_runtime.status()
-
-
-@app.post("/v1/local-sam/install")
-def local_sam_install() -> dict:
-    if not connected():
-        raise HTTPException(status_code=409, detail="请先连接 Modal，以同步 SAM 3.1 checkpoint")
-    local = capabilities()["sam"]["local"]
-    if not local["hardware_eligible"] or not local["disk_eligible"]:
-        raise HTTPException(status_code=409, detail=local["reason"])
-    return local_sam_runtime.begin_install()
-
-
-@app.delete("/v1/local-sam/install")
-def local_sam_uninstall() -> dict:
-    try:
-        result = local_sam_runtime.uninstall()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if get_settings()["sam_mode"] == "local":
-        set_sam_mode("auto")
-    return result
-
-
-@app.post("/v1/local-sam/start")
-def local_sam_start() -> dict:
-    try:
-        return local_sam_runtime.start()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.delete("/v1/local-sam/start")
-def local_sam_stop() -> dict:
-    local_sam_runtime.stop()
-    return {"ok": True}
-
-
-@app.put("/v1/local-sam/location")
-def local_sam_location(request: LocalSamLocationRequest) -> dict:
-    try:
-        return local_sam_runtime.migrate_root(request.path.strip())
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@app.get("/v1/settings/sam")
-def sam_settings() -> dict:
-    return get_settings()
-
-
-@app.put("/v1/settings/sam")
-def sam_settings_update(request: SamSettingsRequest) -> dict:
-    try:
-        return set_sam_mode(request.mode)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+@app.get("/v1/preprocess/status")
+def preprocess_status() -> dict:
+    return rembg_preprocess.status()
 
 
 @app.get("/modal/status")
@@ -237,6 +151,8 @@ async def project_create(file: Annotated[UploadFile, File()]) -> dict:
         return projects.create(await file.read(), file.filename or "source.png", limits)
     except CapabilityError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except artifacts.ArtifactValidationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -276,77 +192,73 @@ def project_source(project_id: str):
     return FileResponse(path)
 
 
-@app.post("/v1/projects/{project_id}/segment")
-def project_segment(project_id: str, request: ProjectSegmentRequest) -> dict:
-    concept = request.concept.strip()
-    if not concept:
-        raise HTTPException(status_code=400, detail="请输入要提取的对象")
+@app.post("/v1/projects/{project_id}/preprocess")
+def project_preprocess(project_id: str) -> dict:
     try:
-        image_path = projects.source_path(project_id)
+        source = projects.source_bytes(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
-    provider, selection = sam_provider.segment(image_path, concept, request.max_candidates)
-    project = projects.record_segmentation(project_id, concept, provider, selection)
-    return {"project": project, "selection": selection, "provider": provider}
-
-
-@app.post("/v1/projects/{project_id}/refine")
-def project_refine(project_id: str, request: ProjectRefineRequest) -> dict:
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=410, detail="项目源图片已丢失") from exc
     try:
-        project = projects.get(project_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="项目不存在") from exc
-    if not project["scene_id"] or not project["concept"]:
-        raise HTTPException(status_code=409, detail="请先完成对象识别")
-    provider = project["sam_provider"] or "cloud"
-    selection = sam_provider.refine(
-        provider,
-        project["scene_id"],
-        project["concept"],
-        request.boxes,
-        request.max_candidates,
+        result = rembg_preprocess.process(source)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    descriptor = {
+        "id": artifacts.content_id("can", "canonical", result["canonical_sha256"]),
+        "role": "canonical-rgba",
+        "mime": "image/png",
+        "bytes": len(result["canonical_bytes"]),
+        "sha256": result["canonical_sha256"],
+        "width": 1024,
+        "height": 1024,
+        "mode": "RGBA",
+    }
+    project = projects.save_preprocessed(
+        project_id,
+        result["matte_bytes"],
+        result["canonical_bytes"],
+        descriptor,
     )
-    project = projects.record_segmentation(project_id, project["concept"], provider, selection)
-    return {"project": project, "selection": selection, "provider": provider}
+    metrics = {
+        key: value
+        for key, value in result.items()
+        if key not in {"matte_bytes", "canonical_bytes", "matte_sha256", "canonical_sha256"}
+    }
+    return {
+        "project": project,
+        "canonical": descriptor,
+        "matte": {
+            "mime": "image/png",
+            "bytes": len(result["matte_bytes"]),
+            "sha256": result["matte_sha256"],
+        },
+        "preprocess": metrics,
+    }
 
 
-@app.post("/v1/projects/{project_id}/materialize")
-def project_materialize(project_id: str, request: ProjectMaterializeRequest) -> dict:
+@app.get("/v1/projects/{project_id}/matte")
+def project_matte(project_id: str):
     try:
-        project = projects.get(project_id)
+        path = projects.matte_path(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
-    if not project["scene_id"] or not project["selection_id"]:
-        raise HTTPException(status_code=409, detail="请先完成对象识别")
-    provider = project["sam_provider"] or "cloud"
-    try:
-        canonical = sam_provider.materialize(
-            provider,
-            project["scene_id"],
-            project["selection_id"],
-            request.candidate_id,
-            request.output_size,
-        )
-    except artifacts.ArtifactValidationError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    project = projects.record_canonical(project_id, request.candidate_id, canonical)
-    descriptor, _ = projects.canonical(project_id)
-    return {"project": project, "canonical": descriptor}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="项目尚未完成本地抠图") from exc
+    return FileResponse(path, media_type="image/png")
 
 
 @app.get("/v1/projects/{project_id}/canonical")
 def project_canonical(project_id: str):
     try:
-        descriptor, path = projects.canonical(project_id)
-        chunks = artifacts.read(path)
+        descriptor, path = projects.canonical_local(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
-    except RuntimeError as exc:
+    except (RuntimeError, FileNotFoundError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return StreamingResponse(
-        chunks,
+    return FileResponse(
+        path,
         media_type=descriptor["mime"],
         headers={"ETag": f'"{descriptor["sha256"]}"'},
     )
@@ -356,12 +268,20 @@ def project_canonical(project_id: str):
 def project_generation(project_id: str, request: ProjectGenerationRequest) -> dict:
     try:
         project = projects.get(project_id)
-        _, canonical_path = projects.canonical(project_id)
+        descriptor, local_path = projects.canonical_local(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
-    except RuntimeError as exc:
+    except (RuntimeError, FileNotFoundError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     try:
+        try:
+            _, canonical_path = projects.canonical_remote(project_id)
+        except RuntimeError:
+            uploaded = artifacts.put(local_path.read_bytes(), ".png")
+            if uploaded["sha256"] != descriptor["sha256"] or uploaded["bytes"] != descriptor["bytes"]:
+                raise artifacts.ArtifactValidationError("Canonical RGBA 上传完整性校验失败")
+            canonical_path = uploaded["path"]
+            projects.record_remote_canonical(project_id, canonical_path)
         remote = generation.submit(
             request.model,
             canonical_path,
@@ -420,7 +340,7 @@ def download_asset(path: str = Query(...)):
         normalized = artifacts.normalize_path(path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if not normalized.startswith(("sam31/", "client-inputs/")):
+    if not normalized.startswith("client-inputs/"):
         raise HTTPException(410, "path-based generation artifact access is retired")
     chunks = artifacts.read(normalized)
     media_type = {

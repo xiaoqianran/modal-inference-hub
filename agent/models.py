@@ -9,7 +9,6 @@
   contract == CONTRACT                         capabilities.py: CONTRACT
   generation.app == GATEWAY_APP                gateway.py: APP_NAME
   generation.submit_function == GATEWAY_SUBMIT gateway.py: submit
-  generation.pipeline_function == PIPELINE      gateway.py: generate_from_raw
   generation.job_transport == JOB_TRANSPORT    capabilities.py: capabilities_document
   model.artifact.mime/extension                common.py: worker_capability
   model.input.role == "canonical_rgba"         common.py: worker_capability
@@ -37,7 +36,6 @@ from modal.exception import TimeoutError as ModalTimeoutError
 from agent.constants import (
     CONTRACT,
     GATEWAY_APP,
-    GATEWAY_PIPELINE,
     GATEWAY_SUBMIT,
     JOB_TRANSPORT,
     SOURCE_MAX_BYTES,
@@ -49,7 +47,6 @@ from agent.storage import data_dir
 
 # 重新导出，避免其它模块直接依赖 constants；命名保持历史语义。
 APP_NAME = GATEWAY_APP
-PIPELINE_FUNCTION = GATEWAY_PIPELINE
 SUBMIT_FUNCTION = GATEWAY_SUBMIT
 _CACHE_NAME = "generation-capabilities.json"
 _RECOVERABLE_ERRORS = (
@@ -137,30 +134,24 @@ def _validate_document(value) -> dict:
     expected_generation = {
         "app": APP_NAME,
         "submit_function": SUBMIT_FUNCTION,
-        "pipeline_function": PIPELINE_FUNCTION,
         "job_transport": JOB_TRANSPORT,
     }
     if any(generation.get(key) != expected for key, expected in expected_generation.items()):
         raise IncompatibleCapability("generation endpoint does not match the supported gateway")
 
-    sam = _require_mapping(document.get("sam"), "sam")
-    cloud = _require_mapping(sam.get("cloud"), "sam.cloud")
-    source_input = cloud.get("input")
-    if source_input is None:
-        source_input = {
-            "mime": list(SOURCE_MIME_TYPES),
-            "max_bytes": SOURCE_MAX_BYTES,
-            "max_pixels": SOURCE_MAX_PIXELS,
-        }
-        cloud["input"] = source_input
-    else:
-        source_input = _require_mapping(source_input, "sam.cloud.input")
-        if source_input.get("mime") != list(SOURCE_MIME_TYPES):
-            raise IncompatibleCapability("sam.cloud.input.mime is incompatible")
-        if source_input.get("max_bytes") != SOURCE_MAX_BYTES:
-            raise IncompatibleCapability("sam.cloud.input.max_bytes is incompatible")
-        if source_input.get("max_pixels") != SOURCE_MAX_PIXELS:
-            raise IncompatibleCapability("sam.cloud.input.max_pixels is incompatible")
+    input_contract = _require_mapping(generation.get("input_contract"), "generation.input_contract")
+    expected_input = {
+        "role": "canonical_rgba",
+        "mime": "image/png",
+        "mode": "RGBA",
+        "width": 1024,
+        "height": 1024,
+        "bit_depth": 8,
+        "layout": "letterbox",
+        "alpha": "channel_required",
+    }
+    if input_contract != expected_input:
+        raise IncompatibleCapability("generation.input_contract is incompatible")
 
     models = document.get("models")
     if not isinstance(models, list) or not models:
@@ -185,7 +176,7 @@ def _validate_document(value) -> dict:
         if artifact.get("mime") != "model/gltf-binary" or artifact.get("extension") != ".glb":
             raise IncompatibleCapability(f"models[{index}].artifact is invalid")
         model_input = _require_mapping(model.get("input"), f"models[{index}].input")
-        if model_input.get("role") != "canonical_rgba" or model_input.get("mime") != "image/png":
+        if model_input != expected_input:
             raise IncompatibleCapability(f"models[{index}].input is invalid")
 
         reference = _require_mapping(model.get("reference"), f"models[{index}].reference")
@@ -275,15 +266,11 @@ def capabilities_document(*, refresh: bool = True) -> dict:
 
 
 def source_input_limits() -> dict:
-    try:
-        document = capabilities_document()
-        return dict(document["sam"]["cloud"]["input"])
-    except CapabilityUnavailable:
-        return {
-            "mime": list(SOURCE_MIME_TYPES),
-            "max_bytes": SOURCE_MAX_BYTES,
-            "max_pixels": SOURCE_MAX_PIXELS,
-        }
+    return {
+        "mime": list(SOURCE_MIME_TYPES),
+        "max_bytes": SOURCE_MAX_BYTES,
+        "max_pixels": SOURCE_MAX_PIXELS,
+    }
 
 
 def public_models() -> list[dict]:

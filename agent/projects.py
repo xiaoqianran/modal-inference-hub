@@ -21,7 +21,7 @@ from agent.storage import data_dir
 
 # Project 状态机（随工作流逐步推进）：
 #
-#   draft ──(segment)──► segmented ──(materialize)──► ready ──(generation)──► generating
+#   draft ──(local rembg + canonicalize)──► ready ──(generation)──► generating
 #                                                                              │
 #                                       ┌──────────────────────────────────────┘
 #                                       │  （由 jobs.py 的 Job 状态回写，见 record_job）
@@ -265,37 +265,53 @@ class ProjectStore:
     def source_bytes(self, project_id: str) -> bytes:
         return self.source_path(project_id).read_bytes()
 
-    def record_segmentation(
-        self, project_id: str, concept: str, provider: str, selection: dict
+    def _asset_path(self, project_id: str, name: str) -> Path:
+        self.get(project_id)
+        directory = self.assets / project_id
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / name
+
+    def matte_path(self, project_id: str) -> Path:
+        path = self._asset_path(project_id, "matte.png")
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+
+    def canonical_local_path(self, project_id: str) -> Path:
+        path = self._asset_path(project_id, "canonical.png")
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+
+    def save_preprocessed(
+        self,
+        project_id: str,
+        matte_bytes: bytes,
+        canonical_bytes: bytes,
+        descriptor: dict,
     ) -> dict:
+        paths = (
+            (self._asset_path(project_id, "matte.png"), matte_bytes),
+            (self._asset_path(project_id, "canonical.png"), canonical_bytes),
+        )
+        for path, data in paths:
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_bytes(data)
+            temporary.replace(path)
+        return self.record_local_canonical(project_id, descriptor)
+
+    def record_local_canonical(self, project_id: str, canonical: dict) -> dict:
         return self._update(
             project_id,
-            concept=concept,
-            sam_provider=provider,
-            scene_id=selection["scene_id"],
-            selection_id=selection["selection_id"],
+            concept=None,
+            sam_provider=None,
+            scene_id=None,
+            selection_id=None,
             candidate_id=None,
             canonical_path=None,
-            canonical_id=None,
-            canonical_sha256=None,
-            canonical_bytes=None,
-            job_id=None,
-            artifact_path=None,
-            artifact_id=None,
-            artifact_sha256=None,
-            artifact_bytes=None,
-            status="segmented",
-            error=None,
-        )
-
-    def record_canonical(self, project_id: str, candidate_id: str, canonical: dict) -> dict:
-        return self._update(
-            project_id,
-            candidate_id=candidate_id,
-            canonical_path=canonical["canonical_path"],
-            canonical_id=canonical["canonical_id"],
-            canonical_sha256=canonical["canonical_sha256"],
-            canonical_bytes=canonical["canonical_bytes"],
+            canonical_id=canonical["id"],
+            canonical_sha256=canonical["sha256"],
+            canonical_bytes=canonical["bytes"],
             job_id=None,
             artifact_path=None,
             artifact_id=None,
@@ -305,29 +321,47 @@ class ProjectStore:
             error=None,
         )
 
-    def canonical(self, project_id: str) -> tuple[dict, str]:
+    def canonical_descriptor(self, project_id: str) -> dict:
         with self._connect() as db:
             row = db.execute(
                 """
-                SELECT canonical_id, canonical_sha256, canonical_bytes, canonical_path
+                SELECT canonical_id, canonical_sha256, canonical_bytes
                 FROM projects WHERE id = ?
                 """,
                 (project_id,),
             ).fetchone()
         if row is None:
             raise KeyError(project_id)
-        if not all((row[0], row[1], row[2], row[3])):
-            raise RuntimeError("项目尚无 Canonical RGBA")
-        return (
-            {
-                "id": row[0],
-                "role": "canonical-rgba",
-                "mime": "image/png",
-                "bytes": row[2],
-                "sha256": row[1],
-            },
-            row[3],
-        )
+        if not all((row[0], row[1], row[2])):
+            raise RuntimeError("项目尚无本地 Canonical RGBA")
+        return {
+            "id": row[0],
+            "role": "canonical-rgba",
+            "mime": "image/png",
+            "bytes": row[2],
+            "sha256": row[1],
+            "width": 1024,
+            "height": 1024,
+            "mode": "RGBA",
+        }
+
+    def canonical_local(self, project_id: str) -> tuple[dict, Path]:
+        return self.canonical_descriptor(project_id), self.canonical_local_path(project_id)
+
+    def canonical_remote(self, project_id: str) -> tuple[dict, str]:
+        descriptor = self.canonical_descriptor(project_id)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT canonical_path FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(project_id)
+        if not row[0]:
+            raise RuntimeError("Canonical RGBA 尚未上传到 Modal Volume")
+        return descriptor, str(row[0])
+
+    def record_remote_canonical(self, project_id: str, remote_path: str) -> dict:
+        return self._update(project_id, canonical_path=remote_path)
 
     def record_generation(self, project_id: str, model: str, profile: str, job_id: str) -> dict:
         return self._update(

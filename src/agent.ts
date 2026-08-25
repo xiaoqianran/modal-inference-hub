@@ -22,30 +22,6 @@ export type AppDiagnostics = {
   agent_log: string | null;
 };
 
-export type SamCandidate = {
-  candidate_id: string;
-  rank: number;
-  score: number;
-  model_bbox_xyxy_norm: [number, number, number, number];
-};
-
-
-export type RefinementBox = {
-  cx: number;
-  cy: number;
-  width: number;
-  height: number;
-  positive: boolean;
-};
-
-export type SamSelection = {
-  scene_id: string;
-  selection_id: string;
-  image_size: [number, number];
-  candidate_count: number;
-  candidates: SamCandidate[];
-};
-
 export type CanonicalAsset = {
   id: string;
   role: "canonical-rgba";
@@ -95,8 +71,6 @@ export type ModelSpec = {
 
 
 
-export type SamMode = "auto" | "cloud" | "local";
-
 export type RuntimeCapabilities = {
   hardware: {
     platform: string;
@@ -105,44 +79,30 @@ export type RuntimeCapabilities = {
     disk_free_mib: number;
     gpus: { name: string; memory_mib: number; driver: string }[];
   };
-  sam: {
-    mode: SamMode;
-    effective: "cloud" | "local" | null;
-    local: {
-      available: boolean;
-      ready: boolean;
-      installed: boolean;
-      runtime_installed: boolean;
-      checkpoint_installed: boolean;
-      installing: boolean;
-      state: string;
-      installed_version: string | null;
-      expected_version: string;
-      update_available: boolean;
-      step: string | null;
-      error: string | null;
-      downloaded_bytes: number | null;
-      download_total_bytes: number | null;
-      download_speed_bps: number | null;
-      download_eta_seconds: number | null;
-      root_path: string;
-      hardware_eligible: boolean;
-      disk_eligible: boolean;
-      min_disk_mib: number;
-      supported_platform: boolean;
-      reason: string;
-      min_vram_mib: number;
-      checkpoint_bytes: number;
-      gpu: { name: string; memory_mib: number; driver: string } | null;
-      health: {
-        ready?: boolean;
-        gpu?: string;
-        vram_gib?: number;
-        bf16?: boolean;
-        model_load_s?: number;
-      } | null;
-    };
-    cloud: { available: boolean };
+  preprocessing: {
+    kind: "rembg";
+    engine: string;
+    provider: "cpu" | "gpu";
+    model_home: string;
+    model_path: string;
+    model_downloaded: boolean;
+    canonical_size: number;
+    local_only: boolean;
+  };
+};
+
+export type PreprocessResult = {
+  project: Project;
+  canonical: CanonicalAsset;
+  matte: { mime: "image/png"; bytes: number; sha256: string };
+  preprocess: {
+    engine: string;
+    provider: string;
+    elapsed_ms: number;
+    source_size: [number, number];
+    foreground_bbox: [number, number, number, number];
+    foreground_ratio: number;
+    canonical_size: [number, number];
   };
 };
 
@@ -151,11 +111,6 @@ export type Project = {
   title: string;
   source_name: string;
   source_bytes: number;
-  concept: string | null;
-  sam_provider: "cloud" | "local" | null;
-  scene_id: string | null;
-  selection_id: string | null;
-  candidate_id: string | null;
   canonical_id: string | null;
   canonical_sha256: string | null;
   canonical_bytes: number | null;
@@ -262,8 +217,8 @@ async function request(
   }
 }
 
-async function json<T>(info: AgentInfo, path: string, init?: RequestInit) {
-  return (await request(info, path, init)).json() as Promise<T>;
+async function json<T>(info: AgentInfo, path: string, init?: RequestInit, timeoutMs?: number) {
+  return (await request(info, path, init, timeoutMs)).json() as Promise<T>;
 }
 
 export const probeAgent = (info: AgentInfo) =>
@@ -321,31 +276,14 @@ export async function projectCanonicalBlob(info: AgentInfo, projectId: string) {
   return (await request(info, `/v1/projects/${projectId}/canonical`, {}, 600_000)).blob();
 }
 
-export const segmentProject = (info: AgentInfo, projectId: string, concept: string) =>
-  json<{ project: Project; selection: SamSelection; provider: "cloud" | "local" }>(info, `/v1/projects/${projectId}/segment`, {
-    method: "POST",
-    body: JSON.stringify({ concept, max_candidates: 8 }),
-  });
+export async function projectMatteBlob(info: AgentInfo, projectId: string) {
+  return (await request(info, `/v1/projects/${projectId}/matte`, {}, 600_000)).blob();
+}
 
-export const refineProject = (
-  info: AgentInfo,
-  projectId: string,
-  boxes: RefinementBox[],
-) =>
-  json<{ project: Project; selection: SamSelection; provider: "cloud" | "local" }>(info, `/v1/projects/${projectId}/refine`, {
+export const preprocessProject = (info: AgentInfo, projectId: string) =>
+  json<PreprocessResult>(info, `/v1/projects/${projectId}/preprocess`, {
     method: "POST",
-    body: JSON.stringify({ boxes, max_candidates: 8 }),
-  });
-
-export const materializeProject = (
-  info: AgentInfo,
-  projectId: string,
-  candidateId: string,
-) =>
-  json<{ project: Project; canonical: CanonicalAsset }>(info, `/v1/projects/${projectId}/materialize`, {
-    method: "POST",
-    body: JSON.stringify({ candidate_id: candidateId, output_size: 1024 }),
-  });
+  }, 600_000);
 
 export const submitProjectGeneration = (
   info: AgentInfo,
@@ -360,31 +298,6 @@ export const submitProjectGeneration = (
 
 export const getCapabilities = (info: AgentInfo) =>
   json<RuntimeCapabilities>(info, "/v1/capabilities");
-
-export const installLocalSam = (info: AgentInfo) =>
-  json<Record<string, unknown>>(info, "/v1/local-sam/install", { method: "POST" });
-
-export const uninstallLocalSam = (info: AgentInfo) =>
-  json<{ released_bytes: number }>(info, "/v1/local-sam/install", { method: "DELETE" });
-
-export const migrateLocalSam = (info: AgentInfo, path: string) =>
-  json<RuntimeCapabilities>(info, "/v1/local-sam/location", {
-    method: "PUT",
-    body: JSON.stringify({ path }),
-  });
-
-export const startLocalSam = (info: AgentInfo) =>
-  json<Record<string, unknown>>(info, "/v1/local-sam/start", { method: "POST" });
-
-export async function stopLocalSam(info: AgentInfo) {
-  await request(info, "/v1/local-sam/start", { method: "DELETE" });
-}
-
-export const setSamMode = (info: AgentInfo, mode: SamMode) =>
-  json<{ sam_mode: SamMode }>(info, "/v1/settings/sam", {
-    method: "PUT",
-    body: JSON.stringify({ mode }),
-  });
 
 export const listModels = (info: AgentInfo) =>
   json<ModelSpec[]>(info, "/v1/models");
