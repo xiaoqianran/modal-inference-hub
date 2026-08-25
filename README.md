@@ -103,3 +103,8 @@ uv run pytest -q
 Windows packaging and smoke tests are performed by GitHub Actions. The release workflow builds NSIS and MSI installers and publishes SHA-256 checksums.
 
 See `docs/PRODUCT_ARCHITECTURE.md` for the active architecture.
+
+
+## Local development lock discipline
+
+The repository requires `uv >=0.12.5,<0.13` (see `uv.toml`). On a clean checkout use `uv sync --locked --group dev --group build`. If a locked sync says the lockfile needs updating, update uv and check `git status --short` before regenerating the lock; Windows CI verifies both `uv lock --check` and locked sync.
