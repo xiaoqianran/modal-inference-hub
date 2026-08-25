@@ -404,7 +404,9 @@ def project_generation(project_id: str, request: ProjectGenerationRequest) -> di
             if uploaded["sha256"] != descriptor["sha256"] or uploaded["bytes"] != descriptor["bytes"]:
                 raise artifacts.ArtifactValidationError("Canonical RGBA 上传完整性校验失败")
             canonical_path = uploaded["path"]
-            projects.record_remote_canonical(project_id, canonical_path)
+            projects.record_remote_canonical(
+                project_id, canonical_path, descriptor["sha256"]
+            )
         remote = generation.submit(
             request.model,
             canonical_path,

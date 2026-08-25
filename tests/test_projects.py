@@ -58,7 +58,9 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         self.assertEqual(local.read_bytes(), canonical)
         with self.assertRaisesRegex(RuntimeError, "尚未上传"):
             self.store.canonical_remote(project["id"])
-        self.store.record_remote_canonical(project["id"], "client-inputs/test.png")
+        self.store.record_remote_canonical(
+            project["id"], "client-inputs/test.png", descriptor["sha256"]
+        )
         _, remote = self.store.canonical_remote(project["id"])
         self.assertEqual(remote, "client-inputs/test.png")
 
@@ -75,13 +77,43 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         }
         self.store.save_preprocessed(project["id"], matte, canonical, descriptor, state)
         self.assertEqual(self.store.component_state(project["id"]), state)
-        self.store.record_remote_canonical(project["id"], "client-inputs/old.png")
+        self.store.record_remote_canonical(
+            project["id"], "client-inputs/old.png", descriptor["sha256"]
+        )
 
         updated_descriptor = {"id": "can_b", "sha256": "b" * 64, "bytes": len(canonical)}
         updated_state = {**state, "selection_elapsed_ms": 3.5}
         self.store.save_canonical_selection(project["id"], matte, canonical, updated_descriptor, updated_state)
         self.assertEqual(self.store.component_state(project["id"]), updated_state)
         with self.assertRaisesRegex(RuntimeError, "尚未上传"):
+            self.store.canonical_remote(project["id"])
+
+    def test_remote_canonical_requires_matching_sha256(self) -> None:
+        project = self.store.create(_png(), "sha.png")
+        matte = _png(2, 2)
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_sha", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], matte, canonical, descriptor)
+
+        with self.assertRaisesRegex(ValueError, "SHA256"):
+            self.store.record_remote_canonical(
+                project["id"], "client-inputs/wrong.png", "b" * 64
+            )
+
+        self.store._update(
+            project["id"],
+            canonical_path="client-inputs/legacy.png",
+            canonical_remote_sha256=None,
+        )
+        with self.assertRaisesRegex(RuntimeError, "尚未上传"):
+            self.store.canonical_remote(project["id"])
+
+        self.store._update(
+            project["id"],
+            canonical_path="client-inputs/stale.png",
+            canonical_remote_sha256="b" * 64,
+        )
+        with self.assertRaisesRegex(RuntimeError, "不一致"):
             self.store.canonical_remote(project["id"])
 
     def test_terminal_project_can_be_deleted(self) -> None:

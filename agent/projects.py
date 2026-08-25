@@ -53,6 +53,7 @@ class Project:
     selection_id: str | None
     candidate_id: str | None
     canonical_path: str | None
+    canonical_remote_sha256: str | None
     canonical_id: str | None
     canonical_sha256: str | None
     canonical_bytes: int | None
@@ -148,6 +149,7 @@ class ProjectStore:
                     selection_id TEXT,
                     candidate_id TEXT,
                     canonical_path TEXT,
+                    canonical_remote_sha256 TEXT,
                     canonical_id TEXT,
                     canonical_sha256 TEXT,
                     canonical_bytes INTEGER,
@@ -177,6 +179,7 @@ class ProjectStore:
                 "source_height": "INTEGER",
                 "canonical_id": "TEXT",
                 "canonical_sha256": "TEXT",
+                "canonical_remote_sha256": "TEXT",
             }
             for name, definition in migrations.items():
                 if name not in columns:
@@ -358,6 +361,7 @@ class ProjectStore:
             selection_id=None,
             candidate_id=None,
             canonical_path=None,
+            canonical_remote_sha256=None,
             canonical_id=canonical["id"],
             canonical_sha256=canonical["sha256"],
             canonical_bytes=canonical["bytes"],
@@ -401,16 +405,28 @@ class ProjectStore:
         descriptor = self.canonical_descriptor(project_id)
         with self._connect() as db:
             row = db.execute(
-                "SELECT canonical_path FROM projects WHERE id = ?", (project_id,)
+                "SELECT canonical_path, canonical_remote_sha256 FROM projects WHERE id = ?",
+                (project_id,),
             ).fetchone()
         if row is None:
             raise KeyError(project_id)
-        if not row[0]:
+        if not row[0] or not row[1]:
             raise RuntimeError("Canonical RGBA 尚未上传到 Modal Volume")
+        if str(row[1]) != descriptor["sha256"]:
+            raise RuntimeError("远端 Canonical 与当前本地 Canonical 不一致，需要重新上传")
         return descriptor, str(row[0])
 
-    def record_remote_canonical(self, project_id: str, remote_path: str) -> dict:
-        return self._update(project_id, canonical_path=remote_path)
+    def record_remote_canonical(
+        self, project_id: str, remote_path: str, canonical_sha256: str
+    ) -> dict:
+        descriptor = self.canonical_descriptor(project_id)
+        if canonical_sha256 != descriptor["sha256"]:
+            raise ValueError("远端 Canonical SHA256 与当前本地 Canonical 不一致")
+        return self._update(
+            project_id,
+            canonical_path=remote_path,
+            canonical_remote_sha256=canonical_sha256,
+        )
 
     def record_generation(self, project_id: str, model: str, profile: str, job_id: str) -> dict:
         return self._update(
