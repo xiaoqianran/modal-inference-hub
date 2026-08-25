@@ -1,110 +1,265 @@
 # modal-3D Client
 
-Windows-first desktop client for local 2D preprocessing and Modal-backed 3D generation.
+Windows-first desktop client for **local 2D preprocessing** and Modal-backed 3D generation.
 
-## Data flow
+The active product boundary is simple:
 
 ```text
-Source image (local only)
-      │
-      ├── preprocessing starts automatically after import
-      ▼
-rembg / birefnet-general / CPU
-      │
-      ▼
+local machine                                    Modal cloud
+
+source image
+    │
+    ▼
+rembg / birefnet-general
+CPU or Windows DirectML GPU
+    │
+    ▼
 Full RGBA
-      │
-      ▼
-foreground bbox
-      │
-      ▼
-preserve aspect ratio → scale → transparent letterbox → center
-      │
-      ▼
-1024×1024 Canonical PNG, 8-bit RGBA
-      │
-      └── upload once when generation starts
-             │
-             ▼
-       modal-3D Volume
-             │
-             ├── FastSAM3D++
-             ├── Hermite-TRELLIS2++
-             ├── Hunyuan2.1++
-             └── Pixal3D
-             │
-             ▼
-            GLB
+    │
+    ▼
+8-connected Alpha components
+    │
+    ├── click / checkbox
+    ├── drag = replace selection
+    ├── Shift+drag = add
+    ├── Alt+drag = remove
+    └── Undo / Redo
+    │
+    ▼
+active-selection RGBA
+    │
+    ▼
+union bbox
+    │
+    ▼
+preserve aspect ratio
+transparent letterbox + center
+    │
+    ▼
+1024×1024 / 8-bit RGBA PNG
+Canonical
+    │
+    │ upload once when 3D generation starts
+    └──────────────────────────────────────────► modal-3D Volume
+                                                     │
+                                                     ├── FastSAM3D++
+                                                     ├── Hermite-TRELLIS2++
+                                                     ├── Hunyuan2.1++
+                                                     └── Pixal3D
+                                                     │
+                                                     ▼
+                                                    GLB
 ```
 
-The original image, rembg matte, cropping and canonicalization stay on the user's machine. Modal receives only the final canonical RGBA used for generation.
-
-After global rembg matting, the client performs local 8-connected component analysis on Alpha. All meaningful components are selected by default, so the canonical output remains identical to the complete rembg foreground. Users can deselect individual components or drag a box over the matte to keep matching components; only then is Alpha filtered and the union bounding box re-letterboxed locally.
+The original image, rembg matte, component selection, crop and canonicalization stay on the user's machine. Modal receives only the final Canonical RGBA used for generation.
 
 ## Local preprocessing
 
 - Engine: `rembg`
 - Model: `birefnet-general`
-- Provider preference: CPU by default; optional Windows GPU through ONNXRuntime DirectML
-- GPU safety: if the GPU provider cannot initialize, rembg falls back to CPU without sending the image to cloud
-- GPU runtime: Windows uses ONNXRuntime DirectML without bundling CUDA/cuDNN; Linux and macOS currently use CPU
-- Model cache: application data directory under `rembg/`
-- First-run model preparation: explicit progress for the ~973 MB `birefnet-general` model
-- Optional prefetch: Settings can prepare/verify the model before any image is imported
-- Download recovery: `.partial` files are resumed with HTTP Range requests after interruption
-- Integrity: the downloaded model is checked against rembg's pinned MD5 before an ONNX session is created
+- Default provider: CPU
+- Windows GPU provider: ONNXRuntime DirectML
+- DirectML can use compatible NVIDIA / AMD / Intel GPUs without bundling CUDA or cuDNN
+- If GPU initialization fails, preprocessing falls back to CPU
+- Linux and macOS currently use CPU
 - Canonical contract: PNG, 1024×1024, 8-bit RGBA
-- Component rule: 8-connected Alpha analysis; default all selected; tiny fragments remain preserved while all components are selected
-- Interaction: checkbox/click selection and drag-box component selection are local-only
-- Box modifiers: drag replaces the selection, `Shift+drag` adds components, and `Alt+drag` removes components
-- Selection history: up to 50 local selection states with Undo/Redo and `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z`
-- Selection performance: decoded matte/label data uses a 64 MiB process-local LRU cache; oversized images automatically bypass the cache
-- Interactive canonical PNGs use fast compression so selection updates do not spend most of their time in PNG compression
-- Geometry rule: preserve original aspect ratio; use transparent letterbox padding to center the remaining foreground
+- Geometry: preserve source aspect ratio and center with transparent letterbox padding
 
-The client does not use BRIA RMBG-2.0. The current rembg session is `birefnet-general`.
+Importing an image automatically creates a local project and starts preprocessing. If preprocessing fails, the original project remains available and can be retried without importing the image again.
+
+### First-run model preparation
+
+`birefnet-general` is approximately 973 MB. The Agent owns the model download instead of leaving it as an opaque rembg operation.
+
+```text
+idle
+ │
+ ▼
+downloading ───────────────┐
+ │                         │
+ ▼                         │
+verifying                  │
+ │                         │
+ ├── checksum OK ──► ready │
+ │                         │
+ └── failure ──────► failed
+                         │
+                         └── retry / HTTP Range resume
+```
+
+The client provides:
+
+- byte-level download progress
+- downloaded / total MiB display
+- `.partial` files for interrupted downloads
+- HTTP Range resume on retry
+- pinned MD5 verification before ONNX session creation
+- corrupt completed partials are deleted instead of promoted
+- optional **Prepare model** action in Settings before importing any image
+
+The model cache lives under the application's local data directory in `rembg/`.
+
+## Multi-object foreground selection
+
+After global rembg matting, the client performs local **8-connected Alpha component analysis**.
+
+All meaningful components are selected by default, so the initial Canonical output remains equivalent to the complete rembg foreground. Tiny Alpha fragments are not exposed as individual UI objects while the default all-selected result still preserves them.
+
+Supported editing:
+
+```text
+click / checkbox       toggle one component
+Drag                   replace selection
+Shift + Drag           add matched components
+Alt + Drag             remove matched components
+Ctrl/Cmd + Z           undo
+Ctrl/Cmd + Shift + Z   redo
+```
+
+The client keeps up to 50 local selection-history states. At least one foreground component must remain selected.
+
+Selection edits do **not** rerun rembg and do **not** call Modal. They update local `selection.png`, recompute the union bbox and regenerate the Canonical PNG locally.
+
+For interaction performance, decoded matte/label data uses a bounded 64 MiB process-local LRU cache. Oversized images automatically bypass that cache instead of growing Agent memory without bound.
 
 ## Cloud generation
 
-The public `modal-3D` repository is the cloud inference layer. It does not perform background removal, segmentation, subject selection, cropping or canonicalization. It validates and consumes only the standard canonical input stored in the shared `modal-3d-artifacts` Volume.
+The separate `modal-3D` repository is the cloud inference layer. It does not perform background removal, segmentation, subject selection, cropping or Canonical generation.
 
-Model discovery is capability-driven. The client does not hard-code the active model registry. Current workers are FastSAM3D++, Hermite-TRELLIS2++, Hunyuan2.1++ and Pixal3D.
+The client discovers workers through the cloud capability registry rather than maintaining a hard-coded active model list. Current workers are:
 
-## Project workspace
+- FastSAM3D++
+- Hermite-TRELLIS2++
+- Hunyuan2.1++
+- Pixal3D
 
-Each imported source image creates a local project in app-data and immediately starts local rembg preprocessing. If preprocessing fails, the source project remains intact and can be retried without re-importing. The project stores:
+The Canonical PNG is uploaded lazily only when generation starts. The local SHA-256 and byte count are verified before the remote path is persisted.
 
-- original source image
-- local `matte.png`
-- local `canonical.png`
-- model/profile selection
-- Modal FunctionCall job state
-- validated GLB metadata
+## Local project workspace
 
-The canonical image is uploaded lazily only when generation starts. Its SHA-256 and byte count are verified before the remote path is persisted.
+Each project keeps local preprocessing state under the application data directory, including:
+
+```text
+project/
+├── source.*          original image
+├── matte.png         complete rembg RGBA
+├── selection.png     current selected RGBA in source coordinates
+├── canonical.png     current 1024×1024 Canonical RGBA
+└── components.json   component metadata + selected component IDs
+```
+
+The project database also tracks model/profile choice, Modal FunctionCall job state, optional remote Canonical path and validated GLB metadata.
+
+Old projects that predate `selection.png` can rebuild it locally from `matte.png` plus saved component state; rembg does not have to run again.
 
 ## Credentials
 
 Modal credentials are handled by the local Agent. On Windows, the desktop client can store them in Windows Credential Manager. Credentials are not reloaded into the React UI after restart.
 
-## Archived SAM 3.1 implementation
+## Windows development
 
-The retired SAM 3.1 cloud/local preprocessing implementation is preserved under `archive/sam3_1/`. It is not imported, packaged, deployed or exposed by the active client runtime.
+### Required tool versions
 
-## Development
+The repository currently expects:
 
-```bash
+```text
+Node.js   24.x in CI
+Python    3.12
+uv        >=0.12.5,<0.13
+Rust      stable
+```
+
+The uv requirement is enforced by `uv.toml`. Windows CI uses uv `0.12.5` and performs a real locked install.
+
+### Clean checkout / update
+
+PowerShell:
+
+```powershell
+git pull
+
+uv --version
 npm ci
-uv sync --locked
+uv sync --locked --group dev --group build
+
 npm run build
 uv run pytest -q
 ```
 
-Windows packaging and smoke tests are performed by GitHub Actions. The release workflow builds NSIS and MSI installers and publishes SHA-256 checksums.
+For a clean environment rebuild:
 
-See `docs/PRODUCT_ARCHITECTURE.md` for the active architecture.
+```powershell
+Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
+uv sync --locked --group dev --group build
+```
 
+Do not run `uv lock` unless you intentionally changed Python dependencies in `pyproject.toml`.
 
-## Local development lock discipline
+### If `uv sync --locked` says the lockfile needs updating
 
-The repository requires `uv >=0.12.5,<0.13` (see `uv.toml`). On a clean checkout use `uv sync --locked --group dev --group build`. If a locked sync says the lockfile needs updating, update uv and check `git status --short` before regenerating the lock; Windows CI verifies both `uv lock --check` and locked sync.
+First inspect the workspace instead of regenerating the lock immediately:
+
+```powershell
+uv --version
+git status --short
+git diff -- pyproject.toml uv.lock
+```
+
+Make sure uv satisfies:
+
+```text
+>=0.12.5,<0.13
+```
+
+If `pyproject.toml` / `uv.lock` were changed unintentionally, restore them and rebuild the environment:
+
+```powershell
+git restore pyproject.toml uv.lock
+git pull
+Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
+uv sync --locked --group dev --group build
+```
+
+The committed lockfile is cross-platform. It resolves the platform-specific ONNXRuntime dependency as:
+
+```text
+Windows  -> onnxruntime-directml 1.24.x
+Linux    -> onnxruntime 1.25.x
+macOS    -> onnxruntime 1.25.x
+```
+
+So a lockfile error on an otherwise clean checkout should be treated as an environment/version issue first, not as a reason to casually regenerate `uv.lock`.
+
+## Validation and Windows packaging
+
+The Windows workflow validates the same locked environment used for development:
+
+```text
+npm ci
+npm run build
+
+uv python install 3.12
+uv lock --check
+uv sync --locked --group dev --group build
+python compileall
+Python unit tests
+PyInstaller Agent build
+Agent smoke test
+
+cargo fmt --check
+cargo test
+cargo check
+Tauri NSIS build
+```
+
+The normal Windows CI uploads an NSIS installer. The release workflow builds both NSIS and MSI installers and publishes SHA-256 checksums.
+
+## Archived SAM 3.1 implementation
+
+The retired SAM 3.1 cloud/local preprocessing implementation is preserved under `archive/sam3_1/`.
+
+It is not imported, packaged, deployed or exposed by the active runtime.
+
+## Architecture reference
+
+See `docs/PRODUCT_ARCHITECTURE.md` for the detailed active architecture and cloud/client boundary.
