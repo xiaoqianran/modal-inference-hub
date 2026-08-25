@@ -415,8 +415,36 @@ def project_generation(project_id: str, request: ProjectGenerationRequest) -> di
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    job = jobs.create(remote["model"], remote["call_id"])
-    project = projects.record_generation(project_id, request.model, request.profile, job["id"])
+    call_id = remote["call_id"]
+    try:
+        job = jobs.create(remote["model"], call_id)
+    except Exception:
+        try:
+            generation.cancel_call(call_id)
+        except Exception as cancel_exc:  # noqa: BLE001 - 补偿失败不能覆盖原始落库异常。
+            print(
+                f"[agent] generation compensation failed stage=job_create call_id={call_id} "
+                f"type={type(cancel_exc).__name__}",
+                flush=True,
+            )
+        raise
+
+    try:
+        project = projects.record_generation(
+            project_id, request.model, request.profile, job["id"]
+        )
+    except Exception:
+        # Job 已经持久化，因此优先通过 JobManager 取消：即使网络暂时不可用，
+        # cancel_requested 也会被保存，后续 poll/reconnect 仍可继续完成补偿。
+        try:
+            jobs.cancel(job["id"])
+        except Exception as cancel_exc:  # noqa: BLE001 - 保留可恢复 Job，不覆盖原异常。
+            print(
+                f"[agent] generation compensation failed stage=project_bind job_id={job['id']} "
+                f"type={type(cancel_exc).__name__}",
+                flush=True,
+            )
+        raise
     return {"project": project, "job": job}
 
 

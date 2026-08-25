@@ -27,3 +27,13 @@ def submit(
     fn = modal.Function.from_name(APP_NAME, SUBMIT_FUNCTION, client=client())
     value = fn.remote(model, input_path, options_for(model, profile, seed))
     return _validate_submission(value, model)
+
+
+def cancel_call(call_id: str) -> None:
+    """取消一个已提交但尚未完成本地绑定的远端 FunctionCall。
+
+    这个函数主要用于 generation 提交后的补偿路径：如果 Job 或 Project 落库失败，
+    必须尽力取消已经启动的远端任务，避免产生无人跟踪的云端调用。
+    """
+    call = modal.FunctionCall.from_id(call_id, client=client())
+    call.cancel()
