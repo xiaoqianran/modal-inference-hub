@@ -11,6 +11,7 @@ from modal.exception import (
     AuthError,
     ConnectionError,
     FunctionTimeoutError,
+    NotFoundError,
     OutputExpiredError,
     RemoteError,
 )
@@ -90,6 +91,29 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(value["status"], "failed")
         self.assertEqual(value["error_code"], "remote.execution_failed")
         self.assertNotIn("secret traceback detail", value["error"])
+
+    def test_not_found_requires_confirmation_before_expiring(self) -> None:
+        job = self.create()
+        value, _ = self.poll_with(job["id"], error=NotFoundError())
+        self.assertEqual(value["status"], "connection_required")
+        self.assertEqual(value["error_code"], "remote.lookup_uncertain")
+        self.assertTrue(value["retryable"])
+
+        value, _ = self.poll_with(job["id"], error=NotFoundError())
+        self.assertEqual(value["status"], "expired")
+        self.assertEqual(value["error_code"], "remote.output_expired")
+
+    def test_pending_remote_resets_not_found_confirmation(self) -> None:
+        job = self.create()
+        value, _ = self.poll_with(job["id"], error=NotFoundError())
+        self.assertEqual(value["status"], "connection_required")
+
+        value, _ = self.poll_with(job["id"], error=TimeoutError())
+        self.assertEqual(value["status"], "running")
+
+        value, _ = self.poll_with(job["id"], error=NotFoundError())
+        self.assertEqual(value["status"], "connection_required")
+        self.assertEqual(value["error_code"], "remote.lookup_uncertain")
 
     def test_output_expired_is_terminal(self) -> None:
         job = self.create()
@@ -244,9 +268,9 @@ class JobManagerTests(unittest.TestCase):
             columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
             version = db.execute("PRAGMA user_version").fetchone()[0]
         self.assertTrue(
-            {"updated_at", "error_code", "retryable", "artifact_remote_path"}.issubset(columns)
+            {"updated_at", "error_code", "retryable", "artifact_remote_path", "remote_not_found_count"}.issubset(columns)
         )
-        self.assertEqual(version, 2)
+        self.assertEqual(version, 3)
 
     def test_future_database_version_is_rejected(self) -> None:
         future = Path(self.temp.name) / "future.sqlite3"

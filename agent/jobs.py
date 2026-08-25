@@ -41,7 +41,8 @@ from agent import artifacts
 from agent.modal_client import NotConnectedError, client
 from agent.storage import data_dir
 
-_DB_VERSION = 2
+_DB_VERSION = 3
+_REMOTE_NOT_FOUND_CONFIRMATIONS = 2
 # 终态集合：进入这些状态后不再变化，也不再轮询远端。
 _TERMINAL = {"succeeded", "failed", "cancelled", "expired"}
 _AUTH_ERRORS = (NotConnectedError, AuthError, PermissionDeniedError)
@@ -86,6 +87,7 @@ class Job:
     error_code: str | None = None
     retryable: bool | None = None
     artifact_remote_path: str | None = None
+    remote_not_found_count: int = 0
 
     def public(self) -> dict:
         return {
@@ -137,7 +139,8 @@ class JobManager:
                     error TEXT,
                     error_code TEXT,
                     retryable INTEGER,
-                    artifact_remote_path TEXT
+                    artifact_remote_path TEXT,
+                    remote_not_found_count INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -147,6 +150,7 @@ class JobManager:
                 ("error_code", "TEXT"),
                 ("retryable", "INTEGER"),
                 ("artifact_remote_path", "TEXT"),
+                ("remote_not_found_count", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
@@ -158,7 +162,8 @@ class JobManager:
             rows = db.execute(
                 """
                 SELECT id, model, remote_call_id, status, created_at, updated_at,
-                       result_json, error, error_code, retryable, artifact_remote_path
+                       result_json, error, error_code, retryable, artifact_remote_path,
+                       remote_not_found_count
                 FROM jobs
                 """
             ).fetchall()
@@ -176,6 +181,7 @@ class JobManager:
                     error_code=row[8],
                     retryable=None if row[9] is None else bool(row[9]),
                     artifact_remote_path=row[10],
+                    remote_not_found_count=int(row[11] or 0),
                 )
                 for row in rows
             }
@@ -186,8 +192,9 @@ class JobManager:
                 """
                 INSERT INTO jobs (
                     id, model, remote_call_id, status, created_at, updated_at,
-                    result_json, error, error_code, retryable, artifact_remote_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    result_json, error, error_code, retryable, artifact_remote_path,
+                    remote_not_found_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     model=excluded.model,
                     remote_call_id=excluded.remote_call_id,
@@ -197,7 +204,8 @@ class JobManager:
                     error=excluded.error,
                     error_code=excluded.error_code,
                     retryable=excluded.retryable,
-                    artifact_remote_path=excluded.artifact_remote_path
+                    artifact_remote_path=excluded.artifact_remote_path,
+                    remote_not_found_count=excluded.remote_not_found_count
                 """,
                 (
                     job.id,
@@ -211,6 +219,7 @@ class JobManager:
                     job.error_code,
                     None if job.retryable is None else int(job.retryable),
                     job.artifact_remote_path,
+                    job.remote_not_found_count,
                 ),
             )
 
@@ -239,6 +248,36 @@ class JobManager:
                 job.artifact_remote_path = artifact_remote_path
             self._save(job)
             return job.public()
+
+    def _reset_remote_not_found(self, job: Job) -> None:
+        if job.remote_not_found_count == 0:
+            return
+        with self._lock:
+            current = self._jobs[job.id]
+            current.remote_not_found_count = 0
+            self._save(current)
+
+    def _not_found_state(self, job: Job) -> dict:
+        with self._lock:
+            current = self._jobs[job.id]
+            current.remote_not_found_count += 1
+            self._save(current)
+            count = current.remote_not_found_count
+        if count >= _REMOTE_NOT_FOUND_CONFIRMATIONS:
+            return self._set_state(
+                job.id,
+                "expired",
+                error="远程任务已连续确认不可用或结果已过期",
+                error_code="remote.output_expired",
+                retryable=False,
+            )
+        return self._set_state(
+            job.id,
+            "cancel_requested" if job.status == "cancel_requested" else "connection_required",
+            error="暂时无法确认远程任务，稍后将再次检查",
+            error_code="remote.lookup_uncertain",
+            retryable=True,
+        )
 
     def _connection_state(self, job: Job, exc: BaseException) -> dict:
         cancel_pending = job.status == "cancel_requested"
@@ -289,13 +328,7 @@ class JobManager:
         except _RECOVERABLE_ERRORS as exc:
             return self._connection_state(job, exc)
         except NotFoundError:
-            return self._set_state(
-                job.id,
-                "expired",
-                error="远程任务结果已过期",
-                error_code="remote.output_expired",
-                retryable=False,
-            )
+            return self._not_found_state(job)
         except Exception:  # noqa: BLE001 - cancellation acknowledgement may fail independently.
             return self._set_state(
                 job.id,
@@ -329,13 +362,7 @@ class JobManager:
                 retryable=False,
             )
         except NotFoundError:
-            return self._set_state(
-                job.id,
-                "expired",
-                error="远程任务已不可用或结果已过期",
-                error_code="remote.output_expired",
-                retryable=False,
-            )
+            return self._not_found_state(job)
         except FunctionTimeoutError:
             return self._set_state(
                 job.id,
@@ -346,6 +373,7 @@ class JobManager:
             )
         except (ModalTimeoutError, BuiltinTimeoutError):
             current = self._get(job.id)
+            self._reset_remote_not_found(current)
             if current.status == "cancel_requested" and call is not None:
                 return self._retry_cancel(current, call)
             if current.status == "connection_required":
@@ -373,6 +401,7 @@ class JobManager:
                 retryable=False,
             )
         else:
+            self._reset_remote_not_found(job)
             try:
                 public_result, remote_path = self._cache_result(job, result)
             except artifacts.ArtifactValidationError as exc:
@@ -464,13 +493,7 @@ class JobManager:
         except _RECOVERABLE_ERRORS as exc:
             return self._connection_state(current, exc)
         except NotFoundError:
-            return self._set_state(
-                current.id,
-                "expired",
-                error="远程任务已不可用或结果已过期",
-                error_code="remote.output_expired",
-                retryable=False,
-            )
+            return self._not_found_state(current)
         except Exception:  # noqa: BLE001 - keep cancellation intent recoverable on unknown SDK errors.
             return self._set_state(
                 current.id,
