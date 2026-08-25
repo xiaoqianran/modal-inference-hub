@@ -90,9 +90,45 @@ export default function SettingsPanel({
                 <div className="wide"><span>ONNXRuntime Providers</span><code>{preprocessing?.ort_providers?.join(" · ") || "启动 Agent 后检测"}</code></div>
                 <div className="wide"><span>模型目录</span><code>{preprocessing?.model_home ?? "启动 Agent 后显示"}</code></div>
               </div>
+              {preprocessing?.download && preprocessing.download.status !== "ready" ? (
+                <div className="runtime-card">
+                  <div className="runtime-card-head">
+                    <div>
+                      <strong>birefnet-general 模型准备</strong>
+                      <span>
+                        {preprocessing.download.status === "downloading"
+                          ? "正在下载"
+                          : preprocessing.download.status === "verifying"
+                            ? "正在校验完整性"
+                            : preprocessing.download.status === "failed"
+                              ? preprocessing.download.resumable ? "下载中断 · 可续传" : "准备失败"
+                              : "尚未下载"}
+                      </span>
+                    </div>
+                    <strong>{Math.floor(preprocessing.download.progress * 100)}%</strong>
+                  </div>
+                  <div className="download-progress">
+                    <progress max={1} value={preprocessing.download.progress} />
+                    <div>
+                      <span>{(preprocessing.download.downloaded_bytes / 1024 / 1024).toFixed(1)} MiB</span>
+                      <span>{(preprocessing.download.total_bytes / 1024 / 1024).toFixed(1)} MiB</span>
+                    </div>
+                    {preprocessing.download.error ? <small className="download-error">{preprocessing.download.error}</small> : null}
+                  </div>
+                </div>
+              ) : null}
               {preprocessing?.fallback_reason ? <div className="settings-explainer"><strong>Provider 回退</strong><p>{preprocessing.fallback_reason}</p></div> : null}
               <div className="settings-explainer"><strong>Canonical 规则</strong><p>rembg 只生成全局 Alpha；随后按前景联合包围盒严格保持高宽比，等比缩放并透明 Letterbox 到 1024×1024。</p></div>
-              <div className="settings-actions"><button type="button" className="quiet-button" disabled={!agent?.running || busy} onClick={() => void controller.refresh()}>{active("refresh") ? "刷新中…" : "刷新状态"}</button></div>
+              <div className="settings-actions">
+                {!preprocessing?.model_downloaded || preprocessing.download.integrity !== "verified" ? (
+                  <button type="button" className="primary-button" disabled={!agent?.running || busy} onClick={() => void controller.prepareModel()}>
+                    {active("model")
+                      ? preprocessing?.download.status === "verifying" ? "校验中…" : "准备中…"
+                      : preprocessing?.download.resumable ? "续传模型" : "提前准备模型"}
+                  </button>
+                ) : null}
+                <button type="button" className="quiet-button" disabled={!agent?.running || busy} onClick={() => void controller.refresh()}>{active("refresh") ? "刷新中…" : "刷新状态"}</button>
+              </div>
             </section>
           ) : null}
 

@@ -45,4 +45,4 @@ The retired SAM 3.1 implementation is preserved under `archive/sam3_1/` and is n
 
 ## First-run model preparation
 
-`birefnet-general` is prepared locally before the first rembg session. The Agent owns the download so the UI can poll byte progress. Interrupted downloads remain as `.partial` and resume with HTTP Range on retry. A complete file is promoted only after the pinned rembg MD5 checksum succeeds; corrupt complete partials are deleted before the next retry.
+`birefnet-general` is prepared locally before the first rembg session. The Agent owns the download so the UI can poll byte progress. The same preparation can be started explicitly from Settings before importing an image. Interrupted downloads remain as `.partial` and resume with HTTP Range on retry. A complete file is promoted only after the pinned rembg MD5 checksum succeeds; corrupt complete partials are deleted before the next retry.

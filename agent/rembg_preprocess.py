@@ -36,6 +36,8 @@ _session_lock = threading.RLock()
 _inference_lock = threading.Lock()
 _download_lock = threading.Lock()
 _download_state_lock = threading.RLock()
+_prepare_thread_lock = threading.RLock()
+_prepare_thread: threading.Thread | None = None
 _download_state = {
     "status": "idle",
     "downloaded_bytes": 0,
@@ -469,6 +471,30 @@ def ensure_model_ready() -> Path:
                 model.unlink(missing_ok=True)
                 _set_download_state(status="failed", downloaded_bytes=0, integrity="failed")
         return _download_model()
+
+
+def prepare_model_async() -> dict:
+    global _prepare_thread
+    with _prepare_thread_lock:
+        if model_path().is_file() and _download_status()["integrity"] == "verified":
+            return status()
+        if _prepare_thread is not None and _prepare_thread.is_alive():
+            return status()
+
+        def worker() -> None:
+            try:
+                ensure_model_ready()
+            except Exception:
+                # The detailed failure is already persisted in _download_state for UI polling.
+                pass
+
+        _prepare_thread = threading.Thread(
+            target=worker,
+            name="modal-3d-rembg-model-prepare",
+            daemon=True,
+        )
+        _prepare_thread.start()
+        return status()
 
 
 def status() -> dict:

@@ -134,6 +134,11 @@ def preprocess_provider(request: PreprocessProviderRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.post("/v1/preprocess/model")
+def preprocess_prepare_model() -> dict:
+    return rembg_preprocess.prepare_model_async()
+
+
 @app.get("/modal/status")
 def modal_status() -> dict:
     return {"connected": connected()}

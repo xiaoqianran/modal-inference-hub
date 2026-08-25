@@ -369,6 +369,9 @@ export const getCapabilities = (info: AgentInfo) =>
 export const getPreprocessStatus = (info: AgentInfo) =>
   json<PreprocessRuntimeStatus>(info, "/v1/preprocess/status");
 
+export const preparePreprocessModel = (info: AgentInfo) =>
+  json<PreprocessRuntimeStatus>(info, "/v1/preprocess/model", { method: "POST" });
+
 export const setPreprocessProvider = (
   info: AgentInfo,
   provider: "cpu" | "gpu",

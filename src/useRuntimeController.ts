@@ -7,10 +7,12 @@ import {
   disconnectModal,
   getAppDiagnostics,
   getCapabilities,
+  getPreprocessStatus,
   listModels,
   modalStatus,
   probeAgent,
   saveCredentials,
+  preparePreprocessModel,
   revealAppData,
   setPreprocessProvider,
   startAgent,
@@ -24,7 +26,7 @@ import {
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-export type RuntimeAction = "agent" | "connect" | "disconnect" | "forget" | "refresh" | "provider";
+export type RuntimeAction = "agent" | "connect" | "disconnect" | "forget" | "refresh" | "provider" | "model";
 export type RuntimeNotice = { tone: "info" | "success" | "error"; text: string };
 
 function errorText(error: unknown) {
@@ -258,6 +260,29 @@ export function useRuntimeController() {
     }
   }, [agent, begin, finish]);
 
+  const prepareModel = useCallback(async () => {
+    if (!agent?.running || !begin("model")) return;
+    try {
+      let preprocessing = await preparePreprocessModel(agent);
+      setRuntime((current) => current ? { ...current, preprocessing: { ...preprocessing, kind: "rembg" } } : current);
+      while (preprocessing.download.status === "idle" || preprocessing.download.status === "downloading" || preprocessing.download.status === "verifying") {
+        await sleep(500);
+        preprocessing = await getPreprocessStatus(agent);
+        setRuntime((current) => current ? { ...current, preprocessing: { ...preprocessing, kind: "rembg" } } : current);
+        if (preprocessing.download.status === "ready" || preprocessing.download.status === "failed") break;
+      }
+      if (preprocessing.download.status === "ready") {
+        setNotice({ tone: "success", text: "birefnet-general 已下载并通过完整性校验" });
+      } else if (preprocessing.download.status === "failed") {
+        setNotice({ tone: "error", text: preprocessing.download.error || "模型准备失败，可重试续传" });
+      }
+    } catch (error) {
+      setNotice({ tone: "error", text: errorText(error) });
+    } finally {
+      finish("model");
+    }
+  }, [agent, begin, finish]);
+
   const changePreprocessProvider = useCallback(async (provider: "cpu" | "gpu") => {
     if (!agent?.running || !begin("provider")) return;
     try {
@@ -309,6 +334,7 @@ export function useRuntimeController() {
     disconnect,
     forget,
     refresh,
+    prepareModel,
     changePreprocessProvider,
     openDataDirectory,
   };

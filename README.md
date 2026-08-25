@@ -50,6 +50,7 @@ After global rembg matting, the client performs local 8-connected component anal
 - GPU runtime: Windows uses ONNXRuntime DirectML without bundling CUDA/cuDNN; Linux and macOS currently use CPU
 - Model cache: application data directory under `rembg/`
 - First-run model preparation: explicit progress for the ~973 MB `birefnet-general` model
+- Optional prefetch: Settings can prepare/verify the model before any image is imported
 - Download recovery: `.partial` files are resumed with HTTP Range requests after interruption
 - Integrity: the downloaded model is checked against rembg's pinned MD5 before an ONNX session is created
 - Canonical contract: PNG, 1024×1024, 8-bit RGBA

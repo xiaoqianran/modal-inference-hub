@@ -302,6 +302,35 @@ class ModelDownloadTests(unittest.TestCase):
             self.assertFalse(partial.exists())
             self.assertEqual(rembg_preprocess._download_status()["integrity"], "verified")
 
+    def test_prepare_model_async_deduplicates_background_worker(self) -> None:
+        import threading
+
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def fake_prepare():
+            calls.append(1)
+            started.set()
+            release.wait(timeout=2)
+            return Path("fake.onnx")
+
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.rembg_preprocess.rembg_home", return_value=Path(temporary)
+        ), patch("agent.rembg_preprocess.ensure_model_ready", side_effect=fake_prepare):
+            rembg_preprocess._prepare_thread = None
+            rembg_preprocess.prepare_model_async()
+            self.assertTrue(started.wait(timeout=1))
+            first = rembg_preprocess._prepare_thread
+            rembg_preprocess.prepare_model_async()
+            second = rembg_preprocess._prepare_thread
+            self.assertIs(first, second)
+            self.assertEqual(len(calls), 1)
+            release.set()
+            if first is not None:
+                first.join(timeout=2)
+            self.assertEqual(len(calls), 1)
+
     def test_bad_checksum_deletes_completed_partial(self) -> None:
         payload = b"broken model bytes"
         with tempfile.TemporaryDirectory() as temporary, patch(
