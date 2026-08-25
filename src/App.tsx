@@ -95,7 +95,13 @@ function App() {
   const [preprocessMeta, setPreprocessMeta] = useState<PreprocessResult["preprocess"] | null>(null);
   const [modelDownload, setModelDownload] = useState<ModelDownloadState | null>(null);
   const [componentState, setComponentState] = useState<ComponentState | null>(null);
-  const [selectionBox, setSelectionBox] = useState<{ start: [number, number]; current: [number, number] } | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{
+    start: [number, number];
+    current: [number, number];
+    mode: "replace" | "add" | "subtract";
+  } | null>(null);
+  const [selectionHistory, setSelectionHistory] = useState<string[][]>([]);
+  const [selectionFuture, setSelectionFuture] = useState<string[][]>([]);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [workflowMessage, setWorkflowMessage] = useState(
@@ -137,6 +143,8 @@ function App() {
     const savedCanonical = canonicalFromProject(value);
     setCanonical(savedCanonical);
     setPreprocessMeta(null);
+    setSelectionHistory([]);
+    setSelectionFuture([]);
     if (savedCanonical) {
       const [matte, canonicalBlob, components] = await Promise.all([
         projectSelectionBlob(agent, value.id).catch(() => null),
@@ -252,6 +260,8 @@ function App() {
       setCanonical(value.canonical);
       setPreprocessMeta(value.preprocess);
       setComponentState(value.component_state);
+      setSelectionHistory([]);
+      setSelectionFuture([]);
       const [matte, canonicalBlob] = await Promise.all([
         projectSelectionBlob(agent, target.id),
         projectCanonicalBlob(agent, target.id),
@@ -286,6 +296,8 @@ function App() {
       setCanonical(null);
       setPreprocessMeta(null);
       setComponentState(null);
+      setSelectionHistory([]);
+      setSelectionFuture([]);
       setModelDownload(null);
       resetOutput();
       replaceUrl(setSourceUrl, file);
@@ -315,19 +327,41 @@ function App() {
     }
   }
 
-  async function applyComponentSelection(selectedIds: string[]) {
-    if (selectionRequestRef.current || !agent?.running || !project || !componentState || selectedIds.length === 0) return;
+  async function applyComponentSelection(
+    selectedIds: string[],
+    options: { recordHistory?: boolean } = {},
+  ) {
+    if (selectionRequestRef.current || !agent?.running || !project || !componentState || selectedIds.length === 0) return false;
     if (job && jobIsActive(job)) {
       setWorkflowMessage("远程生成任务活动期间不能修改前景选择。");
-      return;
+      return false;
     }
+    const previousSelection = [...componentState.selected_component_ids];
+    const normalized = componentState.components
+      .filter((item) => selectedIds.includes(item.id))
+      .map((item) => item.id);
+    if (normalized.length === 0) {
+      setWorkflowMessage("至少保留一个前景组件。");
+      return false;
+    }
+    if (
+      normalized.length === previousSelection.length
+      && normalized.every((item, index) => item === previousSelection[index])
+    ) {
+      return true;
+    }
+
     selectionRequestRef.current = true;
     setBusy(true);
     try {
-      const value = await selectProjectComponents(agent, project.id, selectedIds);
+      const value = await selectProjectComponents(agent, project.id, normalized);
       setProject(value.project);
       setCanonical(value.canonical);
       setComponentState(value.component_state);
+      if (options.recordHistory !== false) {
+        setSelectionHistory((current) => [...current.slice(-49), previousSelection]);
+        setSelectionFuture([]);
+      }
       const [selectionBlob, canonicalBlob] = await Promise.all([
         projectSelectionBlob(agent, project.id),
         projectCanonicalBlob(agent, project.id),
@@ -341,11 +375,33 @@ function App() {
         `已保留 ${count}/${value.component_state.component_count} 个前景${elapsed !== undefined ? ` · ${elapsed.toFixed(0)} ms` : ""}`,
       );
       await refreshRecent();
+      return true;
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       selectionRequestRef.current = false;
       setBusy(false);
+    }
+  }
+
+  async function undoSelection() {
+    if (busy || selectionRequestRef.current || !componentState || selectionHistory.length === 0) return;
+    const target = selectionHistory[selectionHistory.length - 1];
+    const current = [...componentState.selected_component_ids];
+    if (await applyComponentSelection(target, { recordHistory: false })) {
+      setSelectionHistory((history) => history.slice(0, -1));
+      setSelectionFuture((future) => [...future.slice(-49), current]);
+    }
+  }
+
+  async function redoSelection() {
+    if (busy || selectionRequestRef.current || !componentState || selectionFuture.length === 0) return;
+    const target = selectionFuture[selectionFuture.length - 1];
+    const current = [...componentState.selected_component_ids];
+    if (await applyComponentSelection(target, { recordHistory: false })) {
+      setSelectionFuture((future) => future.slice(0, -1));
+      setSelectionHistory((history) => [...history.slice(-49), current]);
     }
   }
 
@@ -390,7 +446,8 @@ function App() {
     const point = imagePoint(event);
     if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    setSelectionBox({ start: point, current: point });
+    const mode = event.altKey ? "subtract" : event.shiftKey ? "add" : "replace";
+    setSelectionBox({ start: point, current: point, mode });
   }
 
   function moveBoxSelection(event: ReactPointerEvent<SVGSVGElement>) {
@@ -424,8 +481,39 @@ function App() {
       setWorkflowMessage("框选区域没有命中可选前景组件。");
       return;
     }
-    void applyComponentSelection(hit.map((item) => item.id));
+    const hitIds = new Set(hit.map((item) => item.id));
+    const selected = new Set(componentState.selected_component_ids);
+    if (selectionBox.mode === "replace") {
+      void applyComponentSelection(componentState.components.filter((item) => hitIds.has(item.id)).map((item) => item.id));
+      return;
+    }
+    if (selectionBox.mode === "add") {
+      for (const item of hitIds) selected.add(item);
+    } else {
+      for (const item of hitIds) selected.delete(item);
+      if (selected.size === 0) {
+        setWorkflowMessage("Alt 框选不能移除全部前景；至少保留一个物体。");
+        return;
+      }
+    }
+    void applyComponentSelection(
+      componentState.components.filter((item) => selected.has(item.id)).map((item) => item.id),
+    );
   }
+
+  useEffect(() => {
+    function handleSelectionHistoryShortcut(event: KeyboardEvent) {
+      if (!componentState || settingsOpen || busy) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "z") return;
+      event.preventDefault();
+      if (event.shiftKey) void redoSelection();
+      else void undoSelection();
+    }
+    window.addEventListener("keydown", handleSelectionHistoryShortcut);
+    return () => window.removeEventListener("keydown", handleSelectionHistoryShortcut);
+  });
 
   const pollJob = useCallback(async (jobId: string) => {
     if (!agent?.running) return;
@@ -506,6 +594,8 @@ function App() {
         setCanonical(null);
         setPreprocessMeta(null);
         setComponentState(null);
+        setSelectionHistory([]);
+        setSelectionFuture([]);
         resetOutput();
         replaceUrl(setSourceUrl, null);
         replaceUrl(setMatteUrl, null);
@@ -640,8 +730,12 @@ function App() {
               {componentState ? (
                 <div className="component-controls">
                   <div className="component-summary">
-                    <div><strong>{componentState.selected_component_ids.length}/{componentState.component_count} 个前景已保留</strong><small>拖框可只保留框中的物体</small></div>
-                    <button type="button" className="quiet-button" disabled={busy || componentState.selected_component_ids.length === componentState.component_count} onClick={selectAllComponents}>全部保留</button>
+                    <div><strong>{componentState.selected_component_ids.length}/{componentState.component_count} 个前景已保留</strong><small>拖框=替换 · Shift+拖框=追加 · Alt+拖框=移除</small></div>
+                    <div className="component-history-actions">
+                      <button type="button" className="quiet-button" disabled={busy || selectionHistory.length === 0} onClick={() => void undoSelection()}>撤销</button>
+                      <button type="button" className="quiet-button" disabled={busy || selectionFuture.length === 0} onClick={() => void redoSelection()}>重做</button>
+                      <button type="button" className="quiet-button" disabled={busy || componentState.selected_component_ids.length === componentState.component_count} onClick={selectAllComponents}>全部保留</button>
+                    </div>
                   </div>
                   <div className="component-list">
                     {componentState.components.map((item, index) => {

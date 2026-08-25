@@ -1212,3 +1212,15 @@ input:focus-visible {
   color: var(--ctp-red);
   overflow-wrap: anywhere;
 }
+
+.component-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.component-history-actions .quiet-button {
+  min-width: 0;
+  padding-inline: 9px;
+}

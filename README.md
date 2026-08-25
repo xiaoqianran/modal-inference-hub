@@ -56,6 +56,8 @@ After global rembg matting, the client performs local 8-connected component anal
 - Canonical contract: PNG, 1024×1024, 8-bit RGBA
 - Component rule: 8-connected Alpha analysis; default all selected; tiny fragments remain preserved while all components are selected
 - Interaction: checkbox/click selection and drag-box component selection are local-only
+- Box modifiers: drag replaces the selection, `Shift+drag` adds components, and `Alt+drag` removes components
+- Selection history: up to 50 local selection states with Undo/Redo and `Ctrl/Cmd+Z` / `Ctrl/Cmd+Shift+Z`
 - Selection performance: decoded matte/label data uses a 64 MiB process-local LRU cache; oversized images automatically bypass the cache
 - Interactive canonical PNGs use fast compression so selection updates do not spend most of their time in PNG compression
 - Geometry rule: preserve original aspect ratio; use transparent letterbox padding to center the remaining foreground
