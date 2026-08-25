@@ -63,7 +63,16 @@ jobs:
                           src-tauri/target/release/bundle/msi/*.msi
           )
           if ($assets.Count -lt 2) { throw "预期生成 NSIS 和 MSI 两个安装包。" }
-          gh release create $env:GITHUB_REF_NAME @($assets.FullName) `
+
+          $checksumPath = Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt"
+          $checksums = $assets | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          Set-Content -Path $checksumPath -Value $checksums -Encoding ascii
+
+          $releaseAssets = @($assets.FullName) + @($checksumPath)
+          gh release create $env:GITHUB_REF_NAME @releaseAssets `
             --verify-tag `
             --title "modal-3D 三维创作客户端 $env:GITHUB_REF_NAME" `
             --notes "Windows 优先预览版本，包含本地代理和 Windows 凭据管理器支持。本版本暂不包含本地 SAM 3.1。安装包尚未签名，首次启动时 Windows SmartScreen 可能显示警告。"
