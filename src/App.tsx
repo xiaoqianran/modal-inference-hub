@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type Dispatch, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import "./App.css";
 import {
   cancelJob,
@@ -6,6 +6,7 @@ import {
   deleteProject,
   getJob,
   getProject,
+  getProjectComponents,
   jobArtifactBlob,
   listProjects,
   prepareExport,
@@ -14,8 +15,10 @@ import {
   projectMatteBlob,
   projectSourceBlob,
   savePreparedExport,
+  selectProjectComponents,
   submitProjectGeneration,
   type CanonicalAsset,
+  type ComponentState,
   type GenerationJob,
   type GenerationJobStatus,
   type PreprocessResult,
@@ -88,6 +91,8 @@ function App() {
   const [canonical, setCanonical] = useState<CanonicalAsset | null>(null);
   const [canonicalUrl, setCanonicalUrl] = useState<string | null>(null);
   const [preprocessMeta, setPreprocessMeta] = useState<PreprocessResult["preprocess"] | null>(null);
+  const [componentState, setComponentState] = useState<ComponentState | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{ start: [number, number]; current: [number, number] } | null>(null);
   const [job, setJob] = useState<GenerationJob | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [workflowMessage, setWorkflowMessage] = useState(
@@ -95,6 +100,7 @@ function App() {
   );
   const [busy, setBusy] = useState(false);
   const restoredAgent = useRef<number | null>(null);
+  const selectionRequestRef = useRef(false);
 
   const selectedModel = modelId
     ? models.find((model) => model.id === modelId)
@@ -129,15 +135,18 @@ function App() {
     setCanonical(savedCanonical);
     setPreprocessMeta(null);
     if (savedCanonical) {
-      const [matte, canonicalBlob] = await Promise.all([
+      const [matte, canonicalBlob, components] = await Promise.all([
         projectMatteBlob(agent, value.id).catch(() => null),
         projectCanonicalBlob(agent, value.id),
+        getProjectComponents(agent, value.id).catch(() => null),
       ]);
       replaceUrl(setMatteUrl, matte);
       replaceUrl(setCanonicalUrl, canonicalBlob);
+      setComponentState(components?.component_state ?? null);
     } else {
       replaceUrl(setMatteUrl, null);
       replaceUrl(setCanonicalUrl, null);
+      setComponentState(null);
     }
   }, [agent, replaceUrl]);
 
@@ -205,6 +214,7 @@ function App() {
       setProject(value);
       setCanonical(null);
       setPreprocessMeta(null);
+      setComponentState(null);
       resetOutput();
       replaceUrl(setSourceUrl, file);
       replaceUrl(setMatteUrl, null);
@@ -227,6 +237,7 @@ function App() {
       setProject(value.project);
       setCanonical(value.canonical);
       setPreprocessMeta(value.preprocess);
+      setComponentState(value.component_state);
       const [matte, canonicalBlob] = await Promise.all([
         projectMatteBlob(agent, project.id),
         projectCanonicalBlob(agent, project.id),
@@ -235,7 +246,7 @@ function App() {
       replaceUrl(setCanonicalUrl, canonicalBlob);
       resetOutput();
       setWorkflowMessage(
-        `本地抠图完成 · ${value.preprocess.engine} / ${value.preprocess.provider.toUpperCase()} · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
+        `本地抠图完成 · 检测到 ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
       );
       await refreshRecent();
     } catch (error) {
@@ -243,6 +254,113 @@ function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function applyComponentSelection(selectedIds: string[]) {
+    if (selectionRequestRef.current || !agent?.running || !project || !componentState || selectedIds.length === 0) return;
+    if (job && jobIsActive(job)) {
+      setWorkflowMessage("远程生成任务活动期间不能修改前景选择。");
+      return;
+    }
+    selectionRequestRef.current = true;
+    setBusy(true);
+    try {
+      const value = await selectProjectComponents(agent, project.id, selectedIds);
+      setProject(value.project);
+      setCanonical(value.canonical);
+      setComponentState(value.component_state);
+      replaceUrl(setCanonicalUrl, await projectCanonicalBlob(agent, project.id));
+      resetOutput();
+      const count = value.component_state.selected_component_ids.length;
+      const elapsed = value.component_state.selection_elapsed_ms;
+      setWorkflowMessage(
+        `已保留 ${count}/${value.component_state.component_count} 个前景${elapsed !== undefined ? ` · ${elapsed.toFixed(0)} ms` : ""}`,
+      );
+      await refreshRecent();
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      selectionRequestRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  function toggleComponent(componentId: string) {
+    if (busy || selectionRequestRef.current || !componentState) return;
+    const selected = new Set(componentState.selected_component_ids);
+    if (selected.has(componentId)) {
+      if (selected.size === 1) {
+        setWorkflowMessage("至少保留一个前景组件。");
+        return;
+      }
+      selected.delete(componentId);
+    } else {
+      selected.add(componentId);
+    }
+    void applyComponentSelection(
+      componentState.components.filter((item) => selected.has(item.id)).map((item) => item.id),
+    );
+  }
+
+  function selectAllComponents() {
+    if (busy || selectionRequestRef.current || !componentState) return;
+    void applyComponentSelection(componentState.components.map((item) => item.id));
+  }
+
+  function imagePoint(event: ReactPointerEvent<SVGSVGElement>): [number, number] | null {
+    if (!componentState) return null;
+    const matrix = event.currentTarget.getScreenCTM();
+    if (!matrix) return null;
+    const point = event.currentTarget.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const transformed = point.matrixTransform(matrix.inverse());
+    return [
+      Math.max(0, Math.min(componentState.source_size[0], transformed.x)),
+      Math.max(0, Math.min(componentState.source_size[1], transformed.y)),
+    ];
+  }
+
+  function beginBoxSelection(event: ReactPointerEvent<SVGSVGElement>) {
+    if (busy || !componentState || (job && jobIsActive(job))) return;
+    const point = imagePoint(event);
+    if (!point) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectionBox({ start: point, current: point });
+  }
+
+  function moveBoxSelection(event: ReactPointerEvent<SVGSVGElement>) {
+    if (!selectionBox) return;
+    const point = imagePoint(event);
+    if (point) setSelectionBox((current) => current ? { ...current, current: point } : null);
+  }
+
+  function finishBoxSelection(event: ReactPointerEvent<SVGSVGElement>) {
+    if (!selectionBox || !componentState) return;
+    const point = imagePoint(event) ?? selectionBox.current;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const x1 = Math.min(selectionBox.start[0], point[0]);
+    const y1 = Math.min(selectionBox.start[1], point[1]);
+    const x2 = Math.max(selectionBox.start[0], point[0]);
+    const y2 = Math.max(selectionBox.start[1], point[1]);
+    setSelectionBox(null);
+    if (x2 - x1 < 5 || y2 - y1 < 5) return;
+
+    const hit = componentState.components.filter((item) => {
+      const [bx1, by1, bx2, by2] = item.bbox;
+      const centerX = (bx1 + bx2) / 2;
+      const centerY = (by1 + by2) / 2;
+      if (centerX >= x1 && centerX <= x2 && centerY >= y1 && centerY <= y2) return true;
+      const intersection = Math.max(0, Math.min(x2, bx2) - Math.max(x1, bx1))
+        * Math.max(0, Math.min(y2, by2) - Math.max(y1, by1));
+      const bboxArea = Math.max(1, (bx2 - bx1) * (by2 - by1));
+      return intersection / bboxArea >= 0.25;
+    });
+    if (!hit.length) {
+      setWorkflowMessage("框选区域没有命中可选前景组件。");
+      return;
+    }
+    void applyComponentSelection(hit.map((item) => item.id));
   }
 
   const pollJob = useCallback(async (jobId: string) => {
@@ -323,6 +441,7 @@ function App() {
         setProject(null);
         setCanonical(null);
         setPreprocessMeta(null);
+        setComponentState(null);
         resetOutput();
         replaceUrl(setSourceUrl, null);
         replaceUrl(setMatteUrl, null);
@@ -400,11 +519,66 @@ function App() {
                   <span className="preview-label">原图</span>
                   {sourceUrl ? <img src={sourceUrl} alt="Source" /> : <div className="empty-image">原图不会上传到 Modal</div>}
                 </div>
-                <div className="image-stage compact checker">
-                  <span className="preview-label">Full RGBA</span>
-                  {matteUrl ? <img src={matteUrl} alt="Local rembg matte" /> : <div className="empty-image">rembg 后显示</div>}
+                <div className="image-stage compact checker component-stage">
+                  <span className="preview-label">Full RGBA · 连通域</span>
+                  {matteUrl && componentState ? (
+                    <svg
+                      className={`component-overlay ${selectionBox ? "dragging" : ""}`}
+                      viewBox={`0 0 ${componentState.source_size[0]} ${componentState.source_size[1]}`}
+                      role="img"
+                      aria-label="可选择的前景组件；可拖框选择"
+                      onPointerDown={beginBoxSelection}
+                      onPointerMove={moveBoxSelection}
+                      onPointerUp={finishBoxSelection}
+                      onPointerCancel={() => setSelectionBox(null)}
+                    >
+                      <image href={matteUrl} x="0" y="0" width={componentState.source_size[0]} height={componentState.source_size[1]} />
+                      {componentState.components.map((item, index) => {
+                        const [x1, y1, x2, y2] = item.bbox;
+                        const selected = componentState.selected_component_ids.includes(item.id);
+                        return (
+                          <g key={item.id} className={`component-box ${selected ? "selected" : ""}`} onPointerDown={(event) => event.stopPropagation()} onClick={() => toggleComponent(item.id)}>
+                            <rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} vectorEffect="non-scaling-stroke" />
+                            <text x={x1 + 5} y={Math.max(y1 + 16, 18)}>{index + 1}</text>
+                          </g>
+                        );
+                      })}
+                      {selectionBox ? (
+                        <rect
+                          className="selection-drag-box"
+                          x={Math.min(selectionBox.start[0], selectionBox.current[0])}
+                          y={Math.min(selectionBox.start[1], selectionBox.current[1])}
+                          width={Math.abs(selectionBox.current[0] - selectionBox.start[0])}
+                          height={Math.abs(selectionBox.current[1] - selectionBox.start[1])}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      ) : null}
+                    </svg>
+                  ) : matteUrl ? <img src={matteUrl} alt="Local rembg matte" /> : <div className="empty-image">rembg 后显示</div>}
                 </div>
               </div>
+
+              {componentState ? (
+                <div className="component-controls">
+                  <div className="component-summary">
+                    <div><strong>{componentState.selected_component_ids.length}/{componentState.component_count} 个前景已保留</strong><small>拖框可只保留框中的物体</small></div>
+                    <button type="button" className="quiet-button" disabled={busy || componentState.selected_component_ids.length === componentState.component_count} onClick={selectAllComponents}>全部保留</button>
+                  </div>
+                  <div className="component-list">
+                    {componentState.components.map((item, index) => {
+                      const selected = componentState.selected_component_ids.includes(item.id);
+                      return (
+                        <label key={item.id} className={`component-item ${selected ? "selected" : ""}`}>
+                          <input type="checkbox" checked={selected} disabled={busy || (selected && componentState.selected_component_ids.length === 1)} onChange={() => toggleComponent(item.id)} />
+                          <span>物体 {index + 1}</span>
+                          <small>{(item.foreground_ratio * 100).toFixed(1)}%</small>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {componentState.ignored_component_count > 0 ? <p className="component-noise">另有 {componentState.ignored_component_count} 个极小 Alpha 碎片未列为独立物体；默认全选时仍保留。</p> : null}
+                </div>
+              ) : null}
 
               <button className="primary full" disabled={busy || !project || !agent?.running} onClick={() => void preprocess()}>
                 {busy ? "处理中…" : canonical ? "重新本地抠图" : "本地 rembg 抠图"}
@@ -418,7 +592,7 @@ function App() {
               ) : null}
               <div className="settings-explainer">
                 <strong>隐私边界</strong>
-                <p>抠图、Alpha、裁切和 Letterbox 全在本机完成。当前测试阶段保留 rembg 的整张前景结果，不做单物体选择。</p>
+                <p>抠图、连通域、多选过滤、Alpha 和 Letterbox 全在本机完成。默认保留全部前景；只有你的选择会改变 Canonical。</p>
               </div>
             </div>
 

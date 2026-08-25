@@ -40,5 +40,57 @@ class RembgPreprocessTests(unittest.TestCase):
             rembg_preprocess.process(self._source())
 
 
+class ComponentSelectionTests(unittest.TestCase):
+    @staticmethod
+    def _matte() -> bytes:
+        rgba = Image.new("RGBA", (400, 200), (0, 0, 0, 0))
+        rgba.paste((220, 40, 40, 255), (20, 20, 180, 180))
+        rgba.paste((40, 80, 220, 255), (260, 50, 380, 150))
+        output = io.BytesIO()
+        rgba.save(output, "PNG")
+        return output.getvalue()
+
+    def test_detects_disconnected_objects_and_sorts_by_area(self) -> None:
+        analysis = rembg_preprocess.analyze_components(self._matte())
+        self.assertEqual(analysis["component_count"], 2)
+        self.assertEqual(analysis["raw_component_count"], 2)
+        first, second = analysis["components"]
+        self.assertGreater(first["area_pixels"], second["area_pixels"])
+        self.assertEqual(first["bbox"], [20, 20, 180, 180])
+        self.assertEqual(second["bbox"], [260, 50, 380, 150])
+
+    def test_all_selected_preserves_full_matte_canonical(self) -> None:
+        matte = self._matte()
+        analysis = rembg_preprocess.analyze_components(matte)
+        ids = [item["id"] for item in analysis["components"]]
+        selected = rembg_preprocess.canonicalize_components(matte, ids)
+        with Image.open(io.BytesIO(matte)) as rgba:
+            expected = rembg_preprocess._letterbox_rgba(
+                rgba.convert("RGBA"),
+                rembg_preprocess._foreground_bbox(rgba.getchannel("A")),
+            )
+        self.assertEqual(selected["canonical_bytes"], rembg_preprocess._png_bytes(expected))
+
+    def test_selecting_one_object_removes_the_other_and_reboxes(self) -> None:
+        matte = self._matte()
+        analysis = rembg_preprocess.analyze_components(matte)
+        first = analysis["components"][0]
+        result = rembg_preprocess.canonicalize_components(matte, [first["id"]])
+        self.assertEqual(result["foreground_bbox"], first["bbox"])
+        self.assertEqual(result["selected_component_ids"], [first["id"]])
+        self.assertEqual(sum(item["selected"] for item in result["components"]), 1)
+        canonical = Image.open(io.BytesIO(result["canonical_bytes"]))
+        self.assertEqual(canonical.size, (1024, 1024))
+        self.assertEqual(canonical.getchannel("A").getbbox(), (0, 0, 1024, 1024))
+
+    def test_empty_selection_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "至少保留一个"):
+            rembg_preprocess.canonicalize_components(self._matte(), [])
+
+    def test_unknown_component_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "未知前景组件"):
+            rembg_preprocess.canonicalize_components(self._matte(), ["cc-99999"])
+
+
 if __name__ == "__main__":
     unittest.main()

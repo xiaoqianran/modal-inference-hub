@@ -39,6 +39,6 @@
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-Current test-stage behavior keeps the complete foreground produced by global rembg matting. Connected-component selection and interactive box filtering are intentionally deferred to the next local-only iteration.
+The active local pipeline now performs 8-connected Alpha component analysis after rembg. All meaningful components are selected by default, preserving the complete rembg matte. Checkbox/click selection and drag-box component selection filter Alpha locally, recompute the selected union bbox, and regenerate the 1024×1024 Canonical RGBA without another AI inference or cloud round trip.
 
 The retired SAM 3.1 implementation is preserved under `archive/sam3_1/` and is not part of the active build or runtime.

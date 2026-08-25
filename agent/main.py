@@ -88,6 +88,10 @@ class ModalCredentials(BaseModel):
     token_secret: SecretStr
 
 
+class ProjectComponentSelectionRequest(BaseModel):
+    selected_component_ids: list[str]
+
+
 class ProjectGenerationRequest(BaseModel):
     model: str
     profile: str = "recommended"
@@ -215,11 +219,22 @@ def project_preprocess(project_id: str) -> dict:
         "height": 1024,
         "mode": "RGBA",
     }
+    component_state = {
+        "source_size": result["source_size"],
+        "components": result["components"],
+        "selected_component_ids": result["selected_component_ids"],
+        "component_count": result["component_count"],
+        "raw_component_count": result["raw_component_count"],
+        "ignored_component_count": result["ignored_component_count"],
+        "ignored_foreground_pixels": result["ignored_foreground_pixels"],
+        "minimum_component_pixels": result["minimum_component_pixels"],
+    }
     project = projects.save_preprocessed(
         project_id,
         result["matte_bytes"],
         result["canonical_bytes"],
         descriptor,
+        component_state,
     )
     metrics = {
         key: value
@@ -235,7 +250,69 @@ def project_preprocess(project_id: str) -> dict:
             "sha256": result["matte_sha256"],
         },
         "preprocess": metrics,
+        "component_state": component_state,
     }
+
+
+@app.get("/v1/projects/{project_id}/components")
+def project_components(project_id: str) -> dict:
+    try:
+        state = projects.component_state(project_id)
+        descriptor = projects.canonical_descriptor(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail="项目尚未完成本地抠图") from exc
+    return {"component_state": state, "canonical": descriptor}
+
+
+@app.post("/v1/projects/{project_id}/components")
+def project_component_selection(project_id: str, request: ProjectComponentSelectionRequest) -> dict:
+    try:
+        current = projects.get(project_id)
+        if current["status"] in {"generating", "running", "connection_required", "cancel_requested"}:
+            raise HTTPException(status_code=409, detail="远程生成任务活动期间不能修改前景选择")
+        matte_bytes = projects.matte_path(project_id).read_bytes()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail="项目尚未完成本地抠图") from exc
+    try:
+        result = rembg_preprocess.canonicalize_components(
+            matte_bytes,
+            request.selected_component_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    descriptor = {
+        "id": artifacts.content_id("can", "canonical", result["canonical_sha256"]),
+        "role": "canonical-rgba",
+        "mime": "image/png",
+        "bytes": len(result["canonical_bytes"]),
+        "sha256": result["canonical_sha256"],
+        "width": 1024,
+        "height": 1024,
+        "mode": "RGBA",
+    }
+    state = {
+        "source_size": result["source_size"],
+        "components": result["components"],
+        "selected_component_ids": result["selected_component_ids"],
+        "component_count": result["component_count"],
+        "raw_component_count": result["raw_component_count"],
+        "ignored_component_count": result["ignored_component_count"],
+        "ignored_foreground_pixels": result["ignored_foreground_pixels"],
+        "minimum_component_pixels": result["minimum_component_pixels"],
+        "foreground_bbox": result["foreground_bbox"],
+        "selection_elapsed_ms": result["selection_elapsed_ms"],
+    }
+    project = projects.save_canonical_selection(
+        project_id,
+        result["canonical_bytes"],
+        descriptor,
+        state,
+    )
+    return {"project": project, "canonical": descriptor, "component_state": state}
 
 
 @app.get("/v1/projects/{project_id}/matte")

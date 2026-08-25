@@ -7,6 +7,7 @@ Agent 重启后恢复。状态推进见下方状态机图；Job 状态由 jobs.r
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import uuid
@@ -283,12 +284,28 @@ class ProjectStore:
             raise FileNotFoundError(path)
         return path
 
+    def component_state_path(self, project_id: str) -> Path:
+        return self._asset_path(project_id, "components.json")
+
+    def component_state(self, project_id: str) -> dict:
+        path = self.component_state_path(project_id)
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_component_state(self, project_id: str, state: dict) -> None:
+        path = self.component_state_path(project_id)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
     def save_preprocessed(
         self,
         project_id: str,
         matte_bytes: bytes,
         canonical_bytes: bytes,
         descriptor: dict,
+        component_state: dict | None = None,
     ) -> dict:
         paths = (
             (self._asset_path(project_id, "matte.png"), matte_bytes),
@@ -298,6 +315,22 @@ class ProjectStore:
             temporary = path.with_suffix(path.suffix + ".tmp")
             temporary.write_bytes(data)
             temporary.replace(path)
+        if component_state is not None:
+            self.save_component_state(project_id, component_state)
+        return self.record_local_canonical(project_id, descriptor)
+
+    def save_canonical_selection(
+        self,
+        project_id: str,
+        canonical_bytes: bytes,
+        descriptor: dict,
+        component_state: dict,
+    ) -> dict:
+        path = self._asset_path(project_id, "canonical.png")
+        temporary = path.with_suffix(".png.tmp")
+        temporary.write_bytes(canonical_bytes)
+        temporary.replace(path)
+        self.save_component_state(project_id, component_state)
         return self.record_local_canonical(project_id, descriptor)
 
     def record_local_canonical(self, project_id: str, canonical: dict) -> dict:

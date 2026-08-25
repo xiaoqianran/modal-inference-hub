@@ -38,7 +38,7 @@ preserve aspect ratio → scale → transparent letterbox → center
 
 The original image, rembg matte, cropping and canonicalization stay on the user's machine. Modal receives only the final canonical RGBA used for generation.
 
-The current test-stage implementation keeps the complete foreground returned by global rembg matting. Connected-component selection, multi-object filtering and interactive box selection are planned as local-only follow-up work.
+After global rembg matting, the client performs local 8-connected component analysis on Alpha. All meaningful components are selected by default, so the canonical output remains identical to the complete rembg foreground. Users can deselect individual components or drag a box over the matte to keep matching components; only then is Alpha filtered and the union bounding box re-letterboxed locally.
 
 ## Local preprocessing
 
@@ -47,6 +47,8 @@ The current test-stage implementation keeps the complete foreground returned by 
 - Current provider: CPU
 - Model cache: application data directory under `rembg/`
 - Canonical contract: PNG, 1024×1024, 8-bit RGBA
+- Component rule: 8-connected Alpha analysis; default all selected; tiny fragments remain preserved while all components are selected
+- Interaction: checkbox/click selection and drag-box component selection are local-only
 - Geometry rule: preserve original aspect ratio; use transparent letterbox padding to center the remaining foreground
 
 The client does not use BRIA RMBG-2.0. The current rembg session is `birefnet-general`.

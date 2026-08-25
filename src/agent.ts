@@ -91,10 +91,33 @@ export type RuntimeCapabilities = {
   };
 };
 
+export type ForegroundComponent = {
+  id: string;
+  bbox: [number, number, number, number];
+  area_pixels: number;
+  foreground_ratio: number;
+  image_ratio: number;
+  selected: boolean;
+};
+
+export type ComponentState = {
+  source_size: [number, number];
+  components: ForegroundComponent[];
+  selected_component_ids: string[];
+  component_count: number;
+  raw_component_count: number;
+  ignored_component_count: number;
+  ignored_foreground_pixels?: number;
+  minimum_component_pixels?: number;
+  foreground_bbox?: [number, number, number, number];
+  selection_elapsed_ms?: number;
+};
+
 export type PreprocessResult = {
   project: Project;
   canonical: CanonicalAsset;
   matte: { mime: "image/png"; bytes: number; sha256: string };
+  component_state: ComponentState;
   preprocess: {
     engine: string;
     provider: string;
@@ -103,7 +126,16 @@ export type PreprocessResult = {
     foreground_bbox: [number, number, number, number];
     foreground_ratio: number;
     canonical_size: [number, number];
+    component_count?: number;
+    raw_component_count?: number;
+    ignored_component_count?: number;
   };
+};
+
+export type ComponentSelectionResult = {
+  project: Project;
+  canonical: CanonicalAsset;
+  component_state: ComponentState;
 };
 
 export type Project = {
@@ -284,6 +316,22 @@ export const preprocessProject = (info: AgentInfo, projectId: string) =>
   json<PreprocessResult>(info, `/v1/projects/${projectId}/preprocess`, {
     method: "POST",
   }, 600_000);
+
+export const getProjectComponents = (info: AgentInfo, projectId: string) =>
+  json<{ component_state: ComponentState; canonical: CanonicalAsset }>(
+    info,
+    `/v1/projects/${projectId}/components`,
+  );
+
+export const selectProjectComponents = (
+  info: AgentInfo,
+  projectId: string,
+  selectedComponentIds: string[],
+) =>
+  json<ComponentSelectionResult>(info, `/v1/projects/${projectId}/components`, {
+    method: "POST",
+    body: JSON.stringify({ selected_component_ids: selectedComponentIds }),
+  });
 
 export const submitProjectGeneration = (
   info: AgentInfo,

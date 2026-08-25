@@ -726,6 +726,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-multipart" },
     { name = "rembg", extra = ["cpu"] },
+    { name = "scipy" },
     { name = "uvicorn" },
 ]
 
@@ -745,6 +746,7 @@ requires-dist = [
     { name = "pydantic" },
     { name = "python-multipart" },
     { name = "rembg", extras = ["cpu"], specifier = ">=2.0.70,<3" },
+    { name = "scipy", specifier = ">=1.12,<2" },
     { name = "uvicorn" },
 ]
 

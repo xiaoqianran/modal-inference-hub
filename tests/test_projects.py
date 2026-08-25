@@ -62,6 +62,28 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         _, remote = self.store.canonical_remote(project["id"])
         self.assertEqual(remote, "client-inputs/test.png")
 
+    def test_component_state_is_persisted_and_selection_invalidates_remote_canonical(self) -> None:
+        project = self.store.create(_png(), "components.png")
+        matte = _png(2, 2)
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_a", "sha256": "a" * 64, "bytes": len(canonical)}
+        state = {
+            "source_size": [2, 2],
+            "components": [{"id": "cc-00001", "selected": True}],
+            "selected_component_ids": ["cc-00001"],
+            "component_count": 1,
+        }
+        self.store.save_preprocessed(project["id"], matte, canonical, descriptor, state)
+        self.assertEqual(self.store.component_state(project["id"]), state)
+        self.store.record_remote_canonical(project["id"], "client-inputs/old.png")
+
+        updated_descriptor = {"id": "can_b", "sha256": "b" * 64, "bytes": len(canonical)}
+        updated_state = {**state, "selection_elapsed_ms": 3.5}
+        self.store.save_canonical_selection(project["id"], canonical, updated_descriptor, updated_state)
+        self.assertEqual(self.store.component_state(project["id"]), updated_state)
+        with self.assertRaisesRegex(RuntimeError, "尚未上传"):
+            self.store.canonical_remote(project["id"])
+
     def test_terminal_project_can_be_deleted(self) -> None:
         project = self.store.create(_png(), "done.png")
         self.store._update(project["id"], status="succeeded")

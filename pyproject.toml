@@ -10,6 +10,7 @@ dependencies = [
     "pydantic",
     "python-multipart",
     "rembg[cpu]>=2.0.70,<3",
+    "scipy>=1.12,<2",
     "uvicorn",
 ]
 
