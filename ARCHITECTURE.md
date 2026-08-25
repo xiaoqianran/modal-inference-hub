@@ -1,51 +1,118 @@
-# 架构说明
+# Modal 3D Client 架构
 
-`modal-3D-client` 是面向用户的客户端，云端模型代码继续保存在 `modal-3D` 仓库中。
+## 当前系统
 
 ```text
-React / TypeScript
+React / TypeScript UI
         │
-      Tauri 2
+        ▼
+Tauri / Rust Desktop Host
+        │  启动本地 Agent、凭据、文件保存、资源目录
+        ▼
+Python Local Agent (FastAPI, 127.0.0.1 随机端口 + session token)
         │
-  本地 Python 代理
-     ├─ 硬件检测
-     ├─ Modal Session / Artifact Volume
-     ├─ Project Workspace / Generation Jobs
-     ├─ SAM Provider / Capability Router
-     │   ├─ Cloud SAM ✅
-     │   └─ Local SAM runtime（Windows 可选安装）
-     ├─ Artifact Runtime / Native Export
-     └─ modal-3D Gateway v2
-          ├─ 动态 Capability Registry
-          └─ 云端 3D 工作节点
+        ├── Project Workspace / SQLite
+        ├── rembg / BiRefNet 本地预处理
+        │      ├── GPU 优先（ONNX Runtime CUDA）
+        │      └── CUDA 失败自动回退 CPU
+        ├── 8-connected Alpha components
+        ├── Canonical 1024×1024 RGBA
+        ├── Job / SQLite / 重启恢复
+        ├── Artifact 校验与本地缓存
+        │
+        └──────────────► modal-3D / Modal cloud
+                           ├── capability registry
+                           ├── FunctionCall generation
+                           └── GLB artifact
 ```
 
-## 架构边界
+## 主工作流
 
-- 用户界面只在输入和连接期间接触凭据，不会持久化或重新读取已保存的密钥。
-- Tauri 负责桌面应用生命周期和 Windows 凭据管理器存储。
-- Python 本地代理负责 Project Workspace、Modal Session、Artifact、Cloud SAM 与长期 Generation Job 编排；Project/Job 元数据持久化到 SQLite，可跨 Agent 重启恢复作品上下文与 Modal FunctionCall。
-- 本地代理仅监听随机的 `127.0.0.1` 端口；Tauri 会为每次启动提供独立会话令牌。
-- 已保存的凭据直接恢复到本地代理，不会回传到 React 界面。
-- 本地 SAM 3.1 是可选功能，云端回退使用相同的界面协议。
-- `modal-3D` 是云端工作节点及其 API 协议的唯一事实来源。
-- Agent 只使用新版 gateway 的 `capabilities`、`submit` 与 `modal.FunctionCall` 协议；不存在第二份客户端模型 registry 或旧版 cloud router。
-- 大型模型不会打包进安装程序。
+```text
+Source Image
+   ↓
+Project.create
+   ↓
+Local rembg (GPU preferred, CPU fallback)
+   ↓
+Alpha Matte
+   ↓
+8-connected component analysis
+   ↓
+Local component selection / box selection / undo-redo
+   ↓
+Canonical RGBA 1024×1024
+   ↓
+SHA256 + byte count
+   ↓
+Upload Canonical to Modal Volume
+   ↓
+Modal FunctionCall
+   ↓
+Persistent Job polling / recovery
+   ↓
+GLB validation + content-addressed cache
+   ↓
+Three.js viewer / native export
+```
 
-## 首批里程碑
+## 组件职责
 
-1. ✅ Tauri 使用随机端口和独立会话令牌启动、停止本地代理 sidecar。
-2. ✅ 通过本地代理连接 Modal 令牌；凭据仅在当前代理会话的内存中保存。
-3. ✅ 使用 Windows 凭据管理器持久化 Modal 凭据，并直接恢复到本地代理。
-4. ✅ 打通 Cloud SAM → 候选对象 → Canonical RGBA → 3D Generation → GLB 的真实工作流。
-5. ✅ 四个云端模型进入统一 registry / recommended profile，并加入按需加载的 Three.js GLB Viewer。
-6. 增加 `SAM：自动 / 本地 / 云端` 模式与更完整的能力检测。
-7. ✅ Generation Job 使用 SQLite 持久化并支持 Agent 重启后恢复。
-8. ✅ Project Workspace 持久化 source → canonical → model/profile → job → GLB，并支持最近项目恢复。
-9. ✅ SAM Provider / Auto 路由已落地；当前 Auto 在 Local runtime 未安装时透明选择 Cloud，并持久化实际 provider。
-10. ✅ Cloud SAM 支持候选选择与正/负框 Refine，Refine selection 与 canonical 生命周期归属同一 Project/provider。
-11. ✅ GLB 使用 Agent 流式 export 缓存 + Tauri 原生保存对话框；Project 支持本地删除，生成中禁止直接删除。
-12. ✅ Local SAM v1 bootstrap 已由 GitHub Windows workflow 验证并发布；Agent 已实现安装、Modal checkpoint 同步、child-process health 与 Auto fallback。真实 Windows NVIDIA 端到端推理仍需物理 GPU 验收。
-13. ✅ Local SAM 卸载生命周期完成：停止子进程、清 runtime/checkpoint/cache、保留 scene/selection，并在显式 Local 模式下回退 Auto。
-14. ✅ Local SAM 版本更新使用同一 install API，并采用 staging → 校验 → 原子切换；崩溃后可恢复 `runtime.old`。
-15. 后续 Web Runtime 与 Local SAM Windows GPU 实机验收。
+### React / TypeScript
+
+- 展示项目、预处理、组件选择、生成进度和 GLB Viewer。
+- 通过 `src/agent.ts` 访问本地 Agent HTTP API。
+- 不直接调用 Modal，也不持久化 Modal 密钥。
+
+### Tauri / Rust
+
+- 管理桌面应用和 Python Agent 生命周期。
+- 从应用资源目录启动 PyInstaller onedir Agent。
+- 将 Modal 凭据保存在 Windows Credential Manager，并直接恢复给 Agent。
+- 提供原生导出、应用数据目录和诊断能力。
+
+### Python Local Agent
+
+- 持有 Project / Job 状态和 SQLite 持久化。
+- 下载并校验 `birefnet-general-lite`。
+- 执行本地 rembg、组件分析和 Canonical 生成。
+- 维护 Canonical 本地 SHA256 与远端路径的内容绑定。
+- 调用 Modal generation，并在本地持久化 FunctionCall ID。
+- 对远端 GLB 做格式、大小和 SHA256 校验后进入本地缓存。
+
+### modal-3D 云端
+
+- 是云端 worker 与 capability registry 的事实来源。
+- 输入是客户端已经准备好的 Canonical RGBA。
+- 不负责 rembg、SAM、主体选择、裁剪或 Canonical 生成。
+
+## 状态与恢复边界
+
+```text
+Project
+  ├── source descriptor
+  ├── canonical descriptor + remote SHA256 binding
+  ├── model/profile
+  ├── job_id
+  └── artifact descriptor
+
+Job
+  ├── remote_call_id
+  ├── status
+  ├── retry/error metadata
+  └── artifact_remote_path
+```
+
+生成提交采用补偿式一致性：远端调用已创建但 Job 落库失败时尽力取消远端调用；Job 已落库但 Project 绑定失败时持久化取消意图。Job 对 `NotFound` 使用连续确认后再判定 `expired`，避免短暂远端查询异常造成误判。
+
+## 安全边界
+
+- Agent 只监听 `127.0.0.1` 随机端口。
+- 每次 Tauri 启动 Agent 都生成独立 session token。
+- UI 不读取已保存的 Modal 密钥。
+- Canonical 和 GLB 都使用 SHA256/bytes 做内容校验。
+- Agent PyInstaller 采用 onedir，避免 onefile 每次启动解压大型 CUDA runtime。
+
+## 已退役实现
+
+旧的 SAM 3.1 cloud/local preprocessing 实现仅保存在 `archive/sam3_1/` 作为历史参考。它不被当前 React、Tauri、Python Agent、CI 打包或运行时导入。当前前景分离统一使用本地 rembg / BiRefNet。

@@ -46,16 +46,6 @@ struct AppDiagnostics {
 }
 
 #[tauri::command]
-fn choose_local_sam_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    Ok(app
-        .dialog()
-        .file()
-        .set_title("选择 Local SAM 存储目录")
-        .blocking_pick_folder()
-        .map(|path| path.to_string()))
-}
-
-#[tauri::command]
 async fn app_diagnostics(app: tauri::AppHandle) -> Result<AppDiagnostics, String> {
     async_runtime::spawn_blocking(move || {
         let data_dir = app
@@ -486,7 +476,6 @@ pub fn run() {
             agent_start,
             agent_status,
             agent_stop,
-            choose_local_sam_directory,
             app_diagnostics,
             reveal_app_data,
             export_save,

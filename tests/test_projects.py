@@ -116,6 +116,22 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "不一致"):
             self.store.canonical_remote(project["id"])
 
+    def test_legacy_sam_columns_are_ignored(self) -> None:
+        project = self.store.create(_png(), "legacy.png")
+        with self.store._connect() as db:
+            db.execute("ALTER TABLE projects ADD COLUMN sam_provider TEXT")
+            db.execute("ALTER TABLE projects ADD COLUMN scene_id TEXT")
+            db.execute("ALTER TABLE projects ADD COLUMN selection_id TEXT")
+            db.execute("ALTER TABLE projects ADD COLUMN candidate_id TEXT")
+            db.execute("UPDATE projects SET sam_provider = 'cloud', scene_id = 'old-scene' WHERE id = ?", (project["id"],))
+
+        restored = self.store.get(project["id"])
+        self.assertEqual(restored["id"], project["id"])
+        self.assertNotIn("sam_provider", restored)
+        self.assertNotIn("scene_id", restored)
+        self.assertNotIn("selection_id", restored)
+        self.assertNotIn("candidate_id", restored)
+
     def test_terminal_project_can_be_deleted(self) -> None:
         project = self.store.create(_png(), "done.png")
         self.store._update(project["id"], status="succeeded")

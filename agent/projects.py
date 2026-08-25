@@ -1,7 +1,7 @@
 """项目（Project）工作区的持久化。
 
-Project 承载一次完整创作流程的全部上下文：源图片 → 识别/Refine 结果 →
-canonical RGBA → 模型/Profile → Job → 产物。全部落盘到 SQLite，支持
+Project 承载一次完整创作流程的全部上下文：源图片 → 本地 rembg/组件选择 →
+Canonical RGBA → 模型/Profile → Job → 产物。全部落盘到 SQLite，支持
 Agent 重启后恢复。状态推进见下方状态机图；Job 状态由 jobs.record_job 回写。
 """
 
@@ -12,7 +12,7 @@ import shutil
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterator
@@ -47,11 +47,6 @@ class Project:
     source_mime: str | None
     source_width: int | None
     source_height: int | None
-    concept: str | None
-    sam_provider: str | None
-    scene_id: str | None
-    selection_id: str | None
-    candidate_id: str | None
     canonical_path: str | None
     canonical_remote_sha256: str | None
     canonical_id: str | None
@@ -88,11 +83,6 @@ class Project:
                 if self.source_id
                 else None
             ),
-            "concept": self.concept,
-            "sam_provider": self.sam_provider,
-            "scene_id": self.scene_id,
-            "selection_id": self.selection_id,
-            "candidate_id": self.candidate_id,
             "canonical_id": self.canonical_id,
             "canonical_sha256": self.canonical_sha256,
             "canonical_bytes": self.canonical_bytes,
@@ -143,11 +133,6 @@ class ProjectStore:
                     source_mime TEXT,
                     source_width INTEGER,
                     source_height INTEGER,
-                    concept TEXT,
-                    sam_provider TEXT,
-                    scene_id TEXT,
-                    selection_id TEXT,
-                    candidate_id TEXT,
                     canonical_path TEXT,
                     canonical_remote_sha256 TEXT,
                     canonical_id TEXT,
@@ -169,7 +154,6 @@ class ProjectStore:
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(projects)")}
             migrations = {
-                "sam_provider": "TEXT",
                 "artifact_id": "TEXT",
                 "artifact_sha256": "TEXT",
                 "source_id": "TEXT",
@@ -187,7 +171,10 @@ class ProjectStore:
 
     @staticmethod
     def _project(row: sqlite3.Row) -> Project:
-        return Project(**dict(row))
+        # 旧版本数据库可能仍包含已经退役的 SAM 字段。只读取当前 Project
+        # 模型声明的列即可，既不继续传播死字段，也无需破坏性 DROP COLUMN。
+        current_fields = {item.name for item in fields(Project)}
+        return Project(**{key: value for key, value in dict(row).items() if key in current_fields})
 
     def create(self, data: bytes, filename: str, limits: dict | None = None) -> dict:
         name = Path(filename or "source.png").name
@@ -355,11 +342,6 @@ class ProjectStore:
     def record_local_canonical(self, project_id: str, canonical: dict) -> dict:
         return self._update(
             project_id,
-            concept=None,
-            sam_provider=None,
-            scene_id=None,
-            selection_id=None,
-            candidate_id=None,
             canonical_path=None,
             canonical_remote_sha256=None,
             canonical_id=canonical["id"],
