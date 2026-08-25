@@ -1,3 +1,4 @@
+mod agent_handoff;
 mod credentials;
 use rand::RngCore;
 use serde::Serialize;
@@ -182,6 +183,7 @@ fn terminate_child(child: &mut Child) {
 fn stop_process(process: &mut AgentProcess) {
     terminate_child(&mut process.child);
     let _ = fs::remove_file(&process.handshake);
+    let _ = credentials::clear_agent_handoff(&process.session_token);
 }
 
 fn startup_failure(
@@ -348,6 +350,9 @@ fn agent_start_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
         }
         thread::sleep(Duration::from_millis(50));
     }
+
+    let _ =
+        credentials::publish_agent_handoff(port, child.id(), std::process::id(), &session_token);
 
     let process = AgentProcess {
         child,

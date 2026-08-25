@@ -1,12 +1,19 @@
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "windows")]
+use std::collections::HashMap;
+
+#[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 
 #[cfg(target_os = "windows")]
 const SERVICE: &str = "com.modal3d.client.modal";
 #[cfg(target_os = "windows")]
 const USER: &str = "modal-token";
+#[cfg(target_os = "windows")]
+const HANDOFF_SERVICE: &str = "com.modal3d.client.agent-handoff";
+#[cfg(target_os = "windows")]
+const HANDOFF_USER: &str = "modal-gen-client";
 
 #[derive(Deserialize)]
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -51,7 +58,7 @@ fn decode(data: &[u8]) -> Result<(String, String), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn entry() -> Result<keyring_core::Entry, String> {
+fn init_store() -> Result<(), String> {
     static INIT: OnceLock<Result<(), String>> = OnceLock::new();
     INIT.get_or_init(|| {
         let store =
@@ -59,8 +66,22 @@ fn entry() -> Result<keyring_core::Entry, String> {
         keyring_core::set_default_store(store);
         Ok(())
     })
-    .clone()?;
+    .clone()
+}
+
+#[cfg(target_os = "windows")]
+fn entry() -> Result<keyring_core::Entry, String> {
+    init_store()?;
     keyring_core::Entry::new(SERVICE, USER).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn handoff_entry() -> Result<keyring_core::Entry, String> {
+    use crate::agent_handoff::HANDOFF_TARGET;
+    init_store()?;
+    let modifiers = HashMap::from([("target", HANDOFF_TARGET), ("persistence", "session")]);
+    keyring_core::Entry::new_with_modifiers(HANDOFF_SERVICE, HANDOFF_USER, &modifiers)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -129,6 +150,52 @@ pub fn credentials_clear() -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     Err("凭据持久化功能仅支持 Windows".into())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn publish_agent_handoff(
+    port: u16,
+    agent_pid: u32,
+    desktop_pid: u32,
+    session_token: &str,
+) -> Result<(), String> {
+    let payload =
+        crate::agent_handoff::encode_agent_handoff(port, agent_pid, desktop_pid, session_token)?;
+    handoff_entry()?
+        .set_secret(&payload)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn publish_agent_handoff(
+    _port: u16,
+    _agent_pid: u32,
+    _desktop_pid: u32,
+    _session_token: &str,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn clear_agent_handoff(session_token: &str) -> Result<(), String> {
+    let entry = handoff_entry()?;
+    let current = match entry.get_secret() {
+        Ok(data) => crate::agent_handoff::decode_agent_handoff(&data)?,
+        Err(keyring_core::Error::NoEntry) => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    if current.session_token != session_token {
+        return Ok(());
+    }
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn clear_agent_handoff(_session_token: &str) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
