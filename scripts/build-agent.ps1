@@ -47,6 +47,21 @@ if (-not $Force -and (Test-Path -LiteralPath $outputPath)) {
     }
 }
 
+if (Test-Path -LiteralPath $outputPath) {
+    try {
+        $outputLock = [System.IO.File]::Open(
+            $outputPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        $outputLock.Dispose()
+    }
+    catch {
+        throw "本地代理可执行文件正在使用中，请先关闭 Modal 3D 客户端或代理进程后再构建：$outputPath"
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $outputDirectory, $workDirectory | Out-Null
 
 Push-Location $projectRoot
@@ -65,7 +80,9 @@ try {
         --workpath $workDirectory `
         --specpath $workDirectory `
         --paths $projectRoot `
-        --collect-all rembg `
+        --collect-data rembg `
+        --collect-submodules rembg.sessions `
+        --copy-metadata rembg `
         --copy-metadata pymatting `
         --collect-binaries onnxruntime `
         --hidden-import nvidia.cublas `
@@ -108,7 +125,7 @@ $env:MODAL_3D_AGENT_TOKEN = $smokeToken
 $env:MODAL_3D_AGENT_HANDSHAKE = $smokeHandshake
 $agentProcess = Start-Process -FilePath $outputPath -WindowStyle Hidden -PassThru
 try {
-    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    $deadline = [DateTime]::UtcNow.AddSeconds(90)
     while (-not (Test-Path -LiteralPath $smokeHandshake) -and [DateTime]::UtcNow -lt $deadline) {
         if ($agentProcess.HasExited) {
             throw "本地代理在启动冒烟测试期间意外退出。"
