@@ -86,6 +86,24 @@ fn reveal_app_data(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(debug_assertions)]
+fn agent_command(_app: &tauri::AppHandle) -> Result<Command, String> {
+    if let Some(path) = std::env::var_os("MODAL_3D_AGENT_EXECUTABLE") {
+        return Ok(Command::new(path));
+    }
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("项目根目录无效")?
+        .to_path_buf();
+    let mut command = Command::new("uv");
+    command
+        .args(["run", "python", "-m", "agent.server"])
+        .current_dir(root);
+    Ok(command)
+}
+
+#[cfg(not(debug_assertions))]
 fn agent_command(app: &tauri::AppHandle) -> Result<Command, String> {
     if let Some(path) = std::env::var_os("MODAL_3D_AGENT_EXECUTABLE") {
         return Ok(Command::new(path));
@@ -106,20 +124,6 @@ fn agent_command(app: &tauri::AppHandle) -> Result<Command, String> {
         }
     }
 
-    #[cfg(debug_assertions)]
-    {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .ok_or("项目根目录无效")?
-            .to_path_buf();
-        let mut command = Command::new("uv");
-        command
-            .args(["run", "python", "-m", "agent.server"])
-            .current_dir(root);
-        Ok(command)
-    }
-
-    #[cfg(not(debug_assertions))]
     Err("在客户端资源目录中找不到已捆绑的本地代理".into())
 }
 

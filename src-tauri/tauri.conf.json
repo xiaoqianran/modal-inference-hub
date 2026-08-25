@@ -4,7 +4,7 @@
   "version": "0.4.1",
   "identifier": "com.modal3d.client",
   "build": {
-    "beforeDevCommand": "npm run agent:build && npm run dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run agent:build && npm run build",
     "frontendDist": "../dist"

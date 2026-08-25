@@ -111,6 +111,10 @@ if (-not (Test-Path -LiteralPath $outputPath)) {
     throw "本地代理打包完成，但没有生成预期文件：$outputPath"
 }
 
+# 只支持 CUDA/CPU；移除 ORT wheel 自带但本项目不使用的 TensorRT provider。
+Get-ChildItem -LiteralPath $outputDirectory -Recurse -File -Filter "onnxruntime_providers_tensorrt.dll" |
+    Remove-Item -Force
+
 $smokeToken = [Guid]::NewGuid().ToString("N")
 $smokeHandshake = Join-Path $workDirectory "smoke-$smokeToken.port"
 $env:MODAL_3D_AGENT_TOKEN = $smokeToken
