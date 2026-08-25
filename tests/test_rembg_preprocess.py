@@ -9,6 +9,7 @@ from pathlib import Path
 from PIL import Image
 
 from agent import rembg_preprocess
+from agent.preprocess import image_ops, model_store, runtime
 
 
 class RembgPreprocessTests(unittest.TestCase):
@@ -22,7 +23,7 @@ class RembgPreprocessTests(unittest.TestCase):
         mask = Image.new("L", (800, 400), 0)
         # 2:1 foreground should become 1024x512, vertically centred.
         mask.paste(255, (100, 100, 700, 400))
-        with patch("agent.rembg_preprocess._predict_mask", return_value=mask):
+        with patch("agent.preprocess.runtime.predict_mask", return_value=(mask, "gpu", None)):
             result = rembg_preprocess.process(self._source())
         canonical = Image.open(io.BytesIO(result["canonical_bytes"]))
         self.assertEqual(canonical.mode, "RGBA")
@@ -36,7 +37,7 @@ class RembgPreprocessTests(unittest.TestCase):
     def test_no_foreground_is_rejected(self) -> None:
         mask = Image.new("L", (800, 400), 0)
         with (
-            patch("agent.rembg_preprocess._predict_mask", return_value=mask),
+            patch("agent.preprocess.runtime.predict_mask", return_value=(mask, "gpu", None)),
             self.assertRaisesRegex(ValueError, "未检测到可用前景"),
         ):
             rembg_preprocess.process(self._source())
@@ -67,9 +68,9 @@ class ComponentSelectionTests(unittest.TestCase):
         ids = [item["id"] for item in analysis["components"]]
         selected = rembg_preprocess.canonicalize_components(matte, ids)
         with Image.open(io.BytesIO(matte)) as rgba:
-            expected = rembg_preprocess._letterbox_rgba(
+            expected = image_ops._letterbox_rgba(
                 rgba.convert("RGBA"),
-                rembg_preprocess._foreground_bbox(rgba.getchannel("A")),
+                image_ops._foreground_bbox(rgba.getchannel("A")),
             )
         actual = Image.open(io.BytesIO(selected["canonical_bytes"])).convert("RGBA")
         self.assertEqual(actual.size, expected.size)
@@ -118,7 +119,7 @@ class ComponentSelectionTests(unittest.TestCase):
         rembg_preprocess.clear_selection_cache()
         rembg_preprocess.canonicalize_components(matte, [first], component_state=state)
         with patch(
-            "agent.rembg_preprocess._label_components",
+            "agent.preprocess.image_ops._label_components",
             side_effect=AssertionError("cache miss"),
         ):
             result = rembg_preprocess.canonicalize_components(
@@ -132,10 +133,10 @@ class ComponentSelectionTests(unittest.TestCase):
 class ProviderPreferenceTests(unittest.TestCase):
     def test_provider_preference_is_persisted_and_gpu_falls_back_when_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "agent.rembg_preprocess.rembg_home",
+            "agent.preprocess.model_store.rembg_home",
             return_value=Path(temporary),
         ), patch(
-            "agent.rembg_preprocess._available_ort_providers",
+            "agent.preprocess.runtime._available_ort_providers",
             return_value=["CPUExecutionProvider"],
         ):
             gpu = rembg_preprocess.set_provider_preference("gpu")
@@ -164,13 +165,13 @@ class ProviderPreferenceTests(unittest.TestCase):
             inner_session = Inner()
 
         rembg_preprocess.reset_session()
-        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
+        with patch("agent.preprocess.runtime.provider_preference", return_value="gpu"), patch(
             "onnxruntime.get_available_providers",
             return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
-        ), patch("agent.rembg_preprocess._preload_cuda_runtime"), patch(
+        ), patch("agent.preprocess.runtime._preload_cuda_runtime"), patch(
             "rembg.session_factory.new_session", return_value=Session()
         ):
-            rembg_preprocess._get_session()
+            runtime._get_session()
             current = rembg_preprocess.status()
         self.assertEqual(current["provider"], "gpu")
         self.assertIsNone(current["fallback_reason"])
@@ -193,14 +194,14 @@ class ProviderPreferenceTests(unittest.TestCase):
             return Session()
 
         rembg_preprocess.reset_session()
-        preload = patch("agent.rembg_preprocess._preload_cuda_runtime")
-        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
+        preload = patch("agent.preprocess.runtime._preload_cuda_runtime")
+        with patch("agent.preprocess.runtime.provider_preference", return_value="gpu"), patch(
             "onnxruntime.get_available_providers",
             return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
         ), preload as preload_cuda, patch(
             "rembg.session_factory.new_session", side_effect=fake_new_session
         ):
-            rembg_preprocess._get_session()
+            runtime._get_session()
         self.assertFalse(captured["enable_cpu_mem_arena"])
         self.assertEqual(captured["providers"][0][0], "CUDAExecutionProvider")
         self.assertEqual(captured["providers"][0][1]["device_id"], 0)
@@ -219,15 +220,15 @@ class ProviderPreferenceTests(unittest.TestCase):
             inner_session = Inner()
 
         rembg_preprocess.reset_session()
-        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
+        with patch("agent.preprocess.runtime.provider_preference", return_value="gpu"), patch(
             "onnxruntime.get_available_providers",
             return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
-        ), patch("agent.rembg_preprocess._preload_cuda_runtime"), patch(
+        ), patch("agent.preprocess.runtime._preload_cuda_runtime"), patch(
             "rembg.session_factory.new_session", side_effect=[RuntimeError("cuda init failed"), Session()]
         ):
-            rembg_preprocess._get_session()
-            self.assertEqual(rembg_preprocess._session_provider, "cpu")
-            self.assertIn("CUDA 初始化失败", rembg_preprocess._session_fallback_reason or "")
+            runtime._get_session()
+            self.assertEqual(runtime._session_provider, "cpu")
+            self.assertIn("CUDA 初始化失败", runtime._session_fallback_reason or "")
         rembg_preprocess.reset_session()
 
     def test_gpu_inference_decode_failure_releases_gpu_and_retries_on_cpu(self) -> None:
@@ -244,32 +245,33 @@ class ProviderPreferenceTests(unittest.TestCase):
                 return [mask]
 
         rembg_preprocess.reset_session()
-        rembg_preprocess._session = GpuSession()
-        rembg_preprocess._session_provider = "gpu"
-        with patch("agent.rembg_preprocess._new_cpu_session", return_value=CpuSession()):
-            result = rembg_preprocess._predict_mask(Image.new("RGB", (16, 16)))
+        runtime._session = GpuSession()
+        runtime._session_provider = "gpu"
+        with patch("agent.preprocess.runtime._new_cpu_session", return_value=CpuSession()):
+            result = runtime._predict_mask(Image.new("RGB", (16, 16)))
 
         self.assertEqual(result.getbbox(), (0, 0, 16, 16))
-        self.assertEqual(rembg_preprocess._session_provider, "cpu")
-        self.assertIn("显存不足或驱动执行失败", rembg_preprocess._session_fallback_reason or "")
+        self.assertEqual(runtime._session_provider, "cpu")
+        self.assertIn("显存不足或驱动执行失败", runtime._session_fallback_reason or "")
         rembg_preprocess.reset_session()
 
-    def test_process_releases_model_session_after_one_shot_inference(self) -> None:
+    def test_predict_mask_releases_cpu_session_after_one_shot_inference(self) -> None:
         mask = Image.new("L", (800, 400), 255)
-        source = io.BytesIO()
-        Image.new("RGB", (800, 400), (240, 240, 240)).save(source, "PNG")
 
         def predict(_image):
-            rembg_preprocess._session = object()
-            rembg_preprocess._session_provider = "gpu"
+            runtime._session = object()
+            runtime._session_provider = "gpu"
+            runtime._session_ort_provider = "CPUExecutionProvider"
             return mask
 
         rembg_preprocess.reset_session()
-        with patch("agent.rembg_preprocess._predict_mask", side_effect=predict):
-            result = rembg_preprocess.process(source.getvalue())
+        with patch("agent.preprocess.runtime._predict_mask", side_effect=predict):
+            actual, provider, fallback = runtime.predict_mask(Image.new("RGB", (800, 400)))
 
-        self.assertEqual(result["provider"], "gpu")
-        self.assertIsNone(rembg_preprocess._session)
+        self.assertEqual(actual.size, mask.size)
+        self.assertEqual(provider, "gpu")
+        self.assertIsNone(fallback)
+        self.assertIsNone(runtime._session)
         rembg_preprocess.reset_session()
 
 
@@ -302,11 +304,11 @@ class ModelDownloadTests(unittest.TestCase):
 
     def setUp(self) -> None:
         rembg_preprocess.reset_session()
-        rembg_preprocess._verified_model_signature = None
-        rembg_preprocess._set_download_state(
+        model_store._verified_model_signature = None
+        model_store._set_download_state(
             status="idle",
             downloaded_bytes=0,
-            total_bytes=rembg_preprocess.MODEL_BYTES,
+            total_bytes=model_store.MODEL_BYTES,
             error=None,
             integrity="unverified",
         )
@@ -322,15 +324,15 @@ class ModelDownloadTests(unittest.TestCase):
             return first_response
 
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "agent.rembg_preprocess.rembg_home", return_value=Path(temporary)
-        ), patch.object(rembg_preprocess, "MODEL_BYTES", len(payload)), patch.object(
-            rembg_preprocess, "MODEL_MD5", digest
+            "agent.preprocess.model_store.rembg_home", return_value=Path(temporary)
+        ), patch.object(model_store, "MODEL_BYTES", len(payload)), patch.object(
+            model_store, "MODEL_MD5", digest
         ), patch("urllib.request.urlopen", side_effect=first_urlopen):
             with self.assertRaisesRegex(RuntimeError, "可继续重试"):
-                rembg_preprocess.ensure_model_ready()
-            partial = rembg_preprocess.partial_model_path()
+                model_store.ensure_model_ready()
+            partial = model_store.partial_model_path()
             self.assertEqual(partial.read_bytes(), payload[:400])
-            self.assertTrue(rembg_preprocess._download_status()["resumable"])
+            self.assertTrue(model_store.download_status()["resumable"])
 
             def second_urlopen(request, timeout):
                 requests.append(request)
@@ -338,9 +340,9 @@ class ModelDownloadTests(unittest.TestCase):
                 return self.FakeResponse(payload[400:], status=206)
 
             with patch("urllib.request.urlopen", side_effect=second_urlopen):
-                path = rembg_preprocess.ensure_model_ready()
+                path = model_store.ensure_model_ready()
             self.assertEqual(path.read_bytes(), payload)
-            state = rembg_preprocess._download_status()
+            state = model_store.download_status()
             self.assertEqual(state["status"], "ready")
             self.assertEqual(state["integrity"], "verified")
             self.assertEqual(state["progress"], 1.0)
@@ -349,18 +351,18 @@ class ModelDownloadTests(unittest.TestCase):
         payload = b"complete partial model"
         digest = __import__("hashlib").md5(payload).hexdigest()
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "agent.rembg_preprocess.rembg_home", return_value=Path(temporary)
-        ), patch.object(rembg_preprocess, "MODEL_BYTES", len(payload)), patch.object(
-            rembg_preprocess, "MODEL_MD5", digest
+            "agent.preprocess.model_store.rembg_home", return_value=Path(temporary)
+        ), patch.object(model_store, "MODEL_BYTES", len(payload)), patch.object(
+            model_store, "MODEL_MD5", digest
         ):
-            partial = rembg_preprocess.partial_model_path()
+            partial = model_store.partial_model_path()
             partial.parent.mkdir(parents=True, exist_ok=True)
             partial.write_bytes(payload)
             with patch("urllib.request.urlopen", side_effect=AssertionError("network should not be used")):
-                path = rembg_preprocess.ensure_model_ready()
+                path = model_store.ensure_model_ready()
             self.assertEqual(path.read_bytes(), payload)
             self.assertFalse(partial.exists())
-            self.assertEqual(rembg_preprocess._download_status()["integrity"], "verified")
+            self.assertEqual(model_store.download_status()["integrity"], "verified")
 
     def test_prepare_model_async_deduplicates_background_worker(self) -> None:
         import threading
@@ -376,14 +378,14 @@ class ModelDownloadTests(unittest.TestCase):
             return Path("fake.onnx")
 
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "agent.rembg_preprocess.rembg_home", return_value=Path(temporary)
-        ), patch("agent.rembg_preprocess.ensure_model_ready", side_effect=fake_prepare):
-            rembg_preprocess._prepare_thread = None
-            rembg_preprocess.prepare_model_async()
+            "agent.preprocess.model_store.rembg_home", return_value=Path(temporary)
+        ), patch("agent.preprocess.model_store.ensure_model_ready", side_effect=fake_prepare):
+            model_store._prepare_thread = None
+            model_store.prepare_model_async()
             self.assertTrue(started.wait(timeout=1))
-            first = rembg_preprocess._prepare_thread
-            rembg_preprocess.prepare_model_async()
-            second = rembg_preprocess._prepare_thread
+            first = model_store._prepare_thread
+            model_store.prepare_model_async()
+            second = model_store._prepare_thread
             self.assertIs(first, second)
             self.assertEqual(len(calls), 1)
             release.set()
@@ -394,18 +396,18 @@ class ModelDownloadTests(unittest.TestCase):
     def test_bad_checksum_deletes_completed_partial(self) -> None:
         payload = b"broken model bytes"
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "agent.rembg_preprocess.rembg_home", return_value=Path(temporary)
-        ), patch.object(rembg_preprocess, "MODEL_BYTES", len(payload)), patch.object(
-            rembg_preprocess, "MODEL_MD5", "0" * 32
+            "agent.preprocess.model_store.rembg_home", return_value=Path(temporary)
+        ), patch.object(model_store, "MODEL_BYTES", len(payload)), patch.object(
+            model_store, "MODEL_MD5", "0" * 32
         ), patch(
             "urllib.request.urlopen",
             return_value=self.FakeResponse(payload),
         ):
             with self.assertRaisesRegex(RuntimeError, "MD5"):
-                rembg_preprocess.ensure_model_ready()
-            self.assertFalse(rembg_preprocess.partial_model_path().exists())
-            self.assertFalse(rembg_preprocess.model_path().exists())
-            state = rembg_preprocess._download_status()
+                model_store.ensure_model_ready()
+            self.assertFalse(model_store.partial_model_path().exists())
+            self.assertFalse(model_store.model_path().exists())
+            state = model_store.download_status()
             self.assertEqual(state["status"], "failed")
             self.assertEqual(state["integrity"], "failed")
             self.assertFalse(state["resumable"])
