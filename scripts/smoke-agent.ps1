@@ -42,7 +42,7 @@ function Invoke-HttpAllowError {
 
 $process = Start-Process -FilePath $agent -PassThru -WindowStyle Hidden
 try {
-  $deadline = (Get-Date).AddSeconds(30)
+  $deadline = (Get-Date).AddSeconds(90)
   while (-not (Test-Path $handshake)) {
     if ($process.HasExited) { throw "本地代理在启动期间退出：$($process.ExitCode)" }
     if ((Get-Date) -ge $deadline) { throw "本地代理启动握手超时。" }
