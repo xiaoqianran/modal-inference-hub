@@ -24,6 +24,11 @@ jobs:
         with:
           components: rustfmt
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
       - name: 安装项目依赖
         run: |
           npm ci
@@ -40,6 +45,7 @@ jobs:
         run: |
           npm run build
           uv run python -m compileall -q agent
+          uv run python -m unittest discover -s tests -v
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
           cargo test --manifest-path src-tauri/Cargo.toml
           cargo check --manifest-path src-tauri/Cargo.toml
