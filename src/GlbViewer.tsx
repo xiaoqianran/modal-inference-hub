@@ -21,6 +21,7 @@ function disposeObject(root: THREE.Object3D) {
 
 export default function GlbViewer({ url }: { url: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const resetViewRef = useRef<() => void>(() => undefined);
   const [message, setMessage] = useState("正在加载 3D…");
 
   useEffect(() => {
@@ -29,7 +30,7 @@ export default function GlbViewer({ url }: { url: string }) {
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -39,6 +40,7 @@ export default function GlbViewer({ url }: { url: string }) {
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
+    controls.enablePan = false;
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x303040, 2.2));
     const key = new THREE.DirectionalLight(0xffffff, 3.2);
@@ -51,6 +53,27 @@ export default function GlbViewer({ url }: { url: string }) {
     let model: THREE.Object3D | null = null;
     let frame = 0;
     let disposed = false;
+    let renderUntil = 0;
+
+    const render = () => {
+      if (disposed || document.hidden) {
+        frame = 0;
+        return;
+      }
+      controls.update();
+      renderer.render(scene, camera);
+      if (performance.now() < renderUntil) frame = requestAnimationFrame(render);
+      else frame = 0;
+    };
+
+    const invalidate = (duration = 0) => {
+      renderUntil = Math.max(renderUntil, performance.now() + duration);
+      if (!frame) frame = requestAnimationFrame(render);
+    };
+
+    controls.addEventListener("start", () => invalidate(300));
+    controls.addEventListener("change", () => invalidate(250));
+    controls.addEventListener("end", () => invalidate(500));
 
     const resize = () => {
       const width = Math.max(host.clientWidth, 1);
@@ -58,6 +81,7 @@ export default function GlbViewer({ url }: { url: string }) {
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height, false);
+      invalidate();
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
@@ -86,33 +110,44 @@ export default function GlbViewer({ url }: { url: string }) {
         controls.minDistance = radius * 0.3;
         controls.maxDistance = radius * 8;
         controls.update();
+        resetViewRef.current = () => {
+          camera.position.set(radius * 1.45, radius * 0.9, radius * 1.45);
+          controls.target.set(0, 0, 0);
+          controls.update();
+          invalidate(400);
+        };
         setMessage("");
+        invalidate(400);
       },
-      undefined,
+      (event) => {
+        if (event.total > 0) setMessage(`正在加载 3D · ${Math.floor((event.loaded / event.total) * 100)}%`);
+      },
       () => setMessage("GLB 预览加载失败"),
     );
 
-    const render = () => {
-      controls.update();
-      renderer.render(scene, camera);
-      frame = requestAnimationFrame(render);
+    const handleVisibility = () => {
+      if (!document.hidden) invalidate(250);
     };
-    render();
+    document.addEventListener("visibilitychange", handleVisibility);
+    invalidate();
 
     return () => {
       disposed = true;
       cancelAnimationFrame(frame);
+      document.removeEventListener("visibilitychange", handleVisibility);
       observer.disconnect();
       controls.dispose();
       if (model) disposeObject(model);
       renderer.dispose();
       renderer.domElement.remove();
+      resetViewRef.current = () => undefined;
     };
   }, [url]);
 
   return (
     <div className="glb-viewer" ref={hostRef}>
       {message && <span className="viewer-message">{message}</span>}
+      {!message ? <button type="button" className="viewer-reset" onClick={() => resetViewRef.current()}>重置视角</button> : null}
       <span className="viewer-hint">拖动旋转 · 滚轮缩放</span>
     </div>
   );

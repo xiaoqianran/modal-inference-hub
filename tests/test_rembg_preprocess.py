@@ -30,7 +30,7 @@ class RembgPreprocessTests(unittest.TestCase):
         alpha = canonical.getchannel("A")
         self.assertEqual(alpha.getbbox(), (0, 256, 1024, 768))
         self.assertEqual(result["foreground_bbox"], [100, 100, 700, 400])
-        self.assertEqual(result["engine"], "birefnet-general")
+        self.assertEqual(result["engine"], "birefnet-general-lite")
         self.assertEqual(result["provider"], "cpu")
 
     def test_no_foreground_is_rejected(self) -> None:
@@ -154,17 +154,20 @@ class ProviderPreferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cpu 或 gpu"):
             rembg_preprocess.set_provider_preference("metal")
 
-    def test_gpu_session_activates_directml_provider_when_available(self) -> None:
+    def test_gpu_session_activates_cuda_provider_when_available(self) -> None:
         class Inner:
             @staticmethod
             def get_providers():
-                return ["DmlExecutionProvider", "CPUExecutionProvider"]
+                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
         class Session:
             inner_session = Inner()
 
         rembg_preprocess.reset_session()
-        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch("onnxruntime.get_available_providers", return_value=["DmlExecutionProvider", "CPUExecutionProvider"]), patch(
+        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
+            "onnxruntime.get_available_providers",
+            return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        ), patch("agent.rembg_preprocess._preload_cuda_runtime"), patch(
             "rembg.session_factory.new_session", return_value=Session()
         ):
             rembg_preprocess._get_session()
@@ -173,13 +176,11 @@ class ProviderPreferenceTests(unittest.TestCase):
         self.assertIsNone(current["fallback_reason"])
         rembg_preprocess.reset_session()
 
-    def test_directml_session_uses_required_session_options(self) -> None:
-        import onnxruntime as ort
-
+    def test_cuda_session_uses_provider_options_and_preloads_runtime(self) -> None:
         class Inner:
             @staticmethod
             def get_providers():
-                return ["DmlExecutionProvider", "CPUExecutionProvider"]
+                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
         class Session:
             inner_session = Inner()
@@ -187,20 +188,25 @@ class ProviderPreferenceTests(unittest.TestCase):
         captured = {}
 
         def fake_new_session(_model, *, sess_opts, providers):
-            captured["enable_mem_pattern"] = sess_opts.enable_mem_pattern
-            captured["execution_mode"] = sess_opts.execution_mode
+            captured["enable_cpu_mem_arena"] = sess_opts.enable_cpu_mem_arena
             captured["providers"] = list(providers)
             return Session()
 
         rembg_preprocess.reset_session()
+        preload = patch("agent.rembg_preprocess._preload_cuda_runtime")
         with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
             "onnxruntime.get_available_providers",
-            return_value=["DmlExecutionProvider", "CPUExecutionProvider"],
-        ), patch("rembg.session_factory.new_session", side_effect=fake_new_session):
+            return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        ), preload as preload_cuda, patch(
+            "rembg.session_factory.new_session", side_effect=fake_new_session
+        ):
             rembg_preprocess._get_session()
-        self.assertFalse(captured["enable_mem_pattern"])
-        self.assertEqual(captured["execution_mode"], ort.ExecutionMode.ORT_SEQUENTIAL)
-        self.assertEqual(captured["providers"][0], "DmlExecutionProvider")
+        self.assertFalse(captured["enable_cpu_mem_arena"])
+        self.assertEqual(captured["providers"][0][0], "CUDAExecutionProvider")
+        self.assertEqual(captured["providers"][0][1]["device_id"], 0)
+        self.assertEqual(captured["providers"][0][1]["cudnn_conv_use_max_workspace"], 0)
+        self.assertEqual(captured["providers"][0][1]["cudnn_conv_algo_search"], "HEURISTIC")
+        preload_cuda.assert_called_once()
         rembg_preprocess.reset_session()
 
     def test_gpu_session_failure_falls_back_to_cpu(self) -> None:
@@ -213,12 +219,57 @@ class ProviderPreferenceTests(unittest.TestCase):
             inner_session = Inner()
 
         rembg_preprocess.reset_session()
-        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch("onnxruntime.get_available_providers", return_value=["DmlExecutionProvider", "CPUExecutionProvider"]), patch(
-            "rembg.session_factory.new_session", side_effect=[RuntimeError("directml init failed"), Session()]
+        with patch("agent.rembg_preprocess.provider_preference", return_value="gpu"), patch(
+            "onnxruntime.get_available_providers",
+            return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        ), patch("agent.rembg_preprocess._preload_cuda_runtime"), patch(
+            "rembg.session_factory.new_session", side_effect=[RuntimeError("cuda init failed"), Session()]
         ):
             rembg_preprocess._get_session()
             self.assertEqual(rembg_preprocess._session_provider, "cpu")
-            self.assertIn("GPU 初始化失败", rembg_preprocess._session_fallback_reason or "")
+            self.assertIn("CUDA 初始化失败", rembg_preprocess._session_fallback_reason or "")
+        rembg_preprocess.reset_session()
+
+    def test_gpu_inference_decode_failure_releases_gpu_and_retries_on_cpu(self) -> None:
+        mask = Image.new("L", (16, 16), 255)
+
+        class GpuSession:
+            @staticmethod
+            def predict(_image):
+                raise UnicodeDecodeError("utf-8", b"\xc4", 0, 1, "invalid continuation byte")
+
+        class CpuSession:
+            @staticmethod
+            def predict(_image):
+                return [mask]
+
+        rembg_preprocess.reset_session()
+        rembg_preprocess._session = GpuSession()
+        rembg_preprocess._session_provider = "gpu"
+        with patch("agent.rembg_preprocess._new_cpu_session", return_value=CpuSession()):
+            result = rembg_preprocess._predict_mask(Image.new("RGB", (16, 16)))
+
+        self.assertEqual(result.getbbox(), (0, 0, 16, 16))
+        self.assertEqual(rembg_preprocess._session_provider, "cpu")
+        self.assertIn("显存不足或驱动执行失败", rembg_preprocess._session_fallback_reason or "")
+        rembg_preprocess.reset_session()
+
+    def test_process_releases_model_session_after_one_shot_inference(self) -> None:
+        mask = Image.new("L", (800, 400), 255)
+        source = io.BytesIO()
+        Image.new("RGB", (800, 400), (240, 240, 240)).save(source, "PNG")
+
+        def predict(_image):
+            rembg_preprocess._session = object()
+            rembg_preprocess._session_provider = "gpu"
+            return mask
+
+        rembg_preprocess.reset_session()
+        with patch("agent.rembg_preprocess._predict_mask", side_effect=predict):
+            result = rembg_preprocess.process(source.getvalue())
+
+        self.assertEqual(result["provider"], "gpu")
+        self.assertIsNone(rembg_preprocess._session)
         rembg_preprocess.reset_session()
 
 

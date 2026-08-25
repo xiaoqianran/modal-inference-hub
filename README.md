@@ -10,8 +10,8 @@ local machine                                    Modal cloud
 source image
     │
     ▼
-rembg / birefnet-general
-CPU or Windows DirectML GPU
+rembg / birefnet-general-lite
+CPU or Windows NVIDIA CUDA GPU
     │
     ▼
 Full RGBA
@@ -56,10 +56,10 @@ The original image, rembg matte, component selection, crop and canonicalization 
 ## Local preprocessing
 
 - Engine: `rembg`
-- Model: `birefnet-general`
+- Model: `birefnet-general-lite`
 - Default provider: CPU
-- Windows GPU provider: ONNXRuntime DirectML
-- DirectML can use compatible NVIDIA / AMD / Intel GPUs without bundling CUDA or cuDNN
+- Windows GPU provider: ONNXRuntime CUDA（cuDNN）
+- CUDA 随 Agent 打包 NVIDIA CUDA / cuDNN 运行库，仅支持 NVIDIA GPU
 - If GPU initialization fails, preprocessing falls back to CPU
 - Linux and macOS currently use CPU
 - Canonical contract: PNG, 1024×1024, 8-bit RGBA
@@ -69,7 +69,7 @@ Importing an image automatically creates a local project and starts preprocessin
 
 ### First-run model preparation
 
-`birefnet-general` is approximately 973 MB. The Agent owns the model download instead of leaving it as an opaque rembg operation.
+`birefnet-general-lite` is approximately 224 MB. The Agent owns the model download instead of leaving it as an opaque rembg operation.
 
 ```text
 idle
@@ -223,7 +223,7 @@ uv sync --locked --group dev --group build
 The committed lockfile is cross-platform. It resolves the platform-specific ONNXRuntime dependency as:
 
 ```text
-Windows  -> onnxruntime-directml 1.24.x
+Windows  -> onnxruntime-gpu[cuda,cudnn] 1.24.x
 Linux    -> onnxruntime 1.25.x
 macOS    -> onnxruntime 1.25.x
 ```

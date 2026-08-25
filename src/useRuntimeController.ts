@@ -272,7 +272,7 @@ export function useRuntimeController() {
         if (preprocessing.download.status === "ready" || preprocessing.download.status === "failed") break;
       }
       if (preprocessing.download.status === "ready") {
-        setNotice({ tone: "success", text: "birefnet-general 已下载并通过完整性校验" });
+        setNotice({ tone: "success", text: "birefnet-general-lite 已下载并通过完整性校验" });
       } else if (preprocessing.download.status === "failed") {
         setNotice({ tone: "error", text: preprocessing.download.error || "模型准备失败，可重试续传" });
       }

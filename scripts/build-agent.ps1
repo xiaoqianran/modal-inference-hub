@@ -66,7 +66,29 @@ try {
         --specpath $workDirectory `
         --paths $projectRoot `
         --collect-all rembg `
+        --copy-metadata pymatting `
         --collect-binaries onnxruntime `
+        --hidden-import nvidia.cublas `
+        --hidden-import nvidia.cuda_nvrtc `
+        --hidden-import nvidia.cuda_runtime `
+        --hidden-import nvidia.cudnn `
+        --hidden-import nvidia.cufft `
+        --hidden-import nvidia.curand `
+        --hidden-import nvidia.nvjitlink `
+        --collect-binaries nvidia.cublas `
+        --collect-binaries nvidia.cuda_nvrtc `
+        --collect-binaries nvidia.cuda_runtime `
+        --collect-binaries nvidia.cudnn `
+        --collect-binaries nvidia.cufft `
+        --collect-binaries nvidia.curand `
+        --collect-binaries nvidia.nvjitlink `
+        --copy-metadata nvidia-cublas-cu12 `
+        --copy-metadata nvidia-cuda-nvrtc-cu12 `
+        --copy-metadata nvidia-cuda-runtime-cu12 `
+        --copy-metadata nvidia-cudnn-cu12 `
+        --copy-metadata nvidia-cufft-cu12 `
+        --copy-metadata nvidia-curand-cu12 `
+        --copy-metadata nvidia-nvjitlink-cu12 `
         (Join-Path $projectRoot "agent\server.py")
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller 打包失败，退出码：$LASTEXITCODE"

@@ -1,14 +1,16 @@
 """Local-only image matting and canonicalization for modal-3D.
 
 The source image never leaves the machine during preprocessing. The active V1
-pipeline is intentionally small: rembg/birefnet-general produces one global
+pipeline is intentionally small: rembg/birefnet-general-lite produces one global
 alpha matte, then the foreground bounding box is letterboxed to the cloud
 contract (1024x1024, 8-bit RGBA PNG).
 """
 
 from __future__ import annotations
 
+import gc
 import hashlib
+import importlib
 from collections import OrderedDict
 import io
 import json
@@ -26,10 +28,10 @@ from PIL import Image, ImageOps
 
 from agent.storage import data_dir
 
-ENGINE = "birefnet-general"
-MODEL_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-epoch_244.onnx"
-MODEL_MD5 = "7a35a0141cbbc80de11d9c9a28f52697"
-MODEL_BYTES = 972_666_916
+ENGINE = "birefnet-general-lite"
+MODEL_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx"
+MODEL_MD5 = "4fab47adc4ff364be1713e97b7e66334"
+MODEL_BYTES = 224_005_088
 CANONICAL_SIZE = 1024
 _BBOX_ALPHA_THRESHOLD = 8
 _session_lock = threading.RLock()
@@ -48,7 +50,22 @@ _download_state = {
 _verified_model_signature: tuple[int, int] | None = None
 _session = None
 _session_provider: str | None = None
+_session_ort_provider: str | None = None
 _session_fallback_reason: str | None = None
+_session_release_timer: threading.Timer | None = None
+_CUDA_SESSION_IDLE_SECONDS = 60.0
+_cuda_runtime_lock = threading.Lock()
+_cuda_runtime_loaded = False
+_cuda_dll_directory_handles: list[object] = []
+_CUDA_PACKAGE_MODULES = (
+    "cublas",
+    "cuda_nvrtc",
+    "cuda_runtime",
+    "cudnn",
+    "cufft",
+    "curand",
+    "nvjitlink",
+)
 _selection_cache_lock = threading.RLock()
 _selection_cache: OrderedDict[str, tuple[Image.Image, np.ndarray, int]] = OrderedDict()
 _selection_cache_bytes = 0
@@ -278,17 +295,56 @@ def _available_ort_providers() -> list[str]:
 def available_providers() -> list[str]:
     providers = _available_ort_providers()
     result = ["cpu"] if "CPUExecutionProvider" in providers else []
-    if "DmlExecutionProvider" in providers or "CUDAExecutionProvider" in providers:
+    if "CUDAExecutionProvider" in providers:
         result.append("gpu")
     return result
 
 
 def reset_session() -> None:
-    global _session, _session_provider, _session_fallback_reason
+    global _session, _session_provider, _session_ort_provider, _session_fallback_reason
+    global _session_release_timer
     with _session_lock:
+        timer = _session_release_timer
+        _session_release_timer = None
+        session = _session
         _session = None
         _session_provider = None
+        _session_ort_provider = None
         _session_fallback_reason = None
+    if timer is not None:
+        timer.cancel()
+    # ONNX Runtime GPU providers own large native allocations.  Drop the
+    # last Python reference and collect outside the lock so switching providers
+    # releases those allocations promptly instead of waiting for a later GC.
+    del session
+    gc.collect()
+
+
+def _release_session_resources() -> None:
+    """Release model/native allocations while preserving last-run diagnostics."""
+    global _session, _session_release_timer
+    with _session_lock:
+        timer = _session_release_timer
+        _session_release_timer = None
+        session = _session
+        _session = None
+    if timer is not None:
+        timer.cancel()
+    del session
+    gc.collect()
+
+
+def _schedule_session_release() -> None:
+    """Keep a CUDA session briefly warm, then release its resident weights."""
+    global _session_release_timer
+    with _session_lock:
+        if _session_release_timer is not None:
+            _session_release_timer.cancel()
+        timer = threading.Timer(_CUDA_SESSION_IDLE_SECONDS, _release_session_resources)
+        timer.name = "modal-3d-rembg-session-release"
+        timer.daemon = True
+        _session_release_timer = timer
+        timer.start()
 
 
 def set_provider_preference(provider: str) -> dict:
@@ -361,7 +417,7 @@ def _verify_model(path: Path) -> None:
         raise RuntimeError(f"模型文件大小异常：{stat.st_size} / {MODEL_BYTES} bytes")
     actual = _md5(path)
     if actual != MODEL_MD5:
-        raise RuntimeError("birefnet-general 模型 MD5 校验失败")
+        raise RuntimeError(f"{ENGINE} 模型 MD5 校验失败")
     _verified_model_signature = signature
     _set_download_state(status="ready", integrity="verified", downloaded_bytes=stat.st_size, error=None)
 
@@ -430,7 +486,7 @@ def _download_model() -> Path:
             error=f"{type(exc).__name__}: {exc}",
             integrity="unverified",
         )
-        raise RuntimeError(f"birefnet-general 模型下载失败，可继续重试：{exc}") from exc
+        raise RuntimeError(f"{ENGINE} 模型下载失败，可继续重试：{exc}") from exc
 
     if not partial.is_file() or partial.stat().st_size != MODEL_BYTES:
         downloaded = partial.stat().st_size if partial.is_file() else 0
@@ -440,7 +496,7 @@ def _download_model() -> Path:
             error=f"下载不完整：{downloaded} / {MODEL_BYTES} bytes",
             integrity="unverified",
         )
-        raise RuntimeError("birefnet-general 模型下载不完整，可继续重试")
+        raise RuntimeError(f"{ENGINE} 模型下载不完整，可继续重试")
 
     _set_download_state(status="verifying", downloaded_bytes=MODEL_BYTES, integrity="verifying", error=None)
     try:
@@ -452,7 +508,7 @@ def _download_model() -> Path:
                 error="MD5 校验失败；损坏的 partial 已删除",
                 integrity="failed",
             )
-            raise RuntimeError("birefnet-general 模型 MD5 校验失败，已删除损坏下载")
+            raise RuntimeError(f"{ENGINE} 模型 MD5 校验失败，已删除损坏下载")
         partial.replace(model)
         _verify_model(model)
     except Exception:
@@ -538,9 +594,71 @@ def _available_cpu_threads() -> int:
     return max(1, min(8, available))
 
 
+def _session_options(ort):
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = _available_cpu_threads()
+    options.inter_op_num_threads = 1
+    # CPU fallback should return its arena allocations to Windows after the
+    # one-shot preprocessing request rather than keeping the RAM high-water
+    # mark for the lifetime of the desktop app.
+    options.enable_cpu_mem_arena = False
+    return options
+
+
+def _preload_cuda_runtime(ort) -> None:
+    """Load the CUDA/cuDNN DLLs shipped by the ONNX Runtime Python extras."""
+    global _cuda_runtime_loaded
+    with _cuda_runtime_lock:
+        if _cuda_runtime_loaded:
+            return
+
+        bin_directories: list[str] = []
+        for package_name in _CUDA_PACKAGE_MODULES:
+            package = importlib.import_module(f"nvidia.{package_name}")
+            for package_root in package.__path__:
+                binary_directory = Path(package_root) / "bin"
+                if binary_directory.is_dir():
+                    resolved = str(binary_directory.resolve())
+                    bin_directories.append(resolved)
+                    if os.name == "nt":
+                        _cuda_dll_directory_handles.append(os.add_dll_directory(resolved))
+
+        if not bin_directories:
+            raise RuntimeError("没有找到随应用安装的 NVIDIA CUDA/cuDNN DLL")
+
+        # cuDNN 9 loads split sub-libraries by filename at inference time.  Keep
+        # their directories in PATH as well as the Windows DLL directory list.
+        current_path = os.environ.get("PATH", "")
+        current_entries = {entry.casefold() for entry in current_path.split(os.pathsep) if entry}
+        missing = [entry for entry in bin_directories if entry.casefold() not in current_entries]
+        if missing:
+            os.environ["PATH"] = os.pathsep.join([*missing, current_path])
+
+        preload = getattr(ort, "preload_dlls", None)
+        if preload is not None:
+            # An empty directory tells ORT to load from NVIDIA's Python packages.
+            preload(directory="")
+        _cuda_runtime_loaded = True
+
+
+def _new_cpu_session():
+    import onnxruntime as ort
+    from rembg.session_factory import new_session
+
+    return new_session(
+        ENGINE,
+        sess_opts=_session_options(ort),
+        providers=["CPUExecutionProvider"],
+    )
+
+
 def _get_session():
-    global _session, _session_provider, _session_fallback_reason
+    global _session, _session_provider, _session_ort_provider, _session_fallback_reason
+    global _session_release_timer
     with _session_lock:
+        if _session_release_timer is not None:
+            _session_release_timer.cancel()
+            _session_release_timer = None
         if _session is not None:
             return _session
 
@@ -549,47 +667,115 @@ def _get_session():
         import onnxruntime as ort
         from rembg.session_factory import new_session
 
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = _available_cpu_threads()
-        options.inter_op_num_threads = 1
         preference = provider_preference()
         available = ort.get_available_providers()
         requested = ["CPUExecutionProvider"]
-        if preference == "gpu":
-            if "DmlExecutionProvider" in available:
-                requested = ["DmlExecutionProvider", "CPUExecutionProvider"]
-                options.enable_mem_pattern = False
-                options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            elif "CUDAExecutionProvider" in available:
-                requested = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            else:
-                _session_fallback_reason = "没有可用的 GPU ExecutionProvider，已回退 CPU"
-
         try:
+            if preference == "gpu":
+                if "CUDAExecutionProvider" in available:
+                    _preload_cuda_runtime(ort)
+                    requested = [
+                        (
+                            "CUDAExecutionProvider",
+                            {
+                                "device_id": 0,
+                                "do_copy_in_default_stream": 1,
+                                "cudnn_conv_algo_search": "HEURISTIC",
+                                "cudnn_conv_use_max_workspace": 0,
+                                "arena_extend_strategy": "kSameAsRequested",
+                                "use_tf32": 1,
+                            },
+                        ),
+                        "CPUExecutionProvider",
+                    ]
+                else:
+                    _session_fallback_reason = "没有可用的 CUDA ExecutionProvider，已回退 CPU"
+            options = _session_options(ort)
             _session = new_session(ENGINE, sess_opts=options, providers=requested)
             actual = list(_session.inner_session.get_providers())
-            _session_provider = "gpu" if any(
-                provider in actual for provider in ("DmlExecutionProvider", "CUDAExecutionProvider")
-            ) else "cpu"
+            _session_ort_provider = actual[0] if actual else None
+            _session_provider = "gpu" if "CUDAExecutionProvider" in actual else "cpu"
             if preference == "gpu" and _session_provider != "gpu":
-                _session_fallback_reason = "GPU provider 初始化后未激活，已回退 CPU"
+                _session_fallback_reason = "CUDA provider 初始化后未激活，已回退 CPU"
         except Exception as exc:
             if preference != "gpu":
                 raise
-            _session_fallback_reason = f"GPU 初始化失败，已回退 CPU: {type(exc).__name__}"
-            _session = new_session(
-                ENGINE,
-                sess_opts=options,
-                providers=["CPUExecutionProvider"],
-            )
+            _session_fallback_reason = f"CUDA 初始化失败，已回退 CPU: {type(exc).__name__}"
+            _session = _new_cpu_session()
             _session_provider = "cpu"
+            _session_ort_provider = "CPUExecutionProvider"
         return _session
 
 
+def _predict_with_cuda_session(session, image: Image.Image) -> Image.Image:
+    """Run BiRefNet while returning CUDA arena scratch memory after each image."""
+    import onnxruntime as ort
+
+    run_options = ort.RunOptions()
+    run_options.add_run_config_entry("memory.enable_memory_arena_shrinkage", "gpu:0")
+    outputs = session.inner_session.run(
+        None,
+        session.normalize(
+            image,
+            (0.485, 0.456, 0.406),
+            (0.229, 0.224, 0.225),
+            (CANONICAL_SIZE, CANONICAL_SIZE),
+        ),
+        run_options,
+    )
+    prediction = session.sigmoid(outputs[0][:, 0, :, :])
+    maximum = np.max(prediction)
+    minimum = np.min(prediction)
+    if maximum > minimum:
+        prediction = (prediction - minimum) / (maximum - minimum)
+    prediction = np.squeeze(prediction)
+    mask = Image.fromarray((prediction * 255).astype("uint8"), mode="L")
+    return mask.resize(image.size, Image.Resampling.LANCZOS)
+
+
 def _predict_mask(image: Image.Image) -> Image.Image:
+    global _session, _session_provider, _session_ort_provider, _session_fallback_reason
     session = _get_session()
+    provider = _session_provider
+    gpu_failure: str | None = None
     with _inference_lock:
-        masks = session.predict(image.convert("RGB"))
+        try:
+            rgb = image.convert("RGB")
+            if _session_ort_provider == "CUDAExecutionProvider":
+                masks = [_predict_with_cuda_session(session, rgb)]
+            else:
+                masks = session.predict(rgb)
+        except Exception as exc:
+            if provider != "gpu":
+                if isinstance(exc, UnicodeDecodeError):
+                    raise RuntimeError(
+                        "本地推理失败，底层运行时返回了无法解码的 Windows 错误"
+                    ) from exc
+                raise
+            if isinstance(exc, UnicodeDecodeError):
+                gpu_failure = "CUDA 原生错误无法解码，通常是显存不足或驱动执行失败"
+            else:
+                gpu_failure = f"CUDA 执行失败（{type(exc).__name__}）"
+
+        if gpu_failure is not None:
+            # A failed CUDA run can retain a large native GPU allocation.
+            # Destroy it before constructing the CPU session, otherwise the
+            # fallback itself may run the machine out of RAM.
+            session = None
+            _release_session_resources()
+            try:
+                session = _new_cpu_session()
+                _session = session
+                _session_provider = "cpu"
+                _session_ort_provider = "CPUExecutionProvider"
+                _session_fallback_reason = f"{gpu_failure}，已释放 GPU 并回退 CPU"
+                masks = session.predict(image.convert("RGB"))
+            except Exception as exc:
+                _release_session_resources()
+                raise RuntimeError(
+                    "CUDA 推理失败，CPU 回退也未能完成；"
+                    "请关闭占用内存的程序，或在设置中改用 CPU 后重试"
+                ) from exc
     if not masks:
         raise RuntimeError("rembg 未返回前景 Alpha 掩码")
     return masks[0].convert("L")
@@ -632,7 +818,18 @@ def process(data: bytes) -> dict:
     started = time.perf_counter()
     with Image.open(io.BytesIO(data)) as opened:
         source = ImageOps.exif_transpose(opened).convert("RGB")
-    mask = _predict_mask(source)
+    try:
+        mask = _predict_mask(source)
+        active_provider = _session_provider or provider_preference()
+        fallback_reason = _session_fallback_reason
+    finally:
+        if _session_ort_provider == "CUDAExecutionProvider":
+            # CUDA scratch arenas are shrunk after every run, so retaining the
+            # weights briefly gives sub-second warm inference without pinning the
+            # full peak allocation. Release the session after an idle minute.
+            _schedule_session_release()
+        else:
+            _release_session_resources()
     if mask.size != source.size:
         mask = mask.resize(source.size, Image.Resampling.LANCZOS)
 
@@ -668,8 +865,8 @@ def process(data: bytes) -> dict:
         "minimum_component_pixels": component_analysis["minimum_component_pixels"],
         "selected_component_ids": [item["id"] for item in component_analysis["components"]],
         "engine": ENGINE,
-        "provider": _session_provider or "cpu",
+        "provider": active_provider,
         "provider_preference": provider_preference(),
-        "fallback_reason": _session_fallback_reason,
+        "fallback_reason": fallback_reason,
         "elapsed_ms": elapsed_ms,
     }

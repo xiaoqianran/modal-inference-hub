@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RuntimeController } from "./useRuntimeController";
 
 type SettingsPage = "account" | "preprocess" | "advanced";
@@ -17,6 +17,47 @@ export default function SettingsPanel({
   controller: RuntimeController;
 }) {
   const [page, setPage] = useState<SettingsPage>("account");
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    const focusableSelector = "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])";
+    const frame = window.requestAnimationFrame(() => {
+      (dialog?.querySelector<HTMLElement>(focusableSelector) ?? dialog)?.focus();
+    });
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = [...dialog.querySelectorAll<HTMLElement>(focusableSelector)];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, [open]);
+
   if (!open) return null;
 
   const {
@@ -30,16 +71,22 @@ export default function SettingsPanel({
 
   return (
     <div className="settings-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="settings-shell" role="dialog" aria-modal="true" aria-label="设置">
+      <div ref={dialogRef} className="settings-shell" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1}>
         <aside className="settings-nav">
-          <div className="settings-brand"><strong>modal-3D</strong><small>Settings</small></div>
-          <button type="button" className={page === "account" ? "active" : ""} onClick={() => setPage("account")}><span>◈</span><div>Modal 账户<small>{modalConnected ? "已连接" : "未连接"}</small></div></button>
-          <button type="button" className={page === "preprocess" ? "active" : ""} onClick={() => setPage("preprocess")}><span>AI</span><div>本地预处理<small>{preprocessing?.engine ?? "rembg"}</small></div></button>
-          <button type="button" className={page === "advanced" ? "active" : ""} onClick={() => setPage("advanced")}><span>⋯</span><div>高级与诊断<small>{agent?.running ? "Agent 正常" : "Agent 停止"}</small></div></button>
+          <div className="settings-brand"><strong id="settings-title">设置</strong><small>modal-3D</small></div>
+          <button type="button" className={page === "account" ? "active" : ""} aria-current={page === "account" ? "page" : undefined} onClick={() => setPage("account")}><span>◈</span><div>Modal 账户<small>{modalConnected ? "已连接" : "未连接"}</small></div></button>
+          <button type="button" className={page === "preprocess" ? "active" : ""} aria-current={page === "preprocess" ? "page" : undefined} onClick={() => setPage("preprocess")}><span>AI</span><div>本地预处理<small>{preprocessing?.engine ?? "rembg"}</small></div></button>
+          <button type="button" className={page === "advanced" ? "active" : ""} aria-current={page === "advanced" ? "page" : undefined} onClick={() => setPage("advanced")}><span>⋯</span><div>高级与诊断<small>{agent?.running ? "Agent 正常" : "Agent 停止"}</small></div></button>
           <button type="button" className="settings-close" onClick={onClose}>关闭</button>
         </aside>
 
         <div className="settings-content">
+          {controller.notice ? (
+            <div className={`settings-notice ${controller.notice.tone}`} role="status">
+              <span>{controller.notice.text}</span>
+              <button type="button" onClick={controller.dismissNotice} aria-label="关闭提示">×</button>
+            </div>
+          ) : null}
           {page === "account" ? (
             <section className="settings-page">
               <div className="settings-page-title"><div><span className="eyebrow">Connection</span><h3>Modal 账户</h3><p>只用于发现 3D Worker、上传一次 Canonical RGBA 和提交生成任务。</p></div><Status ok={modalConnected}>{modalConnected ? "已连接" : "未连接"}</Status></div>
@@ -59,7 +106,7 @@ export default function SettingsPanel({
 
           {page === "preprocess" ? (
             <section className="settings-page">
-              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>使用 birefnet-general 在本机执行；可在 CPU / Windows GPU 之间切换，不调用云端预处理。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
+              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>默认使用 birefnet-general-lite 在本机执行；可在 CPU / Windows GPU 之间切换，不调用云端预处理。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
               <div className="provider-options">
                 <button
                   type="button"
@@ -78,12 +125,12 @@ export default function SettingsPanel({
                   onClick={() => void controller.changePreprocessProvider("gpu")}
                 >
                   <span className="provider-radio" />
-                  <div><strong>GPU</strong><p>Windows 使用 ONNXRuntime DirectML，本机 NVIDIA / AMD / Intel GPU 均可参与加速。</p></div>
+                  <div><strong>GPU</strong><p>Windows 使用 ONNXRuntime CUDA（cuDNN），仅 NVIDIA GPU 加速，运行库随 Agent 打包。</p></div>
                   <small className={preprocessing?.gpu_available ? "available" : ""}>{preprocessing?.gpu_available ? "已安装" : "未安装"}</small>
                 </button>
               </div>
               <div className="diagnostic-grid">
-                <div><span>引擎</span><strong>{preprocessing?.engine ?? "birefnet-general"}</strong></div>
+                <div><span>引擎</span><strong>{preprocessing?.engine ?? "birefnet-general-lite"}</strong></div>
                 <div><span>实际执行</span><strong>{preprocessing?.provider?.toUpperCase() ?? "CPU"}</strong></div>
                 <div><span>Canonical</span><strong>{preprocessing ? `${preprocessing.canonical_size}×${preprocessing.canonical_size}` : "1024×1024"}</strong></div>
                 <div><span>模型状态</span><strong>{preprocessing?.model_downloaded ? (preprocessing.download?.integrity === "verified" ? "已缓存 · 已校验" : "已缓存") : preprocessing?.download?.resumable ? "可断点续传" : "首次抠图自动下载"}</strong></div>
@@ -94,7 +141,7 @@ export default function SettingsPanel({
                 <div className="runtime-card">
                   <div className="runtime-card-head">
                     <div>
-                      <strong>birefnet-general 模型准备</strong>
+                      <strong>birefnet-general-lite 模型准备</strong>
                       <span>
                         {preprocessing.download.status === "downloading"
                           ? "正在下载"
