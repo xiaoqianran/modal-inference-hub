@@ -340,6 +340,17 @@ export const probeAgent = (info: AgentInfo) =>
   request(info, "/health", {}, 5_000).then((response) => response.json() as Promise<{ ok: boolean }>);
 export const modalStatus = (info: AgentInfo) => json<{ connected: boolean }>(info, "/modal/status");
 
+export const getRembgDeployStatus = (info: AgentInfo) =>
+  json<{ deployed: boolean }>(info, "/modal/deploy/rembg");
+
+export const deployRembg = (info: AgentInfo) =>
+  json<{ ok: boolean; app: string; redeploy: boolean; web_url: string }>(
+    info,
+    "/modal/deploy/rembg",
+    { method: "POST" },
+    600_000,
+  );
+
 export const connectModal = (info: AgentInfo, credentials: ModalCredentials) =>
   json<{ ok: boolean }>(info, "/modal/connect", {
     method: "POST",
