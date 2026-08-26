@@ -20,31 +20,77 @@ def _png_bytes(image: Image.Image) -> bytes:
 
 
 class ExecutionPreferenceTests(unittest.TestCase):
-    def test_default_is_cloud(self) -> None:
+    def test_default_is_auto(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "agent.storage.data_dir", return_value=Path(temporary)
+            "agent.rembg_preprocess.data_dir", return_value=Path(temporary)
         ):
-            self.assertEqual(rembg_preprocess.execution_preference(), "cloud")
+            self.assertEqual(rembg_preprocess.execution_preference(), "auto")
 
     def test_set_and_persist_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "agent.storage.data_dir", return_value=Path(temporary)
+            "agent.rembg_preprocess.data_dir", return_value=Path(temporary)
         ):
             rembg_preprocess.set_execution_preference("local")
             self.assertEqual(rembg_preprocess.execution_preference(), "local")
             rembg_preprocess.set_execution_preference("cloud")
             self.assertEqual(rembg_preprocess.execution_preference(), "cloud")
+            rembg_preprocess.set_execution_preference("auto")
+            self.assertEqual(rembg_preprocess.execution_preference(), "auto")
+
+    def test_auto_resolves_to_local_when_gpu_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.rembg_preprocess.data_dir", return_value=Path(temporary)
+        ), patch(
+            "agent.rembg_preprocess.available_providers", return_value=["cpu", "gpu"]
+        ):
+            self.assertEqual(rembg_preprocess.execution_preference(), "auto")
+            self.assertEqual(rembg_preprocess.resolved_execution(), "local")
+
+    def test_auto_resolves_to_cloud_without_gpu(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.rembg_preprocess.data_dir", return_value=Path(temporary)
+        ), patch(
+            "agent.rembg_preprocess.available_providers", return_value=["cpu"]
+        ):
+            self.assertEqual(rembg_preprocess.resolved_execution(), "cloud")
+
+    def test_explicit_choice_overrides_gpu_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.rembg_preprocess.data_dir", return_value=Path(temporary)
+        ), patch(
+            "agent.rembg_preprocess.available_providers", return_value=["cpu", "gpu"]
+        ):
+            rembg_preprocess.set_execution_preference("cloud")
+            self.assertEqual(rembg_preprocess.resolved_execution(), "cloud")
+            rembg_preprocess.set_execution_preference("local")
+            self.assertEqual(rembg_preprocess.resolved_execution(), "local")
 
     def test_invalid_execution_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "cloud 或 local"):
+        with self.assertRaisesRegex(ValueError, "auto、cloud 或 local"):
             rembg_preprocess.set_execution_preference("hybrid")
+
+    def test_resolved_execution_auto_prefers_local_gpu(self) -> None:
+        with patch("agent.rembg_preprocess.execution_preference", return_value="auto"), patch(
+            "agent.rembg_preprocess.available_providers", return_value=["cpu", "gpu"]
+        ):
+            self.assertEqual(rembg_preprocess.resolved_execution(), "local")
+
+    def test_resolved_execution_auto_falls_back_to_cloud(self) -> None:
+        with patch("agent.rembg_preprocess.execution_preference", return_value="auto"), patch(
+            "agent.rembg_preprocess.available_providers", return_value=["cpu"]
+        ):
+            self.assertEqual(rembg_preprocess.resolved_execution(), "cloud")
+
+    def test_resolved_execution_honours_explicit_choice(self) -> None:
+        with patch("agent.rembg_preprocess.execution_preference", return_value="cloud"):
+            self.assertEqual(rembg_preprocess.resolved_execution(), "cloud")
 
 
 class CloudProcessTests(unittest.TestCase):
-    def _payload(self, rgba: Image.Image) -> dict:
+    def _payload(self, mask: Image.Image) -> dict:
         return {
-            "matte_bytes_b64": base64.b64encode(_png_bytes(rgba)).decode("ascii"),
-            "source_size": [rgba.width, rgba.height],
+            "mask_bytes_b64": base64.b64encode(_png_bytes(mask)).decode("ascii"),
+            "source_size": [mask.width, mask.height],
             "engine": "birefnet-general-lite",
             "elapsed_ms": 12.3,
         }
@@ -53,9 +99,9 @@ class CloudProcessTests(unittest.TestCase):
         return _png_bytes(Image.new("RGB", (64, 64), (240, 240, 240)))
 
     def test_cloud_process_decodes_artifacts(self) -> None:
-        rgba = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        rgba.paste((220, 40, 40, 255), (0, 0, 64, 64))
-        payload = self._payload(rgba)
+        # A full-foreground L mask so component analysis finds one object.
+        mask = Image.new("L", (64, 64), 255)
+        payload = self._payload(mask)
 
         class Response:
             def __enter__(self):
@@ -75,7 +121,7 @@ class CloudProcessTests(unittest.TestCase):
         self.assertEqual(result["provider"], "cloud")
         self.assertEqual(result["execution"], "cloud")
         self.assertEqual(result["source_size"], [64, 64])
-        # canonical/component analysis is derived locally from the matte.
+        # canonical/component analysis is derived locally from the mask.
         self.assertEqual(result["component_count"], 1)
         self.assertEqual(result["selected_component_ids"], ["cc-00001"])
         canonical = Image.open(io.BytesIO(result["canonical_bytes"]))

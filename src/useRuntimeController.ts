@@ -306,17 +306,18 @@ export function useRuntimeController() {
     }
   }, [agent, begin, finish]);
 
-  const changePreprocessExecution = useCallback(async (execution: "cloud" | "local") => {
+  const changePreprocessExecution = useCallback(async (execution: "auto" | "cloud" | "local") => {
     if (!agent?.running || !begin("provider")) return;
     try {
       const preprocessing = await setPreprocessExecution(agent, execution);
       setRuntime((current) => current ? { ...current, preprocessing: { ...preprocessing, kind: "rembg" } } : current);
-      setNotice({
-        tone: "success",
-        text: execution === "cloud"
+      const resolved = preprocessing.resolved_execution;
+      const text = execution === "auto"
+        ? `已设为自动：${resolved === "local" ? "检测到 NVIDIA GPU，将在本机抠图" : "未检测到 NVIDIA GPU，将使用云端抠图"}`
+        : execution === "cloud"
           ? "已切换到云端抠图，本机无需 GPU 或模型下载"
-          : "已切换到本地抠图，将在本机准备并运行 rembg 模型",
-      });
+          : "已切换到本地抠图，将在本机准备并运行 rembg 模型";
+      setNotice({ tone: "success", text });
     } catch (error) {
       setNotice({ tone: "error", text: errorText(error) });
     } finally {

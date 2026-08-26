@@ -98,7 +98,8 @@ export type PreprocessRuntimeStatus = {
   canonical_size: number;
   cpu_threads: number;
   local_only: boolean;
-  execution: "cloud" | "local";
+  execution: "auto" | "cloud" | "local";
+  resolved_execution: "cloud" | "local";
   cloud_connected: boolean;
 };
 
@@ -479,7 +480,7 @@ export const setPreprocessProvider = (
 
 export const setPreprocessExecution = (
   info: AgentInfo,
-  execution: "cloud" | "local",
+  execution: "auto" | "cloud" | "local",
 ) =>
   json<PreprocessRuntimeStatus>(info, "/v1/preprocess/execution", {
     method: "POST",

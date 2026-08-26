@@ -120,17 +120,27 @@ export default function SettingsPanel({
 
           {page === "preprocess" ? (
             <section className="settings-page">
-              <div className="settings-page-title"><div><span className="eyebrow">抠图预处理</span><h3>rembg 全局显著性抠图</h3><p>选择抠图在云端还是本机执行。云端无需 GPU 或模型下载即可使用；本地模式可完全离线，需要准备模型。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing?.execution === "cloud" ? "云端" : preprocessing ? "本地" : "待检测"}</Status></div>
+              <div className="settings-page-title"><div><span className="eyebrow">抠图预处理</span><h3>rembg 全局显著性抠图</h3><p>默认自动：检测到 NVIDIA GPU 就在本机离线抠图，否则使用云端。也可以手动固定为云端或本地。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing?.resolved_execution === "local" ? "本地" : preprocessing?.resolved_execution === "cloud" ? "云端" : "待检测"}</Status></div>
 
               <div className="provider-options" role-label="执行位置">
                 <button
                   type="button"
-                  className={preprocessing?.execution !== "local" ? "selected" : ""}
+                  className={preprocessing?.execution !== "cloud" && preprocessing?.execution !== "local" ? "selected" : ""}
+                  disabled={!agent?.running || busy}
+                  onClick={() => void controller.changePreprocessExecution("auto")}
+                >
+                  <span className="provider-radio" />
+                  <div><strong>自动（推荐）</strong><p>检测到 NVIDIA GPU 就在本机抠图；没有则用云端，无需 GPU 或下载模型。</p></div>
+                  <small className="available">{preprocessing?.resolved_execution === "local" ? "当前：本地" : preprocessing?.resolved_execution === "cloud" ? "当前：云端" : "检测中"}</small>
+                </button>
+                <button
+                  type="button"
+                  className={preprocessing?.execution === "cloud" ? "selected" : ""}
                   disabled={!agent?.running || busy}
                   onClick={() => void controller.changePreprocessExecution("cloud")}
                 >
                   <span className="provider-radio" />
-                  <div><strong>云端抠图</strong><p>在 Modal T4 上运行，本机无需 GPU、无需下载模型；只上传原图用于抠图。</p></div>
+                  <div><strong>云端抠图</strong><p>固定使用 Modal T4，本机无需 GPU、无需下载模型；只上传原图用于抠图。</p></div>
                   <small className={preprocessing?.cloud_connected ? "available" : ""}>{preprocessing?.cloud_connected ? "已连接" : "未连接"}</small>
                 </button>
                 <button
@@ -140,12 +150,12 @@ export default function SettingsPanel({
                   onClick={() => void controller.changePreprocessExecution("local")}
                 >
                   <span className="provider-radio" />
-                  <div><strong>本地抠图</strong><p>完全离线，在本机运行 rembg；首次使用需下载模型，可选 CPU 或 GPU。</p></div>
-                  <small className={preprocessing?.model_downloaded ? "available" : ""}>{preprocessing?.model_downloaded ? "模型已缓存" : "需下载模型"}</small>
+                  <div><strong>本地抠图</strong><p>固定完全离线，在本机运行 rembg；首次使用需下载模型，可选 CPU 或 GPU。</p></div>
+                  <small className={preprocessing?.gpu_available ? "available" : ""}>{preprocessing?.gpu_available ? "检测到 GPU" : "未检测到 GPU"}</small>
                 </button>
               </div>
 
-              {preprocessing?.execution === "local" ? (
+              {preprocessing?.resolved_execution === "local" ? (
               <>
               <div className="section-label" style={{ marginTop: 4 }}><span>本地执行后端</span></div>
               <div className="provider-options">
@@ -172,7 +182,7 @@ export default function SettingsPanel({
               </div>
               </>
               ) : null}
-              {preprocessing?.execution === "local" ? (
+              {preprocessing?.resolved_execution === "local" ? (
               <div className="diagnostic-grid">
                 <div><span>引擎</span><strong>{preprocessing?.engine ?? "birefnet-general-lite"}</strong></div>
                 <div><span>实际执行</span><strong>{preprocessing?.provider?.toUpperCase() ?? "CPU"}</strong></div>
@@ -190,7 +200,7 @@ export default function SettingsPanel({
                 <div className="wide"><span>说明</span><code>云端抠图只上传原图；标准化与组件分析仍在本机完成</code></div>
               </div>
               )}
-              {preprocessing?.execution === "local" && preprocessing?.download && preprocessing.download.status !== "ready" ? (
+              {preprocessing?.resolved_execution === "local" && preprocessing?.download && preprocessing.download.status !== "ready" ? (
                 <div className="runtime-card">
                   <div className="runtime-card-head">
                     <div>
@@ -220,7 +230,7 @@ export default function SettingsPanel({
               {preprocessing?.fallback_reason ? <div className="settings-explainer"><strong>Provider 回退</strong><p>{preprocessing.fallback_reason}</p></div> : null}
               <div className="settings-explainer"><strong>标准图规则</strong><p>rembg 只生成全局 Alpha；随后按前景联合包围盒严格保持高宽比，等比缩放并透明 Letterbox 到 1024×1024，作为 3D 生成的唯一上传内容。</p></div>
               <div className="settings-actions">
-                {preprocessing?.execution === "local" && (!preprocessing?.model_downloaded || preprocessing.download.integrity !== "verified") ? (
+                {preprocessing?.resolved_execution === "local" && (!preprocessing?.model_downloaded || preprocessing.download.integrity !== "verified") ? (
                   <button type="button" className="primary-button" disabled={!agent?.running || busy} onClick={() => void controller.prepareModel()}>
                     {active("model")
                       ? preprocessing?.download.status === "verifying" ? "校验中…" : "准备中…"

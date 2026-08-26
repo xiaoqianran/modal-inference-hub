@@ -241,7 +241,7 @@ function App() {
   async function runLocalPreprocess(target: Project) {
     if (!agent?.running) return;
     const preprocessing = runtimeController.runtime?.preprocessing;
-    const isCloud = preprocessing?.execution !== "local";
+    const isCloud = preprocessing?.resolved_execution !== "local";
     const cached = preprocessing?.model_downloaded;
     setWorkflowMessage(
       isCloud
@@ -666,7 +666,7 @@ function App() {
     ),
   );
   const stage = resultUrl && !resultOutdated ? 3 : canonical ? 2 : project ? 1 : 0;
-  const isCloudPreprocess = runtimeController.runtime?.preprocessing?.execution !== "local";
+  const isCloudPreprocess = runtimeController.runtime?.preprocessing?.resolved_execution !== "local";
   const preprocessHint = !project
     ? "选择 PNG / JPEG / WebP 后会自动抠图"
     : canonical
