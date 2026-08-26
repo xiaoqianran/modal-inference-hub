@@ -20,6 +20,14 @@ from typing import Iterator
 from agent import image_input
 from agent.storage import data_dir
 
+ACTIVE_GENERATION_STATUSES = frozenset({
+    "submitting",
+    "generating",
+    "running",
+    "connection_required",
+    "cancel_requested",
+})
+
 # Project 状态机（随工作流逐步推进）：
 #
 #   draft ──(local rembg + canonicalize)──► ready ──(generation)──► generating
@@ -168,10 +176,85 @@ class ProjectStore:
                 "canonical_sha256": "TEXT",
                 "canonical_remote_sha256": "TEXT",
                 "artifact_canonical_sha256": "TEXT",
+                "generation_request_id": "TEXT",
             }
             for name, definition in migrations.items():
                 if name not in columns:
                     db.execute(f"ALTER TABLE projects ADD COLUMN {name} {definition}")
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS project_generations (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    canonical_sha256 TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    profile TEXT NOT NULL,
+                    job_id TEXT NOT NULL UNIQUE,
+                    request_id TEXT,
+                    artifact_id TEXT,
+                    artifact_sha256 TEXT,
+                    artifact_bytes INTEGER,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            generation_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(project_generations)")
+            }
+            if "request_id" not in generation_columns:
+                db.execute("ALTER TABLE project_generations ADD COLUMN request_id TEXT")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS project_generations_project_updated "
+                "ON project_generations(project_id, updated_at DESC)"
+            )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS project_generations_project_request "
+                "ON project_generations(project_id, request_id) WHERE request_id IS NOT NULL"
+            )
+            # 将旧版 projects 表中唯一的生成结果迁移为第一条成果记录。
+            legacy = db.execute(
+                """
+                SELECT id, canonical_sha256, artifact_canonical_sha256, model, profile,
+                       job_id, artifact_id, artifact_sha256, artifact_bytes, status,
+                       error, created_at, updated_at
+                FROM projects WHERE job_id IS NOT NULL
+                """
+            ).fetchall()
+            for row in legacy:
+                status = "succeeded" if row[6] else row[9]
+                db.execute(
+                    """
+                    INSERT OR IGNORE INTO project_generations (
+                        id, project_id, canonical_sha256, model, profile, job_id,
+                        artifact_id, artifact_sha256, artifact_bytes, status, error,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"gen_{row[5]}", row[0], row[2] or row[1] or "unknown",
+                        row[3] or "unknown", row[4] or "recommended", row[5],
+                        row[6], row[7], row[8], status, row[10], row[11], row[12],
+                    ),
+                )
+
+    def recover_generation_claims(self) -> None:
+        """释放上次进程在远端任务绑定前遗留的提交占位。"""
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE projects
+                SET status = CASE
+                    WHEN artifact_id IS NOT NULL AND artifact_canonical_sha256 = canonical_sha256
+                    THEN 'succeeded' ELSE 'ready' END,
+                    generation_request_id = NULL, error = NULL, updated_at = ?
+                WHERE status = 'submitting'
+                """,
+                (now,),
+            )
 
     @staticmethod
     def _project(row: sqlite3.Row) -> Project:
@@ -223,9 +306,26 @@ class ProjectStore:
             ).fetchall()
         return [self._project(row).public() for row in rows]
 
+    def list_generations(self, project_id: str, limit: int = 50) -> list[dict]:
+        self.get(project_id)
+        with self._connect() as db:
+            rows = db.execute(
+                """
+                SELECT id, project_id, canonical_sha256, model, profile, job_id,
+                       artifact_id, artifact_sha256, artifact_bytes, status, error,
+                       created_at, updated_at
+                FROM project_generations
+                WHERE project_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (project_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def delete(self, project_id: str) -> dict:
         project = self.get(project_id)
-        if project["status"] in {"generating", "running", "connection_required", "cancel_requested"}:
+        if project["status"] in ACTIVE_GENERATION_STATUSES:
             raise ValueError("项目仍有远程任务活动，请先等待终态或完成取消")
 
         directory = self.assets / project_id
@@ -236,6 +336,7 @@ class ProjectStore:
             moved = True
         try:
             with self._connect() as db:
+                db.execute("DELETE FROM project_generations WHERE project_id = ?", (project_id,))
                 cursor = db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
                 if cursor.rowcount != 1:
                     raise KeyError(project_id)
@@ -409,39 +510,141 @@ class ProjectStore:
             canonical_remote_sha256=canonical_sha256,
         )
 
-    def record_generation(self, project_id: str, model: str, profile: str, job_id: str) -> dict:
+    def claim_generation(self, project_id: str, request_id: str) -> dict:
+        """原子占用项目的生成槽位。
+
+        同一个 request_id 在任务已经绑定后会返回已有 Job，便于 HTTP 重试保持幂等；
+        不同请求只能有一个把项目推进到 submitting。
+        """
+        now = datetime.now(UTC).isoformat()
+        active = tuple(ACTIVE_GENERATION_STATUSES)
+        placeholders = ", ".join("?" for _ in active)
+        with self._connect() as db:
+            cursor = db.execute(
+                f"""
+                UPDATE projects
+                SET status = 'submitting', generation_request_id = ?, error = NULL, updated_at = ?
+                WHERE id = ?
+                  AND status NOT IN ({placeholders})
+                  AND canonical_id IS NOT NULL
+                  AND canonical_sha256 IS NOT NULL
+                  AND canonical_bytes IS NOT NULL
+                  AND (generation_request_id IS NULL OR generation_request_id <> ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM project_generations
+                      WHERE project_id = ? AND request_id = ?
+                  )
+                """,
+                (request_id, now, project_id, *active, request_id, project_id, request_id),
+            )
+            row = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+            if row is None:
+                raise KeyError(project_id)
+            if cursor.rowcount == 1:
+                return {"claimed": True, "project": self._project(row).public(), "job_id": None}
+
+            generation = db.execute(
+                "SELECT job_id FROM project_generations WHERE project_id = ? AND request_id = ?",
+                (project_id, request_id),
+            ).fetchone()
+            if generation is not None:
+                return {
+                    "claimed": False,
+                    "project": self._project(row).public(),
+                    "job_id": generation[0],
+                }
+
+            current = dict(row)
+            if current.get("generation_request_id") == request_id:
+                job_id = None if current["status"] == "submitting" else current.get("job_id")
+                return {"claimed": False, "project": self._project(row).public(), "job_id": job_id}
+            if current["status"] in ACTIVE_GENERATION_STATUSES:
+                raise ValueError("该项目已有远程生成任务正在活动")
+            raise RuntimeError("项目尚无本地 Canonical RGBA")
+
+    def release_generation_claim(self, project_id: str, request_id: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE projects
+                SET status = CASE WHEN artifact_id IS NOT NULL THEN 'succeeded' ELSE 'ready' END,
+                    generation_request_id = NULL, error = NULL, updated_at = ?
+                WHERE id = ? AND status = 'submitting' AND generation_request_id = ?
+                """,
+                (now, project_id, request_id),
+            )
+
+    def record_generation(
+        self, project_id: str, model: str, profile: str, job_id: str, request_id: str
+    ) -> dict:
         canonical_sha256 = self.canonical_descriptor(project_id)["sha256"]
-        return self._update(
-            project_id,
-            model=model,
-            profile=profile,
-            job_id=job_id,
-            artifact_path=None,
-            artifact_id=None,
-            artifact_sha256=None,
-            artifact_bytes=None,
-            artifact_canonical_sha256=canonical_sha256,
-            status="generating",
-            error=None,
-        )
+        now = datetime.now(UTC).isoformat()
+        generation_id = f"gen_{uuid.uuid4().hex}"
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO project_generations (
+                    id, project_id, canonical_sha256, model, profile, job_id, request_id,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+                """,
+                (
+                    generation_id, project_id, canonical_sha256, model, profile, job_id,
+                    request_id, now, now,
+                ),
+            )
+            cursor = db.execute(
+                """
+                UPDATE projects SET
+                    model = ?, profile = ?, job_id = ?, artifact_path = NULL,
+                    artifact_id = NULL, artifact_sha256 = NULL, artifact_bytes = NULL,
+                    artifact_canonical_sha256 = ?, status = 'generating', error = NULL,
+                    updated_at = ?
+                WHERE id = ? AND status = 'submitting' AND generation_request_id = ?
+                """,
+                (model, profile, job_id, canonical_sha256, now, project_id, request_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("生成提交占用已失效")
+        return self.get(project_id)
 
     def record_job(self, job: dict) -> None:
         with self._connect() as db:
-            row = db.execute("SELECT id FROM projects WHERE job_id = ?", (job["id"],)).fetchone()
-        if row is None:
-            return
-        status = job["status"]
-        result = job.get("result")
-        artifact = result.get("artifact") if result else None
-        self._update(
-            row[0],
-            artifact_path=None,
-            artifact_id=artifact.get("id") if artifact else None,
-            artifact_sha256=artifact.get("sha256") if artifact else None,
-            artifact_bytes=artifact.get("bytes") if artifact else None,
-            status=status,
-            error=job.get("error"),
-        )
+            generation = db.execute(
+                "SELECT project_id FROM project_generations WHERE job_id = ?", (job["id"],)
+            ).fetchone()
+            if generation is None:
+                return
+            status = job["status"]
+            result = job.get("result")
+            artifact = result.get("artifact") if result else None
+            artifact_id = artifact.get("id") if artifact else None
+            artifact_sha256 = artifact.get("sha256") if artifact else None
+            artifact_bytes = artifact.get("bytes") if artifact else None
+            now = datetime.now(UTC).isoformat()
+            db.execute(
+                """
+                UPDATE project_generations SET
+                    artifact_id = ?, artifact_sha256 = ?, artifact_bytes = ?,
+                    status = ?, error = ?, updated_at = ?
+                WHERE job_id = ?
+                """,
+                (artifact_id, artifact_sha256, artifact_bytes, status, job.get("error"), now, job["id"]),
+            )
+            # 只有项目当前绑定的任务可以改变项目摘要；历史成果轮询不会覆盖新任务。
+            db.execute(
+                """
+                UPDATE projects SET
+                    artifact_path = NULL, artifact_id = ?, artifact_sha256 = ?,
+                    artifact_bytes = ?, status = ?, error = ?, updated_at = ?
+                WHERE id = ? AND job_id = ?
+                """,
+                (
+                    artifact_id, artifact_sha256, artifact_bytes, status,
+                    job.get("error"), now, generation[0], job["id"],
+                ),
+            )
 
     def _update(self, project_id: str, **values) -> dict:
         if not values:
@@ -459,3 +662,4 @@ class ProjectStore:
 
 
 projects = ProjectStore()
+projects.recover_generation_claims()

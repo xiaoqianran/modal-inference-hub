@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import struct
 import tempfile
+import threading
 import unittest
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from agent.projects import ProjectStore
@@ -34,13 +36,88 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def record_generation(
+        self, project_id: str, model: str, profile: str, job_id: str
+    ) -> dict:
+        request_id = f"request-{job_id}"
+        claim = self.store.claim_generation(project_id, request_id)
+        self.assertTrue(claim["claimed"])
+        return self.store.record_generation(project_id, model, profile, job_id, request_id)
+
     def test_active_generation_states_cannot_be_deleted(self) -> None:
-        for status in ("generating", "running", "connection_required", "cancel_requested"):
+        for status in (
+            "submitting",
+            "generating",
+            "running",
+            "connection_required",
+            "cancel_requested",
+        ):
             with self.subTest(status=status):
                 project = self.store.create(_png(), f"{status}.png")
                 self.store._update(project["id"], status=status)
                 with self.assertRaisesRegex(ValueError, "远程任务活动"):
                     self.store.delete(project["id"])
+
+    def test_generation_claim_is_atomic_and_idempotent(self) -> None:
+        project = self.store.create(_png(), "claim.png")
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_claim", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
+
+        first = self.store.claim_generation(project["id"], "request-claim-a")
+        self.assertTrue(first["claimed"])
+        self.assertEqual(first["project"]["status"], "submitting")
+
+        retry = self.store.claim_generation(project["id"], "request-claim-a")
+        self.assertFalse(retry["claimed"])
+        self.assertIsNone(retry["job_id"])
+        with self.assertRaisesRegex(ValueError, "已有远程生成任务"):
+            self.store.claim_generation(project["id"], "request-claim-b")
+
+        generated = self.store.record_generation(
+            project["id"], "model-a", "default", "job-claim", "request-claim-a"
+        )
+        self.assertEqual(generated["status"], "generating")
+        bound_retry = self.store.claim_generation(project["id"], "request-claim-a")
+        self.assertFalse(bound_retry["claimed"])
+        self.assertEqual(bound_retry["job_id"], "job-claim")
+
+        self.store._update(project["id"], status="succeeded")
+        terminal_retry = self.store.claim_generation(project["id"], "request-claim-a")
+        self.assertFalse(terminal_retry["claimed"])
+        self.assertEqual(terminal_retry["job_id"], "job-claim")
+
+    def test_concurrent_generation_claim_has_single_winner(self) -> None:
+        project = self.store.create(_png(), "concurrent-claim.png")
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_race", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
+        barrier = threading.Barrier(2)
+
+        def claim(request_id: str) -> bool:
+            barrier.wait()
+            try:
+                return bool(self.store.claim_generation(project["id"], request_id)["claimed"])
+            except ValueError:
+                return False
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(claim, ("request-race-a", "request-race-b")))
+
+        self.assertEqual(results.count(True), 1)
+        self.assertEqual(results.count(False), 1)
+
+    def test_unbound_generation_claim_is_recovered_after_restart(self) -> None:
+        project = self.store.create(_png(), "recover-claim.png")
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_recover", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
+        self.store.claim_generation(project["id"], "request-crashed")
+
+        restored = ProjectStore(Path(self.temp.name))
+        restored.recover_generation_claims()
+        self.assertEqual(restored.get(project["id"])["status"], "ready")
+        self.assertTrue(restored.claim_generation(project["id"], "request-retry")["claimed"])
 
     def test_local_canonical_is_saved_before_remote_upload(self) -> None:
         project = self.store.create(_png(), "source.png")
@@ -121,7 +198,7 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         canonical = _png(1024, 1024)
         first = {"id": "can_first", "sha256": "a" * 64, "bytes": len(canonical)}
         self.store.save_preprocessed(project["id"], _png(2, 2), canonical, first)
-        generated = self.store.record_generation(project["id"], "model-a", "default", "job-1")
+        generated = self.record_generation(project["id"], "model-a", "default", "job-1")
         self.assertEqual(generated["artifact_canonical_sha256"], first["sha256"])
         self.store._update(
             project["id"],
@@ -140,6 +217,49 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         self.assertEqual(updated["artifact_id"], "artifact-1")
         self.assertEqual(updated["artifact_canonical_sha256"], first["sha256"])
         self.assertEqual(updated["status"], "ready")
+
+    def test_project_keeps_multiple_generation_records(self) -> None:
+        project = self.store.create(_png(), "history.png")
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_history", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
+
+        self.record_generation(project["id"], "model-a", "fast", "job-a")
+        self.store.record_job({
+            "id": "job-a",
+            "status": "succeeded",
+            "result": {"artifact": {"id": "art-a", "sha256": "b" * 64, "bytes": 100}},
+            "error": None,
+        })
+        self.record_generation(project["id"], "model-b", "quality", "job-b")
+
+        generations = self.store.list_generations(project["id"])
+        self.assertEqual([item["job_id"] for item in generations], ["job-b", "job-a"])
+        self.assertEqual(generations[1]["artifact_id"], "art-a")
+        self.assertEqual(generations[1]["canonical_sha256"], descriptor["sha256"])
+
+    def test_existing_single_result_is_migrated_to_generation_history(self) -> None:
+        project = self.store.create(_png(), "migration.png")
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_migration", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
+        self.record_generation(project["id"], "model-a", "default", "job-old")
+        self.store.record_job({
+            "id": "job-old",
+            "status": "succeeded",
+            "result": {"artifact": {"id": "art-old", "sha256": "b" * 64, "bytes": 100}},
+            "error": None,
+        })
+        with self.store._connect() as db:
+            db.execute("DELETE FROM project_generations")
+
+        restored = ProjectStore(Path(self.temp.name))
+        generations = restored.list_generations(project["id"])
+
+        self.assertEqual(len(generations), 1)
+        self.assertEqual(generations[0]["job_id"], "job-old")
+        self.assertEqual(generations[0]["artifact_id"], "art-old")
+        self.assertEqual(generations[0]["status"], "succeeded")
 
     def test_legacy_sam_columns_are_ignored(self) -> None:
         project = self.store.create(_png(), "legacy.png")

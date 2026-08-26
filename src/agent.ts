@@ -177,6 +177,7 @@ export type Project = {
     | "draft"
     | "segmented"
     | "ready"
+    | "submitting"
     | "generating"
     | "running"
     | "connection_required"
@@ -216,6 +217,22 @@ export type GenerationJob = {
   error: string | null;
   error_code: string | null;
   retryable: boolean | null;
+};
+
+export type ProjectGeneration = {
+  id: string;
+  project_id: string;
+  canonical_sha256: string;
+  model: string;
+  profile: string;
+  job_id: string;
+  artifact_id: string | null;
+  artifact_sha256: string | null;
+  artifact_bytes: number | null;
+  status: Project["status"];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export const startAgent = () => invoke<AgentInfo>("agent_start");
@@ -317,6 +334,9 @@ export const listProjects = (info: AgentInfo) =>
 export const getProject = (info: AgentInfo, projectId: string) =>
   json<Project>(info, `/v1/projects/${projectId}`);
 
+export const listProjectGenerations = (info: AgentInfo, projectId: string) =>
+  json<ProjectGeneration[]>(info, `/v1/projects/${projectId}/generations`);
+
 export async function deleteProject(info: AgentInfo, projectId: string) {
   return (await request(info, `/v1/projects/${projectId}`, { method: "DELETE" })).json() as Promise<{ deleted: string }>;
 }
@@ -363,10 +383,11 @@ export const submitProjectGeneration = (
   projectId: string,
   model: string,
   profile: string,
+  requestId: string,
 ) =>
   json<{ project: Project; job: GenerationJob }>(info, `/v1/projects/${projectId}/generation`, {
     method: "POST",
-    body: JSON.stringify({ model, profile, seed: 42 }),
+    body: JSON.stringify({ request_id: requestId, model, profile, seed: 42 }),
   });
 
 export const getCapabilities = (info: AgentInfo) =>

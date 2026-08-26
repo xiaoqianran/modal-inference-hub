@@ -101,7 +101,7 @@ export default function PreprocessPanel({
       <div className="preprocess-grid">
         <figure className="image-stage">
           <figcaption>原图</figcaption>
-          {sourceUrl ? <img src={sourceUrl} alt="项目原图" /> : <div className="empty-preview"><span>PNG · JPEG · WebP</span><strong>导入图片开始</strong></div>}
+          {sourceUrl ? <img className="full-image" src={sourceUrl} alt="项目原图" /> : <div className="empty-preview"><span>PNG · JPEG · WebP</span><strong>导入图片开始</strong></div>}
         </figure>
         <figure className="image-stage checker component-stage">
           <figcaption>前景选择</figcaption>
@@ -138,7 +138,7 @@ export default function PreprocessPanel({
                 />
               ) : null}
             </svg>
-          ) : matteUrl ? <img src={matteUrl} alt="本地抠图结果" /> : <div className="empty-preview"><span>LOCAL REMBG</span><strong>等待本地抠图</strong></div>}
+          ) : matteUrl ? <img className="full-image" src={matteUrl} alt="本地抠图结果" /> : <div className="empty-preview"><span>LOCAL REMBG</span><strong>等待本地抠图</strong></div>}
         </figure>
       </div>
 
@@ -170,7 +170,7 @@ export default function PreprocessPanel({
 
       <div className="panel-actions">
         <button type="button" className="primary-button" disabled={busy || !project || !agentReady} onClick={onPreprocess}>
-          {busy ? "处理中…" : modelDownload?.status === "failed" ? modelDownload.resumable ? "续传并重试" : "重试抠图" : canonical ? "重新抠图" : "本地抠图"}
+          {busy ? "处理中…" : modelDownload?.status === "failed" ? modelDownload.resumable ? "续传并重试" : "准备 rembg" : canonical ? "重新运行 rembg" : "运行 rembg"}
         </button>
         <span>{hint}</span>
         {preprocessMeta ? <small className="process-meta">{preprocessMeta.provider.toUpperCase()} · {preprocessMeta.elapsed_ms.toFixed(0)} ms</small> : null}

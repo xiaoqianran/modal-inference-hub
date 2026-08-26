@@ -98,6 +98,9 @@ try {
   $projects = Invoke-RestMethod "$base/v1/projects" -Headers $headers
   if ($projects.Count -ne 1 -or $projects[0].id -ne $project.id) { throw "Project 列表未返回刚创建的项目。" }
 
+  $generations = Invoke-RestMethod "$base/v1/projects/$($project.id)/generations" -Headers $headers
+  if ($null -ne $generations -and @($generations).Count -ne 0) { throw "新 Project 的模型成果列表应为空。" }
+
   $deleted = Invoke-RestMethod "$base/v1/projects/$($project.id)" -Method Delete -Headers $headers
   if ($deleted.deleted -ne $project.id) { throw "Project 删除返回的 ID 不匹配。" }
   $missing = Invoke-HttpAllowError "$base/v1/projects/$($project.id)" "Get" $headers

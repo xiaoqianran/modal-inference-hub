@@ -38,6 +38,27 @@ fn random_token() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn client_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("MODAL_3D_AGENT_DATA_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    let tauri_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+    #[cfg(target_os = "windows")]
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+        let legacy = PathBuf::from(local_app_data).join("modal-3D-client");
+        let legacy_has_projects = legacy.join("projects.sqlite3").is_file();
+        let tauri_has_projects = tauri_data_dir.join("projects.sqlite3").is_file();
+        // 优先沿用已有数据库；两边都没有时使用 Agent 的稳定历史目录。
+        if legacy_has_projects || !tauri_has_projects {
+            return Ok(legacy);
+        }
+    }
+    Ok(tauri_data_dir)
+}
+
 #[derive(Serialize)]
 struct AppDiagnostics {
     version: String,
@@ -48,10 +69,7 @@ struct AppDiagnostics {
 #[tauri::command]
 async fn app_diagnostics(app: tauri::AppHandle) -> Result<AppDiagnostics, String> {
     async_runtime::spawn_blocking(move || {
-        let data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+        let data_dir = client_data_dir(&app)?;
         let state = app.state::<AgentState>();
         let agent_log = state
             .0
@@ -71,10 +89,7 @@ async fn app_diagnostics(app: tauri::AppHandle) -> Result<AppDiagnostics, String
 
 #[tauri::command]
 fn reveal_app_data(app: tauri::AppHandle) -> Result<(), String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+    let data_dir = client_data_dir(&app)?;
     fs::create_dir_all(&data_dir).map_err(|error| format!("无法创建客户端数据目录：{error}"))?;
     #[cfg(target_os = "windows")]
     Command::new("explorer.exe")
@@ -238,10 +253,7 @@ fn agent_start_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
     }
 
     let session_token = random_token();
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+    let data_dir = client_data_dir(app)?;
     fs::create_dir_all(&data_dir).map_err(|error| format!("无法创建客户端数据目录：{error}"))?;
     let handshake = std::env::temp_dir().join(format!(
         "modal-3d-agent-{}-{}.port",
@@ -406,10 +418,7 @@ async fn export_save(
         return Err("无效的导出 ID".into());
     }
 
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+    let data_dir = client_data_dir(&app)?;
     let source = data_dir.join("exports").join(format!("{export_id}.glb"));
     if !source.is_file() {
         return Err("导出缓存不存在，请重新生成导出文件".into());
@@ -437,7 +446,7 @@ async fn export_save(
     if target
         .extension()
         .and_then(|extension| extension.to_str())
-        .map_or(true, |extension| !extension.eq_ignore_ascii_case("glb"))
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("glb"))
     {
         target.set_extension("glb");
     }

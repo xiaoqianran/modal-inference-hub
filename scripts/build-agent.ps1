@@ -29,8 +29,21 @@ $outputRoot = Join-Path $projectRoot "src-tauri\binaries"
 $outputName = "modal-3d-agent-$TargetTriple"
 $outputDirectory = Join-Path $outputRoot $outputName
 $outputPath = Join-Path $outputDirectory "$outputName.exe"
+$legacyOutputPath = Join-Path $outputRoot "$outputName.exe"
 $workDirectory = Join-Path $projectRoot "build\pyinstaller"
 $hookDirectory = Join-Path $projectRoot "scripts\pyinstaller-hooks"
+
+# 0.3.x 的 onefile Agent 会在 binaries 根目录留下约 2 GiB 的旧 EXE。
+# 当前 Tauri 只打包 onedir 子目录，安全移除这个精确命名的历史生成物。
+if (Test-Path -LiteralPath $legacyOutputPath -PathType Leaf) {
+    $resolvedLegacy = (Resolve-Path -LiteralPath $legacyOutputPath).Path
+    $resolvedOutputRoot = (Resolve-Path -LiteralPath $outputRoot).Path
+    if ((Split-Path -Parent $resolvedLegacy) -ne $resolvedOutputRoot) {
+        throw "拒绝删除 binaries 目录之外的旧 Agent：$resolvedLegacy"
+    }
+    Remove-Item -LiteralPath $resolvedLegacy -Force
+    Write-Host "已清理旧 onefile Agent：$resolvedLegacy"
+}
 
 $inputPaths = @(
     (Join-Path $projectRoot "pyproject.toml"),

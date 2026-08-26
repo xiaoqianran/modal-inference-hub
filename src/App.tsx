@@ -8,6 +8,7 @@ import {
   getProjectComponents,
   getPreprocessStatus,
   jobArtifactBlob,
+  listProjectGenerations,
   listProjects,
   preprocessProject,
   projectSelectionBlob,
@@ -18,6 +19,7 @@ import {
   type ModelDownloadState,
   type PreprocessResult,
   type Project,
+  type ProjectGeneration,
 } from "./agent";
 import SettingsPanel from "./SettingsPanel";
 import { useRuntimeController } from "./useRuntimeController";
@@ -48,6 +50,8 @@ function App() {
   const [modelId, setModelId] = useState("");
   const [project, setProject] = useState<Project | null>(null);
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
+  const [generations, setGenerations] = useState<ProjectGeneration[]>([]);
+  const [selectedGenerationJobId, setSelectedGenerationJobId] = useState<string | null>(null);
   const [sourceUrl, replaceSourceUrl] = useObjectUrl();
   const [matteUrl, replaceMatteUrl] = useObjectUrl();
   const [canonical, setCanonical] = useState<CanonicalAsset | null>(null);
@@ -81,9 +85,26 @@ function App() {
     }
   }, [agent]);
 
-  const { job, resultJob, resultCanonicalSha, resetOutput, pollJob, restoreJob, generate, cancel, downloadResult } = useGenerationJob({
+  const refreshGenerations = useCallback(async (projectId: string) => {
+    if (!agent?.running) return;
+    try {
+      setGenerations(await listProjectGenerations(agent, projectId));
+    } catch {
+      // Generation history is auxiliary; the active job remains authoritative.
+    }
+  }, [agent]);
+
+  const handleResultReady = useCallback((jobId: string) => {
+    setSelectedGenerationJobId(jobId);
+  }, []);
+
+  const {
+    job, resultJob, resultCanonicalSha, submitting, resetOutput, pollJob, restoreJob,
+    restoreResult, generate, cancel, downloadResult,
+  } = useGenerationJob({
     agent, project, canonical, selectedModel, selectedProfile, modalConnected,
-    replaceResultUrl, setProject, refreshRecent, setWorkflowMessage,
+    replaceResultUrl, setProject, refreshRecent, refreshGenerations,
+    onResultReady: handleResultReady, setWorkflowMessage,
   });
 
   const restoreProject = useCallback(async (projectId: string) => {
@@ -100,16 +121,25 @@ function App() {
           ])
         : Promise.resolve([null, null] as const);
       const restoredJobPromise = value.job_id
-        ? getJob(agent, value.job_id).then(async (restored) => ({
-            restored,
-            artifact: restored.result ? await jobArtifactBlob(agent, restored.id).catch(() => null) : null,
-          }))
+        ? getJob(agent, value.job_id).catch(() => null)
         : Promise.resolve(null);
-      const [source, preview, jobData] = await Promise.all([
+      const [source, preview, projectGenerations, currentJob] = await Promise.all([
         projectSourceBlob(agent, value.id),
         previewPromise,
+        listProjectGenerations(agent, value.id),
         restoredJobPromise,
       ]);
+      const selectedGeneration = projectGenerations.find(
+        (item) => item.status === "succeeded" && Boolean(item.artifact_id),
+      );
+      const displayedJob = selectedGeneration
+        ? selectedGeneration.job_id === currentJob?.id
+          ? currentJob
+          : await getJob(agent, selectedGeneration.job_id).catch(() => null)
+        : null;
+      const displayedArtifact = displayedJob?.result
+        ? await jobArtifactBlob(agent, displayedJob.id).catch(() => null)
+        : null;
       if (requestId !== projectRequestRef.current) return;
 
       setProject(value);
@@ -118,17 +148,20 @@ function App() {
       setComponentState(preview[1]?.component_state ?? null);
       setSelectionHistory([]);
       setSelectionFuture([]);
+      setGenerations(projectGenerations);
+      setSelectedGenerationJobId(selectedGeneration?.job_id ?? null);
       replaceSourceUrl(source);
       replaceMatteUrl(preview[0]);
-      restoreJob(jobData?.restored ?? null, value.id, value.artifact_canonical_sha256);
-      replaceResultUrl(jobData?.artifact ?? null);
+      restoreJob(currentJob, value.id);
+      restoreResult(displayedJob, selectedGeneration?.canonical_sha256);
+      replaceResultUrl(displayedArtifact);
       if (value.model) setModelId(value.model);
-      if (jobData?.restored && jobIsActive(jobData.restored)) {
-        void pollJob(jobData.restored.id, value.id, value.canonical_sha256);
+      if (currentJob && jobIsActive(currentJob)) {
+        void pollJob(currentJob.id, value.id, value.canonical_sha256);
       }
       setWorkflowMessage(
-        jobData?.restored.result
-          ? "项目与 3D 结果已恢复。"
+        displayedJob?.result
+          ? `项目与 ${projectGenerations.length} 个模型成果已恢复。`
           : value.canonical_id
             ? "本地 Canonical 已恢复，可以继续生成。"
             : "原图已恢复，可以执行本地抠图。",
@@ -140,7 +173,7 @@ function App() {
     } finally {
       if (requestId === projectRequestRef.current) setBusy(false);
     }
-  }, [agent, pollJob, replaceMatteUrl, replaceResultUrl, replaceSourceUrl, restoreJob]);
+  }, [agent, pollJob, replaceMatteUrl, replaceResultUrl, replaceSourceUrl, restoreJob, restoreResult]);
 
   useEffect(() => {
     if (!modelId && models.length) {
@@ -243,6 +276,8 @@ function App() {
       setSelectionHistory([]);
       setSelectionFuture([]);
       setModelDownload(null);
+      setGenerations([]);
+      setSelectedGenerationJobId(null);
       resetOutput();
       replaceSourceUrl(file);
       replaceMatteUrl(null);
@@ -461,7 +496,7 @@ function App() {
 
   async function removeProject(value: Project) {
     if (!agent?.running) return;
-    if (["generating", "running", "connection_required", "cancel_requested"].includes(value.status)) {
+    if (["submitting", "generating", "running", "connection_required", "cancel_requested"].includes(value.status)) {
       setWorkflowMessage("该项目仍有远程任务活动，请先等待或取消。");
       return;
     }
@@ -476,6 +511,8 @@ function App() {
         setComponentState(null);
         setSelectionHistory([]);
         setSelectionFuture([]);
+        setGenerations([]);
+        setSelectedGenerationJobId(null);
         resetOutput();
         replaceSourceUrl(null);
         replaceMatteUrl(null);
@@ -483,6 +520,26 @@ function App() {
       await refreshRecent();
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function selectGeneration(value: ProjectGeneration) {
+    if (!agent?.running || !project || value.status !== "succeeded" || !value.artifact_id) return;
+    const requestId = projectRequestRef.current;
+    setBusy(true);
+    try {
+      const restored = await getJob(agent, value.job_id);
+      if (!restored.result) throw new Error("该模型成果尚无可用 GLB");
+      const artifact = await jobArtifactBlob(agent, value.job_id);
+      if (requestId !== projectRequestRef.current) return;
+      restoreResult(restored, value.canonical_sha256);
+      replaceResultUrl(artifact);
+      setSelectedGenerationJobId(value.job_id);
+      setWorkflowMessage("已切换到选中的模型成果。");
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -563,13 +620,16 @@ function App() {
               selectedProfile={selectedProfile}
               job={job}
               resultJob={resultJob}
-              busy={busy}
+              generations={generations}
+              selectedGenerationJobId={selectedGenerationJobId}
+              busy={busy || submitting}
               hint={generationHint}
               onSelectModel={(nextModelId) => {
                 setModelId(nextModelId);
               }}
               onGenerate={() => { if (!modalConnected) { setSettingsOpen(true); return; } void generate(); }}
               onCancel={() => { void cancel(); }}
+              onSelectGeneration={(value) => { void selectGeneration(value); }}
               onExport={() => { void downloadResult(project?.title); }}
               onOpenSettings={() => setSettingsOpen(true)}
             />
