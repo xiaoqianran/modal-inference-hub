@@ -240,15 +240,19 @@ function App() {
 
   async function runLocalPreprocess(target: Project) {
     if (!agent?.running) return;
-    const cached = runtimeController.runtime?.preprocessing.model_downloaded;
+    const preprocessing = runtimeController.runtime?.preprocessing;
+    const isCloud = preprocessing?.execution !== "local";
+    const cached = preprocessing?.model_downloaded;
     setWorkflowMessage(
-      cached
-        ? "正在本机执行 birefnet-general-lite 抠图…"
-        : "首次使用：正在准备 birefnet-general-lite 本地模型…",
+      isCloud
+        ? "正在云端执行抠图（本机无需模型）…"
+        : cached
+          ? "正在本机执行 birefnet-general-lite 抠图…"
+          : "首次使用：正在准备 birefnet-general-lite 本地模型…",
     );
 
     let timer: number | null = null;
-    let polling = !cached;
+    let polling = !isCloud && !cached;
     const updateDownload = async () => {
       if (!agent?.running || !polling) return;
       try {
@@ -662,11 +666,14 @@ function App() {
     ),
   );
   const stage = resultUrl && !resultOutdated ? 3 : canonical ? 2 : project ? 1 : 0;
+  const isCloudPreprocess = runtimeController.runtime?.preprocessing?.execution !== "local";
   const preprocessHint = !project
-    ? "选择 PNG / JPEG / WebP 后会自动本地抠图"
+    ? "选择 PNG / JPEG / WebP 后会自动抠图"
     : canonical
-      ? "本地抠图完成，原图仍未上传"
-      : "抠图失败时可在这里重试；首次使用会准备本地模型";
+      ? "抠图完成，原图仍未上传"
+      : isCloudPreprocess
+        ? "抠图失败时可在这里重试；当前使用云端执行"
+        : "抠图失败时可在这里重试；首次使用会准备本地模型";
   const generationHint = !canonical
     ? "先完成本地抠图"
     : !modalConnected

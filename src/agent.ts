@@ -98,6 +98,8 @@ export type PreprocessRuntimeStatus = {
   canonical_size: number;
   cpu_threads: number;
   local_only: boolean;
+  execution: "cloud" | "local";
+  cloud_connected: boolean;
 };
 
 export type RuntimeCapabilities = {
@@ -473,6 +475,15 @@ export const setPreprocessProvider = (
   json<PreprocessRuntimeStatus>(info, "/v1/preprocess/provider", {
     method: "POST",
     body: JSON.stringify({ provider }),
+  });
+
+export const setPreprocessExecution = (
+  info: AgentInfo,
+  execution: "cloud" | "local",
+) =>
+  json<PreprocessRuntimeStatus>(info, "/v1/preprocess/execution", {
+    method: "POST",
+    body: JSON.stringify({ execution }),
   });
 
 export const listModels = (info: AgentInfo) =>

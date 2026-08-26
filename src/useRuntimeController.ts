@@ -14,6 +14,7 @@ import {
   saveCredentials,
   preparePreprocessModel,
   revealAppData,
+  setPreprocessExecution,
   setPreprocessProvider,
   startAgent,
   stopAgent,
@@ -305,6 +306,24 @@ export function useRuntimeController() {
     }
   }, [agent, begin, finish]);
 
+  const changePreprocessExecution = useCallback(async (execution: "cloud" | "local") => {
+    if (!agent?.running || !begin("provider")) return;
+    try {
+      const preprocessing = await setPreprocessExecution(agent, execution);
+      setRuntime((current) => current ? { ...current, preprocessing: { ...preprocessing, kind: "rembg" } } : current);
+      setNotice({
+        tone: "success",
+        text: execution === "cloud"
+          ? "已切换到云端抠图，本机无需 GPU 或模型下载"
+          : "已切换到本地抠图，将在本机准备并运行 rembg 模型",
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: errorText(error) });
+    } finally {
+      finish("provider");
+    }
+  }, [agent, begin, finish]);
+
   const openDataDirectory = useCallback(async () => {
     try {
       await revealAppData();
@@ -341,6 +360,7 @@ export function useRuntimeController() {
     refresh,
     prepareModel,
     changePreprocessProvider,
+    changePreprocessExecution,
     openDataDirectory,
   };
 }
