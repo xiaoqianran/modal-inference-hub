@@ -662,3 +662,13 @@ def test_explicit_connector_pairing_secret_overrides_agent_session(tmp_path: Pat
         origin_header=ORIGIN,
     )
     assert paired["token"]
+
+
+def test_default_connector_origins_cover_cli_and_vite_dev(monkeypatch) -> None:
+    monkeypatch.delenv("MODAL_CONNECTOR_ALLOWED_ORIGINS", raising=False)
+    assert connector_allowed_origins() == (
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    )
