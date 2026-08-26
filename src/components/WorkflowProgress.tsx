@@ -10,17 +10,17 @@ type WorkflowProgressProps = {
 };
 
 const steps = [
-  { id: "source", index: "01", label: "原图", eyebrow: "SOURCE", target: "prepare" as const },
-  { id: "cutout", index: "02", label: "前景", eyebrow: "CUTOUT", target: "prepare" as const },
-  { id: "generate", index: "03", label: "生成", eyebrow: "REBUILD", target: "generate" as const },
-  { id: "result", index: "04", label: "结果", eyebrow: "OUTPUT", target: "generate" as const },
+  { id: "source", index: "1", label: "导入原图", eyebrow: "本地", target: "prepare" as const },
+  { id: "cutout", index: "2", label: "抠出前景", eyebrow: "本地", target: "prepare" as const },
+  { id: "generate", index: "3", label: "云端生成", eyebrow: "Modal", target: "generate" as const },
+  { id: "result", index: "4", label: "查看导出", eyebrow: "GLB", target: "generate" as const },
 ] as const;
 
 function stepMeta(index: number, stage: number, generationActive: boolean, generationCount: number, modelName?: string) {
-  if (index === 0) return stage >= 1 ? "本地已保存" : "等待导入";
-  if (index === 1) return stage >= 2 ? "Canonical ready" : stage >= 1 ? "等待 rembg" : "等待原图";
-  if (index === 2) return generationActive ? "云端运行中" : modelName || "选择模型";
-  return stage >= 3 ? `${generationCount || 1} 个模型版本` : generationCount ? `${generationCount} 个历史版本` : "等待 GLB";
+  if (index === 0) return stage >= 1 ? "已保存到本地" : "等待导入图片";
+  if (index === 1) return stage >= 2 ? "前景已就绪" : stage >= 1 ? "等待抠图" : "等待原图";
+  if (index === 2) return generationActive ? "云端生成中" : modelName || "选择模型";
+  return stage >= 3 ? `${generationCount || 1} 个模型版本` : generationCount ? `${generationCount} 个历史版本` : "等待生成";
 }
 
 export default function WorkflowProgress({
@@ -35,8 +35,7 @@ export default function WorkflowProgress({
     <section className="workflow-console" aria-label="项目工作流">
       <div className="workflow-console-head">
         <div>
-          <span className="workspace-kicker"><i /> PROJECT PIPELINE</span>
-          <strong>从原图到可导出的 3D 资产</strong>
+          <strong>从一张图片到可导出的 3D 模型</strong>
         </div>
         <p className="workflow-message" role="status" aria-live="polite">{message}</p>
       </div>

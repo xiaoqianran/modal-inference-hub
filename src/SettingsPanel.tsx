@@ -73,10 +73,10 @@ export default function SettingsPanel({
     <div className="settings-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={dialogRef} className="settings-shell" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1}>
         <aside className="settings-nav">
-          <div className="settings-brand"><strong id="settings-title">控制中心</strong><small>SYSTEM CONTROL</small></div>
-          <button type="button" className={page === "account" ? "active" : ""} aria-current={page === "account" ? "page" : undefined} onClick={() => setPage("account")}><span>CL</span><div>云端连接<small>{modalConnected ? "Modal 已连接" : "等待凭据"}</small></div></button>
-          <button type="button" className={page === "preprocess" ? "active" : ""} aria-current={page === "preprocess" ? "page" : undefined} onClick={() => setPage("preprocess")}><span>AI</span><div>本地 AI<small>{preprocessing?.provider?.toUpperCase() ?? preprocessing?.engine ?? "rembg"}</small></div></button>
-          <button type="button" className={page === "advanced" ? "active" : ""} aria-current={page === "advanced" ? "page" : undefined} onClick={() => setPage("advanced")}><span>DX</span><div>系统诊断<small>{agent?.running ? "Agent 正常" : "Agent 停止"}</small></div></button>
+          <div className="settings-brand"><strong id="settings-title">设置</strong><small>连接与系统</small></div>
+          <button type="button" className={page === "account" ? "active" : ""} aria-current={page === "account" ? "page" : undefined} onClick={() => setPage("account")}><span>云</span><div>云端连接<small>{modalConnected ? "Modal 已连接" : "等待凭据"}</small></div></button>
+          <button type="button" className={page === "preprocess" ? "active" : ""} aria-current={page === "preprocess" ? "page" : undefined} onClick={() => setPage("preprocess")}><span>AI</span><div>本地模型<small>{preprocessing?.provider?.toUpperCase() ?? preprocessing?.engine ?? "rembg"}</small></div></button>
+          <button type="button" className={page === "advanced" ? "active" : ""} aria-current={page === "advanced" ? "page" : undefined} onClick={() => setPage("advanced")}><span>诊</span><div>系统诊断<small>{agent?.running ? "本地服务正常" : "本地服务停止"}</small></div></button>
           <button type="button" className="settings-close" onClick={onClose}>关闭</button>
         </aside>
 
@@ -90,20 +90,20 @@ export default function SettingsPanel({
           <div className="command-status-overview" aria-label="系统状态">
             <div className={`command-status-card ${agent?.running ? "ok" : "warn"}`}>
               <i />
-              <span><small>LOCAL AGENT</small><strong>{agent?.running ? `127.0.0.1:${agent.port}` : "未启动"}</strong></span>
+              <span><small>本地服务</small><strong>{agent?.running ? `127.0.0.1:${agent.port}` : "未启动"}</strong></span>
             </div>
             <div className={`command-status-card ${preprocessing ? "ok" : "warn"}`}>
               <i />
-              <span><small>LOCAL AI</small><strong>{preprocessing ? `${preprocessing.provider.toUpperCase()} · ${preprocessing.gpu_warm ? "Warm" : "Ready"}` : "待检测"}</strong></span>
+              <span><small>本地模型</small><strong>{preprocessing ? `${preprocessing.provider.toUpperCase()} · ${preprocessing.gpu_warm ? "已预热" : "就绪"}` : "待检测"}</strong></span>
             </div>
             <div className={`command-status-card ${modalConnected ? "ok" : "warn"}`}>
               <i />
-              <span><small>MODAL CLOUD</small><strong>{modalConnected ? "Connected" : "Disconnected"}</strong></span>
+              <span><small>Modal 云</small><strong>{modalConnected ? "已连接" : "未连接"}</strong></span>
             </div>
           </div>
           {page === "account" ? (
             <section className="settings-page">
-              <div className="settings-page-title"><div><span className="eyebrow">Connection</span><h3>Modal 账户</h3><p>只用于发现 3D Worker、上传一次 Canonical RGBA 和提交生成任务。</p></div><Status ok={modalConnected}>{modalConnected ? "已连接" : "未连接"}</Status></div>
+              <div className="settings-page-title"><div><span className="eyebrow">云端连接</span><h3>Modal 账户</h3><p>只用于发现 3D Worker、上传一次标准化前景并提交生成任务。</p></div><Status ok={modalConnected}>{modalConnected ? "已连接" : "未连接"}</Status></div>
               <div className="settings-form">
                 <label><span>Token ID</span><input value={tokenId} onChange={(event) => setTokenId(event.target.value)} placeholder="ak-…" autoComplete="off" /></label>
                 <label><span>Token Secret</span><input type="password" value={tokenSecret} onChange={(event) => setTokenSecret(event.target.value)} placeholder="as-…" autoComplete="off" /></label>
@@ -120,7 +120,7 @@ export default function SettingsPanel({
 
           {page === "preprocess" ? (
             <section className="settings-page">
-              <div className="settings-page-title"><div><span className="eyebrow">Local preprocessing</span><h3>rembg 全局显著性抠图</h3><p>默认启用 Windows GPU，并在 Agent 启动后后台准备模型、常驻预热 CUDA Session；只有在这里明确切换到 CPU 才会关闭 GPU 预热。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
+              <div className="settings-page-title"><div><span className="eyebrow">本地预处理</span><h3>rembg 全局显著性抠图</h3><p>默认启用 Windows GPU，并在 Agent 启动后后台准备模型、常驻预热 CUDA Session；只有在这里明确切换到 CPU 才会关闭 GPU 预热。</p></div><Status ok={Boolean(preprocessing)}>{preprocessing ? "本地" : "待检测"}</Status></div>
               <div className="provider-options">
                 <button
                   type="button"
@@ -195,7 +195,7 @@ export default function SettingsPanel({
 
           {page === "advanced" ? (
             <section className="settings-page">
-              <div className="settings-page-title"><div><span className="eyebrow">Diagnostics</span><h3>高级与诊断</h3><p>{agentMessage}</p></div><Status ok={Boolean(agent?.running)}>{agent?.running ? "运行中" : "已停止"}</Status></div>
+              <div className="settings-page-title"><div><span className="eyebrow">系统诊断</span><h3>高级与诊断</h3><p>{agentMessage}</p></div><Status ok={Boolean(agent?.running)}>{agent?.running ? "运行中" : "已停止"}</Status></div>
               <div className="diagnostic-grid">
                 <div><span>客户端版本</span><strong>{controller.diagnostics?.version ?? "开发预览"}</strong></div>
                 <div><span>本地端口</span><strong>{agent?.port ? `127.0.0.1:${agent.port}` : "未监听"}</strong></div>
@@ -213,7 +213,7 @@ export default function SettingsPanel({
                 <div><span>跳到图像与前景</span><kbd>Alt 1</kbd></div>
                 <div><span>跳到 3D 重构</span><kbd>Alt 2</kbd></div>
                 <div><span>开始生成</span><kbd>Ctrl Enter</kbd></div>
-                <div><span>打开控制中心</span><kbd>Ctrl ,</kbd></div>
+                <div><span>打开设置</span><kbd>Ctrl ,</kbd></div>
                 <div><span>前景撤销 / 重做</span><kbd>Ctrl Z · Ctrl Shift Z</kbd></div>
               </div>
             </section>

@@ -98,7 +98,7 @@ function Thumbnail({ agent, item, large = false }: { agent: AgentInfo; item: Lib
 
   return (
     <div className={`gallery-thumbnail ${large ? "large" : ""}`}>
-      {url ? <img src={url} alt={item.project.source_name} draggable={false} /> : <span>IMAGE</span>}
+      {url ? <img src={url} alt={item.project.source_name} draggable={false} /> : <span>图片</span>}
     </div>
   );
 }
@@ -232,7 +232,7 @@ function Inspector({
   if (!item) {
     return (
       <aside className="gallery-inspector gallery-inspector-empty">
-        <span>INSPECTOR</span>
+        <span>详情</span>
         <strong>选择一张图片</strong>
         <p>查看它在不同 3D 模型下的生成状态与结果。</p>
       </aside>
@@ -242,14 +242,14 @@ function Inspector({
   return (
     <aside className="gallery-inspector">
       <div className="gallery-inspector-head">
-        <span>INSPECTOR</span>
+        <span>详情</span>
         <strong>{item.project.source_name}</strong>
         <small>导入于 {dateLabel(item.project.created_at)}</small>
       </div>
       <Thumbnail agent={agent} item={item} large />
       <div className="gallery-source-meta">
         <span><small>尺寸</small><strong>{item.project.source?.width ?? "—"} × {item.project.source?.height ?? "—"}</strong></span>
-        <span><small>状态</small><strong>{item.project.canonical_sha256 ? "已准备 Canonical" : "仅原图"}</strong></span>
+        <span><small>状态</small><strong>{item.project.canonical_sha256 ? "已抠图" : "仅原图"}</strong></span>
       </div>
 
       <div className="gallery-inspector-section">
@@ -278,9 +278,9 @@ function Inspector({
           </Suspense>
         ) : (
           <div className="gallery-viewer-message">
-            <span>{viewerState === "loading" ? "LOADING GLB" : state.label.toUpperCase()}</span>
+            <span>{viewerState === "loading" ? "载入中" : state.label}</span>
             <strong>{viewerState === "loading" ? "正在载入 3D 结果" : viewerState === "error" ? "本地产物不可用" : state.label}</strong>
-            {!generation?.is_current && generation ? <small>该结果来自旧的 Canonical，可查看但不代表当前对象选择。</small> : null}
+            {!generation?.is_current && generation ? <small>该结果来自旧的前景版本，可查看但不代表当前选择。</small> : null}
           </div>
         )}
       </div>
@@ -288,7 +288,7 @@ function Inspector({
       {generation ? (
         <div className={`gallery-generation-note ${state.tone}`}>
           <span><strong>{state.label}</strong><small>{generation.error || dateLabel(generation.updated_at)}</small></span>
-          {!generation.is_current ? <em>HISTORY</em> : null}
+          {!generation.is_current ? <em>历史</em> : null}
         </div>
       ) : null}
 
@@ -414,7 +414,7 @@ export default function Gallery({ agent, models, onOpenProject, onLibraryChanged
 
       <div className="gallery-toolbar">
         <div>
-          <span>LOCAL ASSET LIBRARY</span>
+          <span>本地资产图库</span>
           <h2>图库 <small>{library.total} 张图片</small></h2>
         </div>
         <div className="gallery-toolbar-actions">
@@ -439,7 +439,7 @@ export default function Gallery({ agent, models, onOpenProject, onLibraryChanged
           {loadError ? <div className="gallery-empty"><strong>图库读取失败</strong><span>{loadError}</span></div> : null}
           {!loadError && !loading && library.items.length === 0 ? (
             <div className="gallery-empty">
-              <span>DROP IMAGES HERE</span>
+              <span>松开导入图片</span>
               <strong>图库还是空的</strong>
               <p>导入 PNG、JPEG 或 WebP。图片只保存在本地，生成 3D 时才上传 Canonical。</p>
               <button type="button" className="primary-button" onClick={() => fileInputRef.current?.click()}>导入第一批图片</button>

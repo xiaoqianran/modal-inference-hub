@@ -80,29 +80,29 @@ export default function GenerationReviewDialog({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
-          <span className="workspace-kicker"><i /> GENERATION REVIEW</span>
-          <h2 id="generation-review-title">确认这次 3D 重构</h2>
-          <p>提交后会把当前 Canonical RGBA 上传到 Modal，并创建一个新的云端生成任务。</p>
+          <span className="workspace-kicker"><i /> 确认生成</span>
+          <h2 id="generation-review-title">确认这次 3D 生成</h2>
+          <p>提交后会把标准化前景上传到 Modal，创建一个新的云端生成任务。原图不会离开本机。</p>
         </header>
 
         <div className="generation-review-grid">
-          <div><small>PROJECT</small><strong>{project.title}</strong><span>{project.source_name}</span></div>
-          <div><small>MODEL</small><strong>{model.name}</strong><span>{model.output === "textured" ? "纹理输出" : "几何输出"} · ~{model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s warm</span></div>
-          <div><small>PROFILE</small><strong>{profile.name}</strong><span>参数模板 · {profile.id}</span></div>
-          <div><small>FOREGROUND</small><strong>{selectedComponents}/{componentCount || selectedComponents} components</strong><span>当前选择将固定进本次 Canonical</span></div>
-          <div><small>CANONICAL</small><strong>{fileSize(canonical.bytes)}</strong><span>SHA {canonical.sha256.slice(0, 12)}…</span></div>
-          <div><small>UPLOAD</small><strong>Canonical only</strong><span>不会上传原始图片；云端只接收当前标准化 PNG</span></div>
+          <div><small>项目</small><strong>{project.title}</strong><span>{project.source_name}</span></div>
+          <div><small>模型</small><strong>{model.name}</strong><span>{model.output === "textured" ? "带纹理输出" : "仅几何输出"} · 约 {model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s</span></div>
+          <div><small>参数</small><strong>{profile.name}</strong><span>参数模板 · {profile.id}</span></div>
+          <div><small>前景</small><strong>{selectedComponents}/{componentCount || selectedComponents} 个物体</strong><span>当前选择将固定进本次生成</span></div>
+          <div><small>标准图</small><strong>{fileSize(canonical.bytes)}</strong><span>SHA {canonical.sha256.slice(0, 12)}…</span></div>
+          <div><small>上传内容</small><strong>仅标准化前景</strong><span>不上传原始图片，云端只接收处理后的前景</span></div>
         </div>
 
         <div className="generation-review-note">
           <i />
-          <span><strong>这是一次新的远端任务。</strong><small>应用会使用新的 request_id 做本地幂等保护；提交结果不确定时不会自动重复提交。</small></span>
+          <span><strong>这是一次新的云端任务。</strong><small>应用会做本地幂等保护；提交结果不确定时不会自动重复提交，避免重复计费。</small></span>
         </div>
 
         <footer>
           <button type="button" className="quiet-button" disabled={busy} onClick={onCancel}>返回检查</button>
           <button type="button" className="primary-button" disabled={busy} onClick={onConfirm}>
-            {busy ? "正在提交…" : `确认 · 使用 ${model.name} 生成`}
+            {busy ? "正在提交…" : `确认 · 用 ${model.name} 生成`}
           </button>
         </footer>
       </section>

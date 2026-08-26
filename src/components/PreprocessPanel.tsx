@@ -112,19 +112,19 @@ export default function PreprocessPanel({
     >
       {dragActive ? (
         <div className="drop-overlay" aria-hidden="true">
-          <span>DROP IMAGE</span>
-          <strong>{sourceUrl ? "释放以替换当前原图" : "释放以创建新项目"}</strong>
-          <small>PNG · JPEG · WebP · 仍使用现有本地校验与 rembg 流程</small>
+          <span>松开导入图片</span>
+          <strong>{sourceUrl ? "替换当前原图" : "创建新项目"}</strong>
+          <small>支持 PNG · JPEG · WebP</small>
         </div>
       ) : null}
       <div className="panel-header">
         <div>
-          <span className="panel-step">01–02 · LOCAL PREP</span>
-          <h2 id="preprocess-title">图像与前景</h2>
-          <p className="panel-description">原图保持本地；完成 rembg 后生成标准化 Canonical。</p>
+          <span className="panel-step">第一步 · 本地处理</span>
+          <h2 id="preprocess-title">准备图像与前景</h2>
+          <p className="panel-description">原图只保存在本机；抠图后会生成上传用的标准化前景。</p>
         </div>
         <div className="panel-header-actions">
-          {canonical ? <span className="asset-badge ready">CANONICAL READY</span> : null}
+          {canonical ? <span className="asset-badge ready">前景已就绪</span> : null}
           <label className={`upload-button ${sourceUrl ? "secondary-upload" : ""} ${busy || !agentReady ? "disabled" : ""}`}>
             <input
               disabled={busy || !agentReady}
@@ -157,13 +157,24 @@ export default function PreprocessPanel({
           {sourceUrl ? <img className="full-image" src={sourceUrl} alt="项目原图" /> : (
             <div className="empty-preview import-empty-state">
               <span>PNG · JPEG · WebP</span>
-              <strong>拖入图片或点击“导入图片”</strong>
-              <small>原图仅保存在本机，导入后自动开始 rembg</small>
+              <strong>拖入图片或点击「导入图片」</strong>
+              <small>原图仅保存在本机，导入后自动开始本地抠图</small>
             </div>
           )}
         </figure>
-        <figure className="image-stage checker component-stage">
-          <figcaption>前景选择</figcaption>
+        <figure className="image-stage checker canonical-stage">
+          <figcaption>标准图 · 1024²</figcaption>
+          {canonical && matteUrl ? (
+            <img className="full-image" src={matteUrl} alt="标准化前景" />
+          ) : (
+            <div className="empty-preview">
+              <span>标准化</span>
+              <strong>{canonical ? "等待前景渲染" : "抠图后生成 1024×1024 标准图"}</strong>
+            </div>
+          )}
+        </figure>
+        <figure className="image-stage checker component-stage stage-wide">
+          <figcaption>前景选择 · 点击或框选物体</figcaption>
           {componentState ? (
             <div className="stage-tools" aria-label="前景预览工具">
               <button
@@ -226,17 +237,17 @@ export default function PreprocessPanel({
                 />
               ) : null}
             </svg>
-          ) : matteUrl ? <img className="full-image" src={matteUrl} alt="本地抠图结果" /> : <div className="empty-preview"><span>LOCAL REMBG</span><strong>等待本地抠图</strong></div>}
+          ) : matteUrl ? <img className="full-image" src={matteUrl} alt="本地抠图结果" /> : <div className="empty-preview"><span>前景选择</span><strong>抠图后可点选/框选物体</strong></div>}
         </figure>
       </div>
 
       {componentState ? (
         <div className="component-controls">
           <div className="selection-summary">
-            <span><small>SELECTED</small><strong>{selectedCount}/{componentState.component_count}</strong></span>
-            <span><small>FOREGROUND</small><strong>{preprocessMeta ? `${(preprocessMeta.foreground_ratio * 100).toFixed(1)}%` : "—"}</strong></span>
-            <span><small>SOURCE</small><strong>{componentState.source_size[0]}×{componentState.source_size[1]}</strong></span>
-            <span><small>CANONICAL</small><strong>{canonical ? "1024²" : "—"}</strong></span>
+            <span><small>已选物体</small><strong>{selectedCount}/{componentState.component_count}</strong></span>
+            <span><small>前景占比</small><strong>{preprocessMeta ? `${(preprocessMeta.foreground_ratio * 100).toFixed(1)}%` : "—"}</strong></span>
+            <span><small>原图尺寸</small><strong>{componentState.source_size[0]}×{componentState.source_size[1]}</strong></span>
+            <span><small>标准图</small><strong>{canonical ? "1024²" : "—"}</strong></span>
           </div>
           <div className="component-toolbar">
             <div><strong>{selectedCount}/{componentState.component_count} 个物体</strong><small>拖框选择 · Shift 追加 · Alt 移除</small></div>
@@ -264,7 +275,7 @@ export default function PreprocessPanel({
 
       <div className="panel-actions">
         <button type="button" className="primary-button" disabled={busy || !project || !agentReady} onClick={onPreprocess}>
-          {busy ? "处理中…" : modelDownload?.status === "failed" ? modelDownload.resumable ? "续传并重试" : "准备 rembg" : canonical ? "重新运行 rembg" : "运行 rembg"}
+          {busy ? "处理中…" : modelDownload?.status === "failed" ? modelDownload.resumable ? "续传并重试" : "准备本地模型" : canonical ? "重新抠图" : "开始抠图"}
         </button>
         <span>{hint}</span>
         {preprocessMeta ? <small className="process-meta">{preprocessMeta.provider.toUpperCase()} · {preprocessMeta.elapsed_ms.toFixed(0)} ms</small> : null}

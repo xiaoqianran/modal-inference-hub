@@ -72,7 +72,7 @@ function App() {
   const [selectionFuture, setSelectionFuture] = useState<string[][]>([]);
   const [resultUrl, replaceResultUrl] = useObjectUrl();
   const [workflowMessage, setWorkflowMessage] = useState(
-    "选择图片后，在本机完成 rembg 抠图和 Canonical 规范化。",
+    "选择图片后，在本机自动完成抠图并生成标准化前景。",
   );
   const { feedback, notify, dismiss: dismissFeedback } = useCommandFeedback();
   const [busy, setBusy] = useState(false);
@@ -124,7 +124,7 @@ function App() {
     notify({
       tone: "success",
       title: "3D 生成完成",
-      detail: "GLB 已回传到本机，可以检查视角、版本并导出。",
+      detail: "模型已回传到本机，可以检查视角、切换版本并导出。",
       action: {
         label: "查看结果",
         run: () => generationSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
@@ -203,8 +203,8 @@ function App() {
         displayedJob?.result
           ? `项目与 ${projectGenerations.length} 个模型成果已恢复。`
           : value.canonical_id
-            ? "本地 Canonical 已恢复，可以继续生成。"
-            : "原图已恢复，可以执行本地抠图。",
+            ? "本地标准化前景已恢复，可以继续生成。"
+            : "原图已恢复，可以开始本地抠图。",
       );
     } catch (error) {
       if (requestId === projectRequestRef.current) {
@@ -286,7 +286,7 @@ function App() {
       const matte = await projectSelectionBlob(agent, target.id);
       replaceMatteUrl(matte);
       setWorkflowMessage(
-        `本地抠图完成 · ${value.preprocess.provider.toUpperCase()} · ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
+        `本地抠图完成 · ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
       );
       notify({
         tone: "success",
@@ -328,7 +328,7 @@ function App() {
       resetOutput();
       replaceSourceUrl(file);
       replaceMatteUrl(null);
-      setWorkflowMessage("原图已保存在本机，正在自动开始 rembg 预处理…");
+      setWorkflowMessage("原图已保存在本机，正在自动开始本地抠图…");
       notify({
         tone: "info",
         title: "项目已创建",
@@ -347,7 +347,7 @@ function App() {
         title: retryProject ? "本地预处理失败" : "图片导入失败",
         detail: message,
         action: retryProject ? {
-          label: "重试 rembg",
+          label: "重试抠图",
           run: () => { void retryPreprocessTarget(retryProject); },
         } : undefined,
       }, 5_500);
@@ -666,14 +666,14 @@ function App() {
     ? "选择 PNG / JPEG / WebP 后会自动本地抠图"
     : canonical
       ? "本地抠图完成，原图仍未上传"
-      : "预处理失败时可在这里重试；首次使用会准备本地模型";
+      : "抠图失败时可在这里重试；首次使用会准备本地模型";
   const generationHint = !canonical
-    ? "先完成本地 rembg 预处理"
+    ? "先完成本地抠图"
     : !modalConnected
-      ? "Canonical 已准备好；连接 Modal 后再生成"
+      ? "前景已准备好；连接 Modal 后即可生成"
       : !selectedModel
         ? "暂无可用模型"
-        : "点击生成时仅上传一次 1024×1024 Canonical RGBA";
+        : "点击生成时仅上传一次 1024×1024 标准化前景";
   const navigateWorkflow = (target: "prepare" | "generate") => {
     const element = target === "prepare" ? prepareSectionRef.current : generationSectionRef.current;
     element?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -682,11 +682,11 @@ function App() {
   const requestGeneration = () => {
     if (!canonical) {
       navigateWorkflow("prepare");
-      setWorkflowMessage("先完成本地 rembg 与 Canonical，再开始 3D 重构。");
+      setWorkflowMessage("先完成本地抠图与前景选择，再开始 3D 生成。");
       notify({
         tone: "warning",
         title: "还不能开始 3D 重构",
-        detail: "先完成本地 rembg 与 Canonical。",
+        detail: "先完成本地抠图与前景选择。",
       });
       return;
     }

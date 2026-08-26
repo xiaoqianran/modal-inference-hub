@@ -20,10 +20,9 @@ export default function AppHeader({
   return (
     <header className="app-header">
       <div className="current-project">
-        <span className="project-context"><i /> {view === "gallery" ? "ASSET LIBRARY" : "3D WORKBENCH"}</span>
+        <span className="project-context"><i /> {view === "gallery" ? "资产图库" : "3D 工作台"}</span>
         <div className="project-heading">
           <h1>{view === "gallery" ? "本地图库" : projectTitle || "新建 3D 项目"}</h1>
-          <span>{view === "gallery" ? "IMAGE × MODEL" : "IMAGE → 3D"}</span>
         </div>
       </div>
 
@@ -36,16 +35,16 @@ export default function AppHeader({
         <div className="runtime-cluster">
           <span className={`status-indicator ${agentReady ? "online" : ""}`}>
             <i />
-            <span><strong>Local Agent</strong><small>{agentReady ? "Ready" : "Offline"}</small></span>
+            <span><strong>本地服务</strong><small>{agentReady ? "已就绪" : "未连接"}</small></span>
           </span>
           <span className={`status-indicator ${modalConnected ? "online" : ""}`}>
             <i />
-            <span><strong>Modal Cloud</strong><small>{modalConnected ? "Connected" : "Disconnected"}</small></span>
+            <span><strong>Modal 云</strong><small>{modalConnected ? "已连接" : "未连接"}</small></span>
           </span>
         </div>
         {busy ? <span className="busy-label"><i />处理中</span> : null}
-        <button type="button" className="icon-button control-center-button" onClick={onOpenSettings} aria-label="打开控制中心">
-          控制中心
+        <button type="button" className="icon-button control-center-button" onClick={onOpenSettings} aria-label="打开设置">
+          设置
         </button>
       </div>
     </header>

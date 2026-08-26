@@ -32,9 +32,9 @@ function relativeTime(value: string) {
 }
 
 function assetStage(project: Project) {
-  if (project.artifact_id) return "GLB";
-  if (project.canonical_id) return "CANONICAL";
-  return "SOURCE";
+  if (project.artifact_id) return "已出模型";
+  if (project.canonical_id) return "已抠图";
+  return "仅原图";
 }
 
 function statusTone(status: Project["status"]) {
@@ -69,15 +69,15 @@ export default function ProjectSidebar({
   return (
     <aside className="project-sidebar">
       <div className="app-brand">
-        <span className="brand-mark">M3</span>
-        <div><strong>modal-3D</strong><small>STUDIO</small></div>
+        <span className="brand-mark">3D</span>
+        <div><strong>modal-3D</strong><small>图片转 3D 工作台</small></div>
       </div>
 
       <div className="sidebar-overview" aria-label="项目概览">
-        <span><small>PROJECTS</small><strong>{projects.length}</strong></span>
-        <span><small>READY</small><strong>{readyCount}</strong></span>
-        <span className={activeCount ? "active" : ""}><small>ACTIVE</small><strong>{activeCount}</strong></span>
-        <span className={completedCount ? "success" : ""}><small>DONE</small><strong>{completedCount}</strong></span>
+        <span><small>全部</small><strong>{projects.length}</strong></span>
+        <span><small>可生成</small><strong>{readyCount}</strong></span>
+        <span className={activeCount ? "active" : ""}><small>进行中</small><strong>{activeCount}</strong></span>
+        <span className={completedCount ? "success" : ""}><small>已完成</small><strong>{completedCount}</strong></span>
       </div>
 
       <div className="sidebar-title">
@@ -104,7 +104,7 @@ export default function ProjectSidebar({
                 <span className="project-copy">
                   <span className="project-title-line">
                     <strong>{item.title}</strong>
-                    {active ? <em>CURRENT</em> : null}
+                    {active ? <em>当前</em> : null}
                   </span>
                   <span className="project-meta-line">
                     <small className={`project-status ${tone}`}><i />{statusLabels[item.status]}</small>
@@ -134,14 +134,14 @@ export default function ProjectSidebar({
       </div>
 
       <div className="shortcut-hints" aria-label="快捷键">
-        <div><span>工作流</span><kbd>Alt 1</kbd><kbd>Alt 2</kbd></div>
-        <div><span>生成</span><kbd>Ctrl ↵</kbd></div>
-        <div><span>设置</span><kbd>Ctrl ,</kbd></div>
+        <div><span>切换工作区</span><kbd>Alt 1</kbd><kbd>Alt 2</kbd></div>
+        <div><span>开始生成</span><kbd>Ctrl ↵</kbd></div>
+        <div><span>打开设置</span><kbd>Ctrl ,</kbd></div>
       </div>
 
       <div className="sidebar-footer">
-        <span className="local-badge"><i />Local-first</span>
-        <small>原图仅保存在本机 · Canonical 按需上传</small>
+        <span className="local-badge"><i />本地优先</span>
+        <small>原图仅保存在本机，仅在生成时上传标准化前景</small>
       </div>
     </aside>
   );

@@ -63,21 +63,21 @@ function GenerationActivity({
     <div className={`generation-activity ${waitingConnection ? "paused" : ""}`}>
       <div className="generation-activity-head">
         <span>
-          <small>ACTIVE JOB</small>
+          <small>当前任务</small>
           <strong>{activityLabel(job.status)}</strong>
         </span>
         <span className="generation-elapsed">{elapsedLabel(job.created_at, now)}</span>
       </div>
       <div className="generation-activity-track"><i /></div>
       <div className="generation-activity-meta">
-        <span><small>MODEL</small><strong>{modelName}</strong></span>
-        <span><small>JOB</small><strong>{job.id.slice(0, 8)}</strong></span>
-        <span><small>STATE</small><strong>{generationStatusLabels[job.status]}</strong></span>
+        <span><small>模型</small><strong>{modelName}</strong></span>
+        <span><small>任务号</small><strong>{job.id.slice(0, 8)}</strong></span>
+        <span><small>状态</small><strong>{generationStatusLabels[job.status]}</strong></span>
       </div>
       <div className="generation-activity-steps" aria-label="生成状态">
         <span className="complete"><i />任务已提交</span>
         <span className={waitingConnection || cancelling ? "waiting" : "current"}><i />{waitingConnection ? "等待云端连接" : cancelling ? "等待取消确认" : "云端处理中"}</span>
-        <span><i />GLB 回传</span>
+        <span><i />模型回传</span>
       </div>
       <button type="button" className="danger-button" disabled={cancelling} onClick={onCancel}>
         {cancelling ? "取消确认中" : "取消任务"}
@@ -159,13 +159,13 @@ export default function GenerationPanel({
     <section className="workspace-panel generation-panel" aria-labelledby="generation-title">
       <div className="panel-header">
         <div>
-          <span className="panel-step">03–04 · CLOUD & OUTPUT</span>
-          <h2 id="generation-title">3D 重构工作台</h2>
-          <p className="panel-description">仅在生成时上传 Canonical；结果保留为可切换的 GLB 版本。</p>
+          <span className="panel-step">第二步 · 云端生成</span>
+          <h2 id="generation-title">生成 3D 模型</h2>
+          <p className="panel-description">只在生成时上传标准化前景；每次结果都会保存为可切换的版本。</p>
         </div>
         {resultUrl ? (
           <span className={`asset-badge ${resultOutdated ? "outdated" : "ready"}`}>
-            {resultOutdated ? "PREVIOUS VERSION" : "GLB READY"}
+            {resultOutdated ? "上一版本" : "模型已就绪"}
           </span>
         ) : null}
       </div>
@@ -177,7 +177,7 @@ export default function GenerationPanel({
           </Suspense>
         ) : (
           <div className="glb-viewer model-empty-state">
-            <div className="empty-preview"><span>3D VIEWPORT</span><strong>{canonical ? "选择模型并开始重构" : "完成前景处理后进入 3D"}</strong></div>
+            <div className="empty-preview"><span>3D 预览</span><strong>{canonical ? "选择模型，开始生成" : "完成左侧前景处理后，在这里生成 3D"}</strong></div>
           </div>
         )}
       </div>
@@ -188,7 +188,7 @@ export default function GenerationPanel({
 
       <div className="model-section">
         <div className="section-label">
-          <span>生成引擎</span>
+          <span>选择生成模型</span>
           {selectedProfile ? <small>{selectedProfile.name}</small> : null}
         </div>
         <div className="model-options">
@@ -201,7 +201,7 @@ export default function GenerationPanel({
               onClick={() => onSelectModel(model.id)}
             >
               <span><strong>{model.name}</strong><small>{model.description}</small></span>
-              <span className="model-meta"><small>~{model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s</small><small>{model.output === "textured" ? "纹理" : "几何"}</small></span>
+              <span className="model-meta"><small>约 {model.warm_seconds.toFixed(model.warm_seconds < 10 ? 1 : 0)}s</small><small>{model.output === "textured" ? "带纹理" : "仅几何"}</small></span>
             </button>
           ))}
           {!models.length ? (
@@ -228,7 +228,7 @@ export default function GenerationPanel({
       ) : (
         <div className="panel-actions generation-primary-action">
           <button type="button" className="primary-button" disabled={busy || !canonical || !selectedModel || selectedModel.status === "disabled"} onClick={onGenerate}>
-            使用 {selectedModel?.name ?? "模型"} 开始 3D 重构
+            用 {selectedModel?.name ?? "模型"} 生成 3D
           </button>
           <span>{hint}</span>
         </div>
@@ -236,12 +236,12 @@ export default function GenerationPanel({
 
       {resultJob?.result ? (
         <div className="result-card result-delivery-card">
-          <span><strong>GLB 可交付</strong><small>{(resultJob.result.artifact.bytes / 1024 / 1024).toFixed(2)} MiB</small></span>
+          <span><strong>模型已生成</strong><small>{(resultJob.result.artifact.bytes / 1024 / 1024).toFixed(2)} MiB</small></span>
           <span className="result-timing">
             {resultJob.result.timing.inference_s !== undefined ? <small>推理 {resultJob.result.timing.inference_s.toFixed(2)}s</small> : null}
             {resultJob.result.timing.load_s !== undefined ? <small>加载 {resultJob.result.timing.load_s.toFixed(2)}s</small> : null}
           </span>
-          <button type="button" className="primary-button" onClick={onExport}>导出 GLB</button>
+          <button type="button" className="primary-button" onClick={onExport}>导出模型</button>
         </div>
       ) : null}
 
@@ -253,7 +253,7 @@ export default function GenerationPanel({
         {comparingHistory && selectedGeneration && latestAvailableGeneration ? (
           <div className="version-compare-strip">
             <span>
-              <small>VERSION COMPARE</small>
+              <small>版本对比</small>
               <strong>正在查看历史版本</strong>
             </span>
             <span className="version-compare-meta">
@@ -289,7 +289,7 @@ export default function GenerationPanel({
                   onClick={() => onSelectGeneration(generation)}
                 >
                   <span>
-                    <strong>{modelName}{latest ? <em>LATEST</em> : null}</strong>
+                    <strong>{modelName}{latest ? <em>最新</em> : null}</strong>
                     <small>
                       {generationTime(generation.created_at)} · {generation.profile}
                       {generation.artifact_bytes ? ` · ${(generation.artifact_bytes / 1024 / 1024).toFixed(2)} MiB` : ""}

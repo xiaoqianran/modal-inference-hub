@@ -71,9 +71,9 @@ describe("GenerationReviewDialog", () => {
 
     expect(html).toContain("Pixal3D");
     expect(html).toContain("推荐");
-    expect(html).toContain("2/3 components");
+    expect(html).toContain("2/3 个物体");
     expect(html).toContain("512 KiB");
-    expect(html).toContain("Canonical only");
+    expect(html).toContain("仅标准化前景");
     expect(html).not.toContain("$");
     expect(html).not.toContain("%");
   });

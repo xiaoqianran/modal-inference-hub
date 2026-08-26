@@ -6,10 +6,10 @@ type CommandFeedbackProps = {
 };
 
 const toneLabels: Record<Feedback["tone"], string> = {
-  success: "DONE",
-  warning: "CHECK",
-  error: "ERROR",
-  info: "INFO",
+  success: "完成",
+  warning: "注意",
+  error: "出错",
+  info: "提示",
 };
 
 export default function CommandFeedback({ feedback, onDismiss }: CommandFeedbackProps) {
