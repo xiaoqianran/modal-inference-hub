@@ -6,13 +6,16 @@ The facade keeps the existing local ONNX Runtime provider semantics untouched
 
 On top of that it adds an orthogonal *execution location*:
 
-- `execution_preference()` returns `cloud` (default) or `local`.
-- `set_execution_preference(...)` persists it.
-- `process(data)` routes to the cloud `modal-3d-rembg` T4 endpoint when the
-  location is `cloud`, otherwise to the local ONNX Runtime path.
+- `execution_preference()` returns the stored choice: `auto` (default),
+  `cloud`, or `local`.
+- `resolved_execution()` maps `auto` to `local` when an NVIDIA GPU
+  (ONNXRuntime CUDAExecutionProvider) is available, otherwise to `cloud`.
+- `process(data)` follows `resolved_execution()`: the cloud `modal-3d-rembg`
+  T4 endpoint, or the local ONNX Runtime path.
 
-This means local CUDA is optional: cloud is the default and requires no local
-GPU or model download; a machine with CUDA can opt back into local inference.
+So the default is fully automatic: a machine with a suitable NVIDIA GPU runs
+locally and offline; anything else falls back to the cloud with no local GPU
+or model download required. The user can still force cloud or local manually.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ set_provider_preference = runtime.set_provider_preference
 reset_session = runtime.reset_session
 warmup_gpu_async = runtime.warmup_gpu_async
 
-_EXECUTION_VALUES = {"cloud", "local"}
+_EXECUTION_VALUES = {"auto", "cloud", "local"}
 
 
 def _execution_settings_path() -> Path:
@@ -58,14 +61,27 @@ def execution_preference() -> str:
     try:
         payload = json.loads(_execution_settings_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return "cloud"
+        return "auto"
     value = payload.get("execution") if isinstance(payload, dict) else None
-    return value if value in _EXECUTION_VALUES else "cloud"
+    # Legacy "cloud"/"local" values remain valid; anything unknown resets to auto.
+    return value if value in _EXECUTION_VALUES else "auto"
+
+
+def resolved_execution() -> str:
+    """Map the preference to a concrete location.
+
+    `auto` runs locally when a suitable NVIDIA GPU is present, else in the
+    cloud. An explicit `cloud`/`local` choice is honoured as-is.
+    """
+    preference = execution_preference()
+    if preference != "auto":
+        return preference
+    return "local" if "gpu" in available_providers() else "cloud"
 
 
 def set_execution_preference(value: str) -> dict:
     if value not in _EXECUTION_VALUES:
-        raise ValueError("execution 必须是 cloud 或 local")
+        raise ValueError("execution 必须是 auto、cloud 或 local")
     path = _execution_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".json.tmp")
@@ -85,6 +101,7 @@ def prepare_model_async() -> dict:
 def status() -> dict:
     result = runtime.status()
     result["execution"] = execution_preference()
+    result["resolved_execution"] = resolved_execution()
     result["cloud_connected"] = modal_client.connected()
     return result
 
@@ -160,36 +177,51 @@ def _cloud_process(data: bytes) -> dict:
         raise RuntimeError(f"云端 rembg 不可达: {exc.reason}") from exc
 
     try:
-        matte_bytes = base64.b64decode(payload["matte_bytes_b64"])
+        mask_bytes = base64.b64decode(payload["mask_bytes_b64"])
     except (KeyError, ValueError) as exc:
         raise RuntimeError("云端 rembg 返回了无效的响应") from exc
 
-    # The cloud returns only the matte RGBA; letterbox, canonical encoding, and
-    # component analysis run once here, identically to the local path.
-    with Image.open(io.BytesIO(matte_bytes)) as matte:
-        rgba = matte.convert("RGBA")
-    mask = rgba.getchannel("A")
-    return _build_result(
-        rgba, mask,
-        provider="cloud", execution="cloud", fallback_reason=None,
-        started=started, engine=payload.get("engine", model_store.ENGINE),
-    )
+    with Image.open(io.BytesIO(mask_bytes)) as opened:
+        mask = opened.convert("L")
+    source = _load_source(data)
+    return _finish(source, mask, provider="cloud", execution="cloud", fallback_reason=None, started=started, engine=payload.get("engine", model_store.ENGINE))
 
 
-def process(data: bytes) -> dict:
-    if execution_preference() == "cloud":
-        return _cloud_process(data)
-
-    started = time.perf_counter()
+def _load_source(data: bytes):
     with Image.open(io.BytesIO(data)) as opened:
-        source = ImageOps.exif_transpose(opened).convert("RGB")
-    mask, active_provider, fallback_reason = runtime.predict_mask(source)
+        return ImageOps.exif_transpose(opened).convert("RGB")
+
+
+def _finish(source, mask, *, provider, execution, fallback_reason, started, engine) -> dict:
+    """Shared tail: source RGB + alpha mask -> full result.
+
+    Both the local and cloud paths converge here, so the mask repair and the
+    canonical letterbox / component analysis run exactly once, in one place.
+    """
     if mask.size != source.size:
         mask = mask.resize(source.size, Image.Resampling.LANCZOS)
+    # Repair the raw mask so genuine foreground is not carved out: undo the
+    # over-aggressive min-max normalisation effect and heal holes the model
+    # poked inside the subject. Applied identically to local and cloud masks.
+    mask = image_ops.refine_mask(mask)
     rgba = source.convert("RGBA")
     rgba.putalpha(mask)
     return _build_result(
         rgba, mask,
+        provider=provider, execution=execution, fallback_reason=fallback_reason,
+        started=started, engine=engine,
+    )
+
+
+def process(data: bytes) -> dict:
+    started = time.perf_counter()
+    if resolved_execution() == "cloud":
+        return _cloud_process(data)
+
+    source = _load_source(data)
+    mask, active_provider, fallback_reason = runtime.predict_mask(source)
+    return _finish(
+        source, mask,
         provider=active_provider, execution="local", fallback_reason=fallback_reason,
         started=started, engine=model_store.ENGINE,
     )

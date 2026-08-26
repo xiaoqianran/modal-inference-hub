@@ -16,6 +16,55 @@ _COMPONENT_ALPHA_THRESHOLD = 8
 _COMPONENT_MIN_PIXELS = 64
 _COMPONENT_RELATIVE_MIN = 0.0005
 _COMPONENT_LIMIT = 64
+
+# Mask refinement: keep genuine foreground that min-max normalisation would
+# crush, and heal holes the model pokes inside the subject.
+_MASK_FOREGROUND_THRESHOLD = 0.5
+_MASK_CLOSE_ITERATIONS = 2
+
+
+def refine_mask(mask: Image.Image) -> Image.Image:
+    """Repair a raw BiRefNet alpha mask so real foreground is not dropped.
+
+    The model emits a per-pixel foreground *probability*. Feeding that straight
+    through a hard ``alpha > 8`` cut (after a min-max stretch) throws away pixels
+    the model was only mildly confident about — which is exactly what happens on
+    subjects whose colour or texture is close to the background, so the subject
+    itself gets carved out. This refinement instead:
+
+    1. thresholds the probability at a fixed 0.5 to get a solid binary subject,
+    2. fills holes fully enclosed by the subject (background gaps inside it),
+    3. closes small gaps along the boundary,
+    4. keeps the *original soft alpha* under that repaired region, so edge
+       detail (hair, fur) is preserved rather than re-binarised.
+
+    Pixels outside the repaired region are zeroed. Returns an ``L`` image the
+    same size as the input.
+    """
+    alpha = np.asarray(mask.convert("L"), dtype=np.float32) / 255.0
+    solid = alpha >= _MASK_FOREGROUND_THRESHOLD
+    if not np.any(solid):
+        # No confident subject: fall back to the raw soft mask so the caller's
+        # own foreground check can decide whether anything is usable.
+        return mask.convert("L")
+    # Heal interior holes and bridge thin gaps, but never grow the subject
+    # outward: closing can only add pixels, so union with the original solid
+    # region keeps the result a superset of the confident subject, then a final
+    # hole-fill re-seals the interior. A clean hard-edged mask is idempotent.
+    filled = ndimage.binary_fill_holes(solid)
+    closed = ndimage.binary_closing(
+        filled,
+        structure=np.ones((3, 3), dtype=bool),
+        iterations=_MASK_CLOSE_ITERATIONS,
+    )
+    region = ndimage.binary_fill_holes(closed | filled)
+    repaired = np.where(region, alpha, 0.0)
+    # Pixels the repair added (holes / bridged gaps) have no soft alpha of their
+    # own; give them full opacity so they read as subject, not as background.
+    added = region & (alpha < _MASK_FOREGROUND_THRESHOLD)
+    repaired = np.where(added, 1.0, repaired)
+    return Image.fromarray((repaired * 255).astype(np.uint8), mode="L")
+
 _selection_cache_lock = threading.RLock()
 _selection_cache: OrderedDict[str, tuple[Image.Image, np.ndarray, int]] = OrderedDict()
 _selection_cache_bytes = 0
