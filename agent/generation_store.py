@@ -181,7 +181,7 @@ class GenerationIntentStore:
             cursor = db.execute(
                 f"""
                 UPDATE projects
-                SET status = 'submitting', error = NULL, updated_at = ?
+                SET status = 'submitting', job_id = NULL, error = NULL, updated_at = ?
                 WHERE id = ?
                   AND status NOT IN ({placeholders})
                   AND canonical_id IS NOT NULL

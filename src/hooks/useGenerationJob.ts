@@ -50,6 +50,7 @@ export function useGenerationJob({
   const pollIdRef = useRef(0);
   const activeProjectIdRef = useRef<string | null>(null);
   const submittingRef = useRef(false);
+  const pendingRequestRef = useRef<{ key: string; id: string } | null>(null);
 
   const resetOutput = useCallback(() => {
     pollIdRef.current += 1;
@@ -123,14 +124,19 @@ export function useGenerationJob({
     setSubmitting(true);
     pollIdRef.current += 1;
     setWorkflowMessage("正在上传一次 Canonical RGBA 并提交 3D 任务…");
+    const requestKey = [project.id, canonical.sha256, selectedModel.id, selectedProfile.id].join(":");
+    const pending = pendingRequestRef.current;
+    const requestId = pending?.key === requestKey ? pending.id : crypto.randomUUID();
+    pendingRequestRef.current = { key: requestKey, id: requestId };
     try {
       const value = await submitProjectGeneration(
         agent,
         project.id,
         selectedModel.id,
         selectedProfile.id,
-        crypto.randomUUID(),
+        requestId,
       );
+      pendingRequestRef.current = null;
       setProject(value.project);
       setJob(value.job);
       activeProjectIdRef.current = value.project.id;

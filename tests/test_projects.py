@@ -277,6 +277,46 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         self.assertEqual(updated["artifact_canonical_sha256"], first["sha256"])
         self.assertEqual(updated["status"], "ready")
 
+    def test_editing_canonical_preserves_active_generation_state(self) -> None:
+        project = self.store.create(_png(), "active-edit.png")
+        canonical = _png(1024, 1024)
+        first = {"id": "can_active_a", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, first)
+        self.record_generation(project["id"], "model-a", "default", "job-active")
+
+        second = {"id": "can_active_b", "sha256": "b" * 64, "bytes": len(canonical)}
+        updated = self.store.record_local_canonical(project["id"], second)
+
+        self.assertEqual(updated["status"], "generating")
+        self.assertEqual(updated["job_id"], "job-active")
+        self.assertEqual(updated["canonical_sha256"], second["sha256"])
+        with self.assertRaisesRegex(ValueError, "远程任务活动"):
+            self.store.delete(project["id"])
+        with self.assertRaisesRegex(GenerationConflict, "已有远程生成任务"):
+            self.intents.claim(project["id"], "request-second", "model-a", "default")
+
+    def test_new_claim_clears_previous_job_identity_but_keeps_history(self) -> None:
+        project = self.store.create(_png(), "new-claim.png")
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_old", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
+        self.record_generation(project["id"], "model-a", "default", "job-old")
+        self.store.record_job({
+            "id": "job-old",
+            "status": "succeeded",
+            "result": {"artifact": {"id": "art-old", "sha256": "c" * 64, "bytes": 128}},
+            "error": None,
+        })
+
+        claim = self.intents.claim(project["id"], "request-new", "model-a", "default")
+        current = self.store.get(project["id"])
+
+        self.assertTrue(claim["claimed"])
+        self.assertEqual(current["status"], "submitting")
+        self.assertIsNone(current["job_id"])
+        self.assertEqual(current["artifact_id"], "art-old")
+        self.assertEqual(self.store.list_generations(project["id"])[0]["job_id"], "job-old")
+
     def test_project_keeps_multiple_generation_records(self) -> None:
         project = self.store.create(_png(), "history.png")
         canonical = _png(1024, 1024)

@@ -421,16 +421,32 @@ class ProjectStore:
         return self.record_local_canonical(project_id, descriptor)
 
     def record_local_canonical(self, project_id: str, canonical: dict) -> dict:
-        return self._update(
-            project_id,
-            canonical_path=None,
-            canonical_remote_sha256=None,
-            canonical_id=canonical["id"],
-            canonical_sha256=canonical["sha256"],
-            canonical_bytes=canonical["bytes"],
-            status="ready",
-            error=None,
-        )
+        """更新 Canonical；活动中的远端 generation 生命周期保持不变。"""
+        active = tuple(PROJECT_REMOTE_ACTIVE_STATUSES)
+        placeholders = ", ".join("?" for _ in active)
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as db:
+            cursor = db.execute(
+                f"""
+                UPDATE projects SET
+                    canonical_path = NULL,
+                    canonical_remote_sha256 = NULL,
+                    canonical_id = ?,
+                    canonical_sha256 = ?,
+                    canonical_bytes = ?,
+                    status = CASE WHEN status IN ({placeholders}) THEN status ELSE 'ready' END,
+                    error = CASE WHEN status IN ({placeholders}) THEN error ELSE NULL END,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    canonical["id"], canonical["sha256"], canonical["bytes"],
+                    *active, *active, now, project_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(project_id)
+        return self.get(project_id)
 
     def canonical_descriptor(self, project_id: str) -> dict:
         with self._connect() as db:
