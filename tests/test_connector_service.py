@@ -588,3 +588,77 @@ def test_connector_allowed_origins_share_normalized_env_configuration(monkeypatc
     with pytest.raises(ConnectorError) as exc:
         connector_allowed_origins()
     assert exc.value.code == "PAIRING_INVALID"
+
+
+def test_connector_pairing_secret_falls_back_to_agent_session_token(tmp_path: Path, monkeypatch) -> None:
+    adapter = FakeAdapter(
+        "modal-2d",
+        "modal-2d.image.text_to_image.v1",
+        "primary-image",
+        "image/png",
+        PNG,
+    )
+    monkeypatch.delenv("MODAL_CONNECTOR_PAIRING_TOKEN", raising=False)
+    monkeypatch.setenv("MODAL_3D_AGENT_TOKEN", "agent-session-secret")
+    service = ConnectorService(
+        store=ConnectorStore(tmp_path / "connector"),
+        adapters=(adapter,),
+        allowed_origins=(ORIGIN,),
+        instance="instance_pair_fallback",
+    )
+
+    paired = service.pair(
+        {
+            "clientIdentity": "agentscape",
+            "contractVersion": "1",
+            "origin": ORIGIN,
+            "scopes": SCOPES,
+        },
+        approval="agent-session-secret",
+        origin_header=ORIGIN,
+    )
+    assert paired["token"]
+    assert "agent-session-secret" not in repr(paired)
+
+
+def test_explicit_connector_pairing_secret_overrides_agent_session(tmp_path: Path, monkeypatch) -> None:
+    adapter = FakeAdapter(
+        "modal-2d",
+        "modal-2d.image.text_to_image.v1",
+        "primary-image",
+        "image/png",
+        PNG,
+    )
+    monkeypatch.setenv("MODAL_CONNECTOR_PAIRING_TOKEN", "connector-secret")
+    monkeypatch.setenv("MODAL_3D_AGENT_TOKEN", "agent-session-secret")
+    service = ConnectorService(
+        store=ConnectorStore(tmp_path / "connector"),
+        adapters=(adapter,),
+        allowed_origins=(ORIGIN,),
+        instance="instance_pair_override",
+    )
+
+    with pytest.raises(ConnectorError) as exc:
+        service.pair(
+            {
+                "clientIdentity": "agentscape",
+                "contractVersion": "1",
+                "origin": ORIGIN,
+                "scopes": SCOPES,
+            },
+            approval="agent-session-secret",
+            origin_header=ORIGIN,
+        )
+    assert exc.value.code == "PAIRING_REQUIRED"
+
+    paired = service.pair(
+        {
+            "clientIdentity": "agentscape",
+            "contractVersion": "1",
+            "origin": ORIGIN,
+            "scopes": SCOPES,
+        },
+        approval="connector-secret",
+        origin_header=ORIGIN,
+    )
+    assert paired["token"]

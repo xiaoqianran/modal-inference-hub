@@ -54,7 +54,12 @@ class ConnectorService:
         if len(self.adapters) != len(adapter_values):
             raise ValueError("duplicate connector provider id")
         origins = connector_allowed_origins() if allowed_origins is None else tuple(allowed_origins)
-        secret = os.environ.get("MODAL_CONNECTOR_PAIRING_TOKEN", "") if pairing_secret is None else pairing_secret
+        secret = (
+            os.environ.get("MODAL_CONNECTOR_PAIRING_TOKEN")
+            or os.environ.get("MODAL_3D_AGENT_TOKEN", "")
+            if pairing_secret is None
+            else pairing_secret
+        )
         self.sessions = SessionStore(
             connector_identity=self.identity,
             pairing_secret=secret,

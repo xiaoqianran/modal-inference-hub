@@ -156,6 +156,22 @@ Old projects that predate `selection.png` can rebuild it locally from `matte.png
 
 Modal credentials are handled by the local Agent. On Windows, the desktop client can store them in Windows Credential Manager. Credentials are not reloaded into the React UI after restart.
 
+## Unified Connector
+
+The local Agent also exposes `/connector/v1/*` for AgentScape. Pairing uses one short-lived local approval secret: `MODAL_CONNECTOR_PAIRING_TOKEN` when explicitly configured, otherwise the existing `MODAL_3D_AGENT_TOKEN`. A successful pair creates a separate scoped Connector bearer session; the approval secret itself is never persisted in Connector jobs, artifacts or responses.
+
+```text
+MODAL_CONNECTOR_PAIRING_TOKEN
+        │ explicit override
+        ▼
+Connector pairing approval
+        ▲
+        │ fallback
+MODAL_3D_AGENT_TOKEN
+```
+
+This keeps the desktop sidecar on one ephemeral secret source while preserving an explicit override for non-desktop deployments.
+
 ## Windows development
 
 ### Required tool versions
