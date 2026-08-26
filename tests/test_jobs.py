@@ -301,6 +301,33 @@ class JobManagerTests(unittest.TestCase):
         )
         self.assertEqual(version, 3)
 
+
+    def test_connector_job_id_can_be_reused_as_durable_local_job_identity(self) -> None:
+        job_id = "job_connector_recovery"
+        created = self.manager.create(
+            "fastsam3d-plus-plus",
+            "fc-connector-recovery",
+            job_id=job_id,
+        )
+        self.assertEqual(created["id"], job_id)
+
+        restarted = JobManager(self.db)
+        restored = restarted.get(job_id)
+        self.assertEqual(restored["id"], job_id)
+        self.assertEqual(restored["model"], "fastsam3d-plus-plus")
+        replay = restarted.create(
+            "fastsam3d-plus-plus",
+            "fc-connector-recovery",
+            job_id=job_id,
+        )
+        self.assertEqual(replay, restored)
+        with self.assertRaisesRegex(ValueError, "不同远端任务"):
+            restarted.create(
+                "fastsam3d-plus-plus",
+                "fc-other",
+                job_id=job_id,
+            )
+
     def test_future_database_version_is_rejected(self) -> None:
         future = Path(self.temp.name) / "future.sqlite3"
         with closing(sqlite3.connect(future)) as db, db:

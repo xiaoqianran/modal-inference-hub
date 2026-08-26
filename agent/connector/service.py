@@ -10,13 +10,27 @@ from typing import Iterable
 
 from agent.storage import data_dir
 
-from .auth import SessionRecord, SessionStore, iso, utcnow
+from .auth import SessionRecord, SessionStore, iso, normalize_origin, utcnow
 from .contracts import CONTRACT_VERSION, ConnectorError, TERMINAL, validate_submit
-from .providers import ProviderAdapter, default_adapters
+from .providers import ProviderAdapter, RemoteSubmission, default_adapters
 from .store import ConnectorStore
 
 CONNECTOR_ID = "unified-connector"
 CONNECTOR_VERSION = "0.1.0"
+DEFAULT_CONNECTOR_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
+
+
+def connector_allowed_origins() -> tuple[str, ...]:
+    value = os.environ.get("MODAL_CONNECTOR_ALLOWED_ORIGINS", "")
+    raw = (
+        tuple(item.strip() for item in value.split(",") if item.strip())
+        if value.strip()
+        else DEFAULT_CONNECTOR_ORIGINS
+    )
+    return tuple(dict.fromkeys(normalize_origin(item) for item in raw))
 
 
 class ConnectorService:
@@ -39,7 +53,7 @@ class ConnectorService:
         self.adapters = {adapter.id: adapter for adapter in adapter_values}
         if len(self.adapters) != len(adapter_values):
             raise ValueError("duplicate connector provider id")
-        origins = allowed_origins or self._allowed_origins_from_env()
+        origins = connector_allowed_origins() if allowed_origins is None else tuple(allowed_origins)
         secret = os.environ.get("MODAL_CONNECTOR_PAIRING_TOKEN", "") if pairing_secret is None else pairing_secret
         self.sessions = SessionStore(
             connector_identity=self.identity,
@@ -47,13 +61,6 @@ class ConnectorService:
             allowed_origins=origins,
             snapshot_factory=self._snapshot,
         )
-
-    @staticmethod
-    def _allowed_origins_from_env() -> tuple[str, ...]:
-        value = os.environ.get("MODAL_CONNECTOR_ALLOWED_ORIGINS", "")
-        if value.strip():
-            return tuple(item.strip() for item in value.split(",") if item.strip())
-        return ("http://localhost:3000", "http://127.0.0.1:3000")
 
     def _snapshot(self, expires_at: datetime) -> dict[str, object]:
         providers = [self.adapters[key].descriptor() for key in sorted(self.adapters)]
@@ -162,10 +169,15 @@ class ConnectorService:
 
         row, reused = self.store.reserve_job(session.owner, request)
         if reused:
-            return self.store.projection(row)
+            return self.get_job(session, str(row["id"]))
 
         try:
-            remote = adapter.submit(request, self.store, session.owner)
+            remote = adapter.submit(
+                request,
+                self.store,
+                session.owner,
+                connector_job_id=str(row["id"]),
+            )
         except ConnectorError as exc:
             status = "connection_required" if exc.recoverable else "failed"
             row = self.store.update_job(
@@ -188,21 +200,64 @@ class ConnectorService:
             )
             return self.store.projection(row)
 
+        row = self._bind_submission(row, remote)
+        return self.store.projection(row)
+
+    def _bind_submission(
+        self, row: dict[str, object], remote: RemoteSubmission
+    ) -> dict[str, object]:
         now = iso(utcnow())
-        row = self.store.update_job(
+        return self.store.update_job(
             str(row["id"]),
             remote_job_id=remote.remote_job_id,
             status="running",
             stage="running",
-            effective_options_json=json.dumps(remote.effective_options, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-            model_json=None if remote.model is None else json.dumps(remote.model, separators=(",", ":")),
-            submitted_at=now,
-            started_at=now,
+            effective_options_json=json.dumps(
+                remote.effective_options,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            model_json=None
+            if remote.model is None
+            else json.dumps(remote.model, separators=(",", ":")),
+            submitted_at=row.get("submitted_at") or now,
+            started_at=row.get("started_at") or now,
             error_code=None,
             error_message=None,
             recoverable=0,
         )
-        return self.store.projection(row)
+
+    def _recover_submission(
+        self, row: dict[str, object]
+    ) -> dict[str, object]:
+        if row.get("remote_job_id") or row["status"] in TERMINAL:
+            return row
+        adapter = self.adapters[str(row["provider"])]
+        try:
+            request = json.loads(str(row["request_json"]))
+            remote = adapter.recover_submission(str(row["id"]), request)
+        except ConnectorError as exc:
+            return self.store.update_job(
+                str(row["id"]),
+                status="connection_required" if exc.recoverable else "failed",
+                stage="submission",
+                error_code=exc.code,
+                error_message=str(exc),
+                recoverable=int(exc.recoverable),
+            )
+        except Exception:
+            return self.store.update_job(
+                str(row["id"]),
+                status="connection_required",
+                stage="submission",
+                error_code="SUBMISSION_RECOVERY_FAILED",
+                error_message="provider submission recovery failed",
+                recoverable=1,
+            )
+        if remote is None:
+            return row
+        return self._bind_submission(row, remote)
 
     def _apply_provider_state(
         self,
@@ -267,7 +322,11 @@ class ConnectorService:
 
     def get_job(self, session: SessionRecord, job_id: str, *, poll: bool = True) -> dict[str, object]:
         row = self.store.get_job(session.owner, job_id)
-        if not poll or row["status"] in TERMINAL or not row.get("remote_job_id"):
+        if row["status"] in TERMINAL:
+            return self.store.projection(row)
+        if not row.get("remote_job_id"):
+            row = self._recover_submission(row)
+        if not poll or not row.get("remote_job_id"):
             return self.store.projection(row)
         adapter = self.adapters[str(row["provider"])]
         try:
@@ -292,6 +351,8 @@ class ConnectorService:
         row = self.store.get_job(session.owner, job_id)
         if row["status"] in TERMINAL:
             return self.store.projection(row)
+        if not row.get("remote_job_id"):
+            row = self._recover_submission(row)
         row = self.store.update_job(
             str(row["id"]), status="cancel_requested", stage="cancel", recoverable=1
         )

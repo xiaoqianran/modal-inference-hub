@@ -104,9 +104,14 @@ class Adapter:
             }],
         }
 
-    def submit(self, request, store, owner):
+    def submit(self, request, store, owner, *, connector_job_id):
+        del connector_job_id
         model = str(request["inputs"].get("model"))
         return RemoteSubmission("remote_image", {"model": model}, {"id": model, "version": None, "revision": None})
+
+    def recover_submission(self, connector_job_id, request):
+        del connector_job_id, request
+        return None
 
     def poll(self, remote_job_id):
         return {"id": remote_job_id, "status": "succeeded"}

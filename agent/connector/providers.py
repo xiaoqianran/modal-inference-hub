@@ -15,7 +15,7 @@ from agent.jobs import jobs as modal3d_jobs
 from agent.modal_client import NotConnectedError, connected
 from agent.models import CapabilityError, public_models
 
-from .contracts import ConnectorError, SHA256
+from .contracts import ConnectorError, SAFE_ID, SHA256
 from .store import ConnectorStore
 
 MODAL_2D_PROVIDER = "modal-2d"
@@ -36,7 +36,17 @@ class ProviderAdapter(Protocol):
     operation: str
 
     def descriptor(self) -> dict[str, object]: ...
-    def submit(self, request: dict[str, object], store: ConnectorStore, owner: str) -> RemoteSubmission: ...
+    def submit(
+        self,
+        request: dict[str, object],
+        store: ConnectorStore,
+        owner: str,
+        *,
+        connector_job_id: str,
+    ) -> RemoteSubmission: ...
+    def recover_submission(
+        self, connector_job_id: str, request: dict[str, object]
+    ) -> RemoteSubmission | None: ...
     def poll(self, remote_job_id: str) -> dict[str, object]: ...
     def cancel(self, remote_job_id: str) -> dict[str, object]: ...
     def collect(
@@ -147,7 +157,15 @@ class Modal2DAdapter:
             ],
         }
 
-    def submit(self, request: dict[str, object], store: ConnectorStore, owner: str) -> RemoteSubmission:
+    def submit(
+        self,
+        request: dict[str, object],
+        store: ConnectorStore,
+        owner: str,
+        *,
+        connector_job_id: str,
+    ) -> RemoteSubmission:
+        del connector_job_id
         inputs = request["inputs"]
         if not isinstance(inputs, dict):
             raise ConnectorError("INVALID_REQUEST", 422, "modal-2d inputs must be an object")
@@ -160,8 +178,8 @@ class Modal2DAdapter:
             body["guidance"] = inputs["guidance"]
         state = self._json("POST", "/v1/jobs", body)
         remote_id = state.get("id")
-        if not isinstance(remote_id, str) or not remote_id:
-            raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d missing job identity")
+        if not isinstance(remote_id, str) or not SAFE_ID.fullmatch(remote_id):
+            raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d invalid job identity")
         if state.get("model") != body["model"]:
             raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d model identity drift")
         return RemoteSubmission(
@@ -170,13 +188,25 @@ class Modal2DAdapter:
             model={"id": str(body["model"]), "version": None, "revision": None},
         )
 
+    def recover_submission(
+        self, connector_job_id: str, request: dict[str, object]
+    ) -> RemoteSubmission | None:
+        # 2D provider-local API 目前没有可由 Connector Job ID 反查的 durable identity。
+        # 结果未知时必须保持 fail-closed，绝不自动重提。
+        del connector_job_id, request
+        return None
+
     def poll(self, remote_job_id: str) -> dict[str, object]:
+        if not SAFE_ID.fullmatch(remote_job_id):
+            raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d invalid job identity")
         state = self._json("GET", f"/v1/jobs/{remote_job_id}")
         if state.get("id") != remote_job_id:
             raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d job identity drift")
         return state
 
     def cancel(self, remote_job_id: str) -> dict[str, object]:
+        if not SAFE_ID.fullmatch(remote_job_id):
+            raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d invalid job identity")
         state = self._json("DELETE", f"/v1/jobs/{remote_job_id}")
         if state.get("id") != remote_job_id:
             raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d cancel identity drift")
@@ -194,7 +224,16 @@ class Modal2DAdapter:
         descriptor = result.get("artifact") if isinstance(result, dict) else None
         if not isinstance(descriptor, dict):
             raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d result missing artifact")
-        if descriptor.get("role") != "primary-image" or descriptor.get("mime") != "image/png":
+        artifact_id = descriptor.get("id")
+        if not isinstance(artifact_id, str) or not SAFE_ID.fullmatch(artifact_id):
+            raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact identity invalid")
+        if (
+            descriptor.get("role") != "primary-image"
+            or descriptor.get("mime") != "image/png"
+            or descriptor.get("format") != "png"
+            or descriptor.get("width") != 1024
+            or descriptor.get("height") != 1024
+        ):
             raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact contract mismatch")
         digest = descriptor.get("sha256")
         size = descriptor.get("bytes")
@@ -202,7 +241,16 @@ class Modal2DAdapter:
             raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact hash invalid")
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0 or size > 64 * 1024 * 1024:
             raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact length invalid")
+        if not SAFE_ID.fullmatch(remote_job_id):
+            raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d invalid job identity")
         with self._request("GET", f"/v1/jobs/{remote_job_id}/artifact") as response:
+            content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if content_type != "image/png":
+                raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact MIME mismatch")
+            if response.headers.get("X-Artifact-ID") != artifact_id:
+                raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact identity header mismatch")
+            if response.headers.get("X-Artifact-SHA256") != digest:
+                raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact hash header mismatch")
             data = response.read(size + 1)
         return [
             store.import_bytes(
@@ -258,7 +306,14 @@ class Modal3DAdapter:
             ],
         }
 
-    def submit(self, request: dict[str, object], store: ConnectorStore, owner: str) -> RemoteSubmission:
+    def submit(
+        self,
+        request: dict[str, object],
+        store: ConnectorStore,
+        owner: str,
+        *,
+        connector_job_id: str,
+    ) -> RemoteSubmission:
         inputs = request["inputs"]
         if not isinstance(inputs, dict):
             raise ConnectorError("INVALID_REQUEST", 422, "modal-3d inputs must be an object")
@@ -287,7 +342,9 @@ class Modal3DAdapter:
             raise ConnectorError("PROVIDER_REQUEST_INVALID", 422, "modal-3d rejected request") from exc
         call_id = str(remote["call_id"])
         try:
-            local_job = modal3d_jobs.create(str(remote["model"]), call_id)
+            local_job = modal3d_jobs.create(
+                str(remote["model"]), call_id, job_id=connector_job_id
+            )
         except Exception as exc:
             try:
                 generation.cancel_call(call_id)
@@ -301,6 +358,31 @@ class Modal3DAdapter:
             ) from exc
         return RemoteSubmission(
             remote_job_id=str(local_job["id"]),
+            effective_options={"model": model, "profile": profile, "seed": int(seed)},
+            model={"id": model, "version": None, "revision": None},
+        )
+
+    def recover_submission(
+        self, connector_job_id: str, request: dict[str, object]
+    ) -> RemoteSubmission | None:
+        try:
+            local_job = modal3d_jobs.get(connector_job_id)
+        except KeyError:
+            return None
+        inputs = request.get("inputs")
+        if not isinstance(inputs, dict):
+            raise ConnectorError("INVALID_REQUEST", 422, "modal-3d inputs must be an object")
+        model = str(inputs.get("model") or "")
+        if local_job.get("model") != model:
+            raise ConnectorError(
+                "PROVIDER_IDENTITY_MISMATCH",
+                409,
+                "modal-3d local job identity does not match request",
+            )
+        profile = str(request.get("profile") or "recommended")
+        seed = inputs.get("seed", 42)
+        return RemoteSubmission(
+            remote_job_id=connector_job_id,
             effective_options={"model": model, "profile": profile, "seed": int(seed)},
             model={"id": model, "version": None, "revision": None},
         )

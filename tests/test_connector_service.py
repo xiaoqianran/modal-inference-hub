@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,7 +9,7 @@ import pytest
 
 from agent.connector.contracts import ConnectorError, request_hash
 from agent.connector.providers import RemoteSubmission
-from agent.connector.service import ConnectorService
+from agent.connector.service import ConnectorService, connector_allowed_origins
 from agent.connector.store import ConnectorStore
 
 ORIGIN = "http://localhost:3000"
@@ -65,7 +66,10 @@ class FakeAdapter:
             ],
         }
 
-    def submit(self, request, store: ConnectorStore, owner: str) -> RemoteSubmission:
+    def submit(
+        self, request, store: ConnectorStore, owner: str, *, connector_job_id: str
+    ) -> RemoteSubmission:
+        del connector_job_id
         self.submit_count += 1
         if self.fail_submit:
             raise ConnectorError("CONNECTION_REQUIRED", 503, "provider unavailable", recoverable=True)
@@ -80,6 +84,10 @@ class FakeAdapter:
             effective_options={"model": model},
             model={"id": model, "version": None, "revision": None},
         )
+
+    def recover_submission(self, connector_job_id: str, request: dict[str, object]):
+        del connector_job_id, request
+        return None
 
     def poll(self, remote_job_id: str) -> dict[str, object]:
         return {"id": remote_job_id, "status": "succeeded"}
@@ -404,7 +412,8 @@ def test_required_output_role_cannot_be_omitted(tmp_path: Path) -> None:
 
 def test_unknown_submission_outcome_is_persisted_and_not_replayed(tmp_path: Path) -> None:
     class CrashingAdapter(FakeAdapter):
-        def submit(self, request, store, owner):
+        def submit(self, request, store, owner, *, connector_job_id):
+            del connector_job_id
             self.submit_count += 1
             raise RuntimeError("unexpected transport boundary failure")
 
@@ -430,3 +439,152 @@ def test_unknown_submission_outcome_is_persisted_and_not_replayed(tmp_path: Path
     assert second["id"] == first["id"]
     assert second["eventSequence"] == first["eventSequence"]
     assert adapter.submit_count == 1
+
+
+def test_connector_recovers_durable_provider_job_without_resubmitting(tmp_path: Path) -> None:
+    class CrashAfterDurableJob(FakeAdapter):
+        durable_job_id: str | None = None
+
+        def submit(self, request, store, owner, *, connector_job_id):
+            del store, owner
+            self.submit_count += 1
+            self.durable_job_id = connector_job_id
+            raise RuntimeError("connector binding interrupted")
+
+        def recover_submission(self, connector_job_id, request):
+            if connector_job_id != self.durable_job_id:
+                return None
+            model = str(request["inputs"].get("model") or "test-model")
+            return RemoteSubmission(
+                remote_job_id=connector_job_id,
+                effective_options={"model": model},
+                model={"id": model, "version": None, "revision": None},
+            )
+
+    adapter = CrashAfterDurableJob(
+        "modal-2d",
+        "modal-2d.image.text_to_image.v1",
+        "primary-image",
+        "image/png",
+        PNG,
+    )
+    service = make_service(tmp_path, adapter)
+    _, session = pair(service)
+    body = envelope(
+        session,
+        adapter.id,
+        adapter.operation,
+        {"prompt": "recover me", "model": "test-model"},
+        "primary-image",
+        idem="idem_durable_recovery",
+    )
+
+    interrupted = service.submit(session, body)
+    assert interrupted["status"] == "connection_required"
+    assert adapter.submit_count == 1
+    assert adapter.durable_job_id == interrupted["id"]
+
+    recovered = service.get_job(session, interrupted["id"])
+    assert recovered["status"] == "succeeded"
+    assert recovered["id"] == interrupted["id"]
+    assert recovered["result"]["artifacts"][0]["role"] == "primary-image"
+    assert adapter.submit_count == 1
+
+
+def test_cancel_recovers_durable_provider_job_before_sending_cancel(tmp_path: Path) -> None:
+    class CrashAfterDurableJob(FakeAdapter):
+        durable_job_id: str | None = None
+        cancelled_job_id: str | None = None
+
+        def submit(self, request, store, owner, *, connector_job_id):
+            del request, store, owner
+            self.submit_count += 1
+            self.durable_job_id = connector_job_id
+            raise RuntimeError("connector binding interrupted")
+
+        def recover_submission(self, connector_job_id, request):
+            del request
+            if connector_job_id != self.durable_job_id:
+                return None
+            return RemoteSubmission(
+                remote_job_id=connector_job_id,
+                effective_options={"model": "test-model"},
+                model={"id": "test-model", "version": None, "revision": None},
+            )
+
+        def cancel(self, remote_job_id):
+            self.cancelled_job_id = remote_job_id
+            return {"id": remote_job_id, "status": "cancelled", "retryable": False}
+
+    adapter = CrashAfterDurableJob(
+        "modal-2d",
+        "modal-2d.image.text_to_image.v1",
+        "primary-image",
+        "image/png",
+        PNG,
+    )
+    service = make_service(tmp_path, adapter)
+    _, session = pair(service)
+    body = envelope(
+        session,
+        adapter.id,
+        adapter.operation,
+        {"prompt": "cancel me", "model": "test-model"},
+        "primary-image",
+        idem="idem_durable_cancel",
+    )
+
+    interrupted = service.submit(session, body)
+    cancelled = service.cancel(session, interrupted["id"])
+    assert cancelled["status"] == "cancelled"
+    assert adapter.cancelled_job_id == interrupted["id"]
+    assert adapter.submit_count == 1
+
+
+
+def test_connector_store_sets_and_validates_schema_version(tmp_path: Path) -> None:
+    root = tmp_path / "connector-versioned"
+    store = ConnectorStore(root)
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+
+    with sqlite3.connect(store.db_path) as db, db:
+        db.execute("PRAGMA user_version = 0")
+    ConnectorStore(root)
+    with sqlite3.connect(store.db_path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_connector_store_rejects_future_or_incompatible_schema(tmp_path: Path) -> None:
+    future_root = tmp_path / "future-connector"
+    future_root.mkdir()
+    future_db = future_root / "connector.sqlite3"
+    with sqlite3.connect(future_db) as db, db:
+        db.execute("PRAGMA user_version = 99")
+    with pytest.raises(RuntimeError, match="Connector DB 版本过新"):
+        ConnectorStore(future_root)
+
+    broken_root = tmp_path / "broken-connector"
+    broken_root.mkdir()
+    broken_db = broken_root / "connector.sqlite3"
+    with sqlite3.connect(broken_db) as db, db:
+        db.execute("CREATE TABLE connector_jobs (id TEXT PRIMARY KEY)")
+    with pytest.raises(RuntimeError, match="Connector DB schema 不兼容"):
+        ConnectorStore(broken_root)
+
+
+
+def test_connector_allowed_origins_share_normalized_env_configuration(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "MODAL_CONNECTOR_ALLOWED_ORIGINS",
+        "https://example.com:443, https://example.com, http://localhost:3100",
+    )
+    assert connector_allowed_origins() == (
+        "https://example.com",
+        "http://localhost:3100",
+    )
+
+    monkeypatch.setenv("MODAL_CONNECTOR_ALLOWED_ORIGINS", "tauri://localhost")
+    with pytest.raises(ConnectorError) as exc:
+        connector_allowed_origins()
+    assert exc.value.code == "PAIRING_INVALID"

@@ -294,9 +294,17 @@ class JobManager:
             retryable=True,
         )
 
-    def create(self, model: str, remote_call_id: str) -> dict:
-        """按 remote_call_id 幂等创建本地 Job。"""
+    def create(self, model: str, remote_call_id: str, *, job_id: str | None = None) -> dict:
+        """按 remote_call_id 幂等创建本地 Job；调用方可提供稳定 Job ID 用于崩溃恢复。"""
+        if job_id is not None and (not job_id or len(job_id) > 128):
+            raise ValueError("无效的本地 Job ID")
         with self._lock:
+            by_id = self._jobs.get(job_id) if job_id is not None else None
+            if by_id is not None:
+                if by_id.model != model or by_id.remote_call_id != remote_call_id:
+                    raise ValueError("本地 Job ID 已绑定不同远端任务")
+                return by_id.public()
+
             existing = next(
                 (job for job in self._jobs.values() if job.remote_call_id == remote_call_id),
                 None,
@@ -304,11 +312,13 @@ class JobManager:
             if existing is not None:
                 if existing.model != model:
                     raise ValueError("同一远端任务不能绑定不同模型")
+                if job_id is not None and existing.id != job_id:
+                    raise ValueError("远端任务已绑定其它本地 Job")
                 return existing.public()
 
             timestamp = _now()
             job = Job(
-                id=uuid.uuid4().hex,
+                id=job_id or uuid.uuid4().hex,
                 model=model,
                 remote_call_id=remote_call_id,
                 status="running",

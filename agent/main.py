@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, SecretStr
 from agent import artifacts, exports, rembg_preprocess
 from agent.capabilities import capabilities
 from agent.connector.api import create_router
+from agent.connector.service import connector_allowed_origins
 from agent.generation_service import GenerationCoordinator, GenerationRecoveryPending
 from agent.generation_store import (
     GenerationConflict,
@@ -46,17 +47,16 @@ def recover_generation_state() -> None:
     generation_coordinator.recover_after_restart()
 
 app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
+_tauri_origins = (
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:1420",
-        "http://127.0.0.1:1420",
-        "http://tauri.localhost",
-        "https://tauri.localhost",
-        "tauri://localhost",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=list(dict.fromkeys((*_tauri_origins, *connector_allowed_origins()))),
     allow_methods=["*"],
     allow_headers=[
         "Authorization",

@@ -15,6 +15,9 @@ from typing import Iterator
 from .contracts import ConnectorError, SAFE_ID, TERMINAL
 
 
+_DB_VERSION = 1
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -42,7 +45,11 @@ class ConnectorStore:
 
     def _initialize(self) -> None:
         with self._connect() as db:
-            db.execute("PRAGMA foreign_keys = ON")
+            version = int(db.execute("PRAGMA user_version").fetchone()[0])
+            if version > _DB_VERSION:
+                raise RuntimeError(
+                    f"Connector DB 版本过新：{version} > {_DB_VERSION}"
+                )
             db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS connector_jobs (
@@ -103,8 +110,37 @@ class ConnectorStore:
                 )
                 """
             )
-            db.execute("CREATE INDEX IF NOT EXISTS idx_connector_jobs_owner_updated ON connector_jobs(owner, updated_at DESC)")
-            db.execute("CREATE INDEX IF NOT EXISTS idx_connector_artifact_links_owner ON connector_artifact_links(owner, artifact_id)")
+            required = {
+                "connector_jobs": {
+                    "id", "owner", "provider", "operation", "request_hash",
+                    "idempotency_key", "request_json", "remote_job_id", "status",
+                    "event_sequence", "contract_version", "capability_hash",
+                    "capability_revision", "effective_options_json", "created_at",
+                    "updated_at",
+                },
+                "connector_artifacts": {
+                    "id", "role", "mime", "bytes", "hash", "local_path", "created_at",
+                },
+                "connector_artifact_links": {
+                    "artifact_id", "owner", "producer_job_id", "created_at",
+                },
+            }
+            for table, expected in required.items():
+                columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                missing = expected - columns
+                if missing:
+                    raise RuntimeError(
+                        f"Connector DB schema 不兼容：{table} 缺少 {sorted(missing)}"
+                    )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_connector_jobs_owner_updated "
+                "ON connector_jobs(owner, updated_at DESC)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_connector_artifact_links_owner "
+                "ON connector_artifact_links(owner, artifact_id)"
+            )
+            db.execute(f"PRAGMA user_version = {_DB_VERSION}")
 
 
     @staticmethod
