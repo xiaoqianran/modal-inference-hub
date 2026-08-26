@@ -57,7 +57,7 @@ The original image, rembg matte, component selection, crop and canonicalization 
 
 - Engine: `rembg`
 - Model: `birefnet-general-lite`
-- Default provider: CPU
+- Default provider: Windows NVIDIA GPU when CUDA is available, with automatic CPU fallback
 - Windows GPU provider: ONNXRuntime CUDA（cuDNN）
 - CUDA 随 Agent 打包 NVIDIA CUDA / cuDNN 运行库，仅支持 NVIDIA GPU
 - If GPU initialization fails, preprocessing falls back to CPU
@@ -148,7 +148,7 @@ project/
 └── components.json   component metadata + selected component IDs
 ```
 
-The project database also tracks model/profile choice, Modal FunctionCall job state, optional remote Canonical path and validated GLB metadata.
+The project database also tracks model/profile choice, Modal FunctionCall job state, optional remote Canonical path and validated GLB metadata. Every generation is appended to a per-project model history, so earlier successful GLBs remain selectable after image edits or later generation attempts.
 
 Old projects that predate `selection.png` can rebuild it locally from `matte.png` plus saved component state; rembg does not have to run again.
 

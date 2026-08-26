@@ -1,6 +1,7 @@
 import type { Project } from "../agent";
 
 const activeStatuses = new Set<Project["status"]>([
+  "submitting",
   "generating",
   "running",
   "connection_required",
@@ -11,6 +12,7 @@ const statusLabels: Record<Project["status"], string> = {
   draft: "待抠图",
   segmented: "旧项目",
   ready: "可生成",
+  submitting: "提交中",
   generating: "提交中",
   running: "生成中",
   connection_required: "等待连接",

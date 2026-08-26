@@ -19,6 +19,8 @@ jobs:
           cache: npm
 
       - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.12.5"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -33,7 +35,7 @@ jobs:
         run: |
           npm ci
           uv python install 3.12
-          uv sync --upgrade-package modal
+          uv sync --locked --group dev --group build
 
       - name: 构建并冒烟测试本地代理
         shell: pwsh

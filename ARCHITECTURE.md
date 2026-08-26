@@ -96,6 +96,13 @@ Project
   ├── job_id
   └── artifact descriptor
 
+ProjectGeneration[]
+  ├── canonical_sha256
+  ├── model/profile
+  ├── job_id
+  ├── status/error
+  └── artifact descriptor
+
 Job
   ├── remote_call_id
   ├── status

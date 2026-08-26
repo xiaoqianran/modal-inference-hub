@@ -315,6 +315,9 @@ class JobManager:
             jobs = sorted(self._jobs.values(), key=lambda job: job.created_at, reverse=True)
             return [job.public() for job in jobs[:limit]]
 
+    def get(self, job_id: str) -> dict:
+        return self._get(job_id).public()
+
     def _get(self, job_id: str) -> Job:
         with self._lock:
             job = self._jobs.get(job_id)

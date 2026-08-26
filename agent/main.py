@@ -28,7 +28,7 @@ from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
 from agent.models import CapabilityError, public_models, source_input_limits
-from agent.projects import projects
+from agent.projects import ACTIVE_GENERATION_STATUSES, projects
 
 app = FastAPI(title="modal-3D 本地代理", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -97,6 +97,7 @@ class ProjectComponentSelectionRequest(BaseModel):
 
 
 class ProjectGenerationRequest(BaseModel):
+    request_id: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     model: str
     profile: str = "recommended"
     seed: int = 42
@@ -202,6 +203,14 @@ def project_get(project_id: str) -> dict:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
 
 
+@app.get("/v1/projects/{project_id}/generations")
+def project_generations(project_id: str) -> list[dict]:
+    try:
+        return projects.list_generations(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+
+
 @app.get("/v1/projects/{project_id}/source")
 def project_source(project_id: str):
     try:
@@ -216,6 +225,9 @@ def project_source(project_id: str):
 @app.post("/v1/projects/{project_id}/preprocess")
 def project_preprocess(project_id: str) -> dict:
     try:
+        project = projects.get(project_id)
+        if project["status"] in ACTIVE_GENERATION_STATUSES:
+            raise HTTPException(status_code=409, detail="远程生成任务活动期间不能重新执行 rembg")
         source = projects.source_bytes(project_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
@@ -287,7 +299,7 @@ def project_components(project_id: str) -> dict:
 def project_component_selection(project_id: str, request: ProjectComponentSelectionRequest) -> dict:
     try:
         current = projects.get(project_id)
-        if current["status"] in {"generating", "running", "connection_required", "cancel_requested"}:
+        if current["status"] in ACTIVE_GENERATION_STATUSES:
             raise HTTPException(status_code=409, detail="远程生成任务活动期间不能修改前景选择")
         matte_bytes = projects.matte_path(project_id).read_bytes()
         component_state = projects.component_state(project_id)
@@ -390,15 +402,27 @@ def project_canonical(project_id: str):
 @app.post("/v1/projects/{project_id}/generation")
 def project_generation(project_id: str, request: ProjectGenerationRequest) -> dict:
     try:
-        project = projects.get(project_id)
-        if project["status"] in {"generating", "running", "connection_required", "cancel_requested"}:
-            raise HTTPException(status_code=409, detail="该项目已有远程生成任务正在活动")
-        descriptor, local_path = projects.canonical_local(project_id)
+        claim = projects.claim_generation(project_id, request.request_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="项目不存在") from exc
-    except (RuntimeError, FileNotFoundError) as exc:
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if not claim["claimed"]:
+        if not claim["job_id"]:
+            raise HTTPException(status_code=409, detail="该生成请求正在提交")
+        try:
+            return {"project": claim["project"], "job": jobs.get(claim["job_id"])}
+        except KeyError as exc:
+            raise HTTPException(status_code=409, detail="生成记录对应的本地任务不存在") from exc
+
+    bound = False
     try:
+        try:
+            descriptor, local_path = projects.canonical_local(project_id)
+        except (RuntimeError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         try:
             _, canonical_path = projects.canonical_remote(project_id)
         except RuntimeError:
@@ -415,41 +439,54 @@ def project_generation(project_id: str, request: ProjectGenerationRequest) -> di
             request.profile,
             request.seed,
         )
+        call_id = remote["call_id"]
+        try:
+            job = jobs.create(remote["model"], call_id)
+        except Exception:
+            try:
+                generation.cancel_call(call_id)
+            except Exception as cancel_exc:  # noqa: BLE001 - 补偿失败不能覆盖原始落库异常。
+                print(
+                    f"[agent] generation compensation failed stage=job_create call_id={call_id} "
+                    f"type={type(cancel_exc).__name__}",
+                    flush=True,
+                )
+            raise
+
+        try:
+            project = projects.record_generation(
+                project_id, request.model, request.profile, job["id"], request.request_id
+            )
+            bound = True
+        except Exception:
+            # Job 已经持久化，因此优先通过 JobManager 取消：即使网络暂时不可用，
+            # cancel_requested 也会被保存，后续 poll/reconnect 仍可继续完成补偿。
+            try:
+                jobs.cancel(job["id"])
+            except Exception as cancel_exc:  # noqa: BLE001 - 保留可恢复 Job，不覆盖原异常。
+                print(
+                    f"[agent] generation compensation failed stage=project_bind job_id={job['id']} "
+                    f"type={type(cancel_exc).__name__}",
+                    flush=True,
+                )
+            raise
+        return {"project": project, "job": job}
     except CapabilityError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except artifacts.ArtifactValidationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    call_id = remote["call_id"]
-    try:
-        job = jobs.create(remote["model"], call_id)
-    except Exception:
-        try:
-            generation.cancel_call(call_id)
-        except Exception as cancel_exc:  # noqa: BLE001 - 补偿失败不能覆盖原始落库异常。
-            print(
-                f"[agent] generation compensation failed stage=job_create call_id={call_id} "
-                f"type={type(cancel_exc).__name__}",
-                flush=True,
-            )
-        raise
-
-    try:
-        project = projects.record_generation(
-            project_id, request.model, request.profile, job["id"]
-        )
-    except Exception:
-        # Job 已经持久化，因此优先通过 JobManager 取消：即使网络暂时不可用，
-        # cancel_requested 也会被保存，后续 poll/reconnect 仍可继续完成补偿。
-        try:
-            jobs.cancel(job["id"])
-        except Exception as cancel_exc:  # noqa: BLE001 - 保留可恢复 Job，不覆盖原异常。
-            print(
-                f"[agent] generation compensation failed stage=project_bind job_id={job['id']} "
-                f"type={type(cancel_exc).__name__}",
-                flush=True,
-            )
-        raise
-    return {"project": project, "job": job}
+    finally:
+        if not bound:
+            try:
+                projects.release_generation_claim(project_id, request.request_id)
+            except Exception as release_exc:  # noqa: BLE001 - 不覆盖原始提交错误。
+                print(
+                    f"[agent] generation claim release failed project_id={project_id} "
+                    f"type={type(release_exc).__name__}",
+                    flush=True,
+                )
 
 
 @app.post("/v1/exports")
