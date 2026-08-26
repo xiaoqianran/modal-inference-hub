@@ -23,6 +23,7 @@ import {
   type ProjectGeneration,
 } from "./agent";
 import SettingsPanel from "./SettingsPanel";
+import Gallery from "./Gallery";
 import { useRuntimeController } from "./useRuntimeController";
 import AppHeader from "./components/AppHeader";
 import CommandFeedback from "./components/CommandFeedback";
@@ -52,6 +53,7 @@ function canonicalFromProject(project: Project): CanonicalAsset | null {
 function App() {
   const runtimeController = useRuntimeController();
   const { agent, modalConnected, models } = runtimeController;
+  const [view, setView] = useState<"workbench" | "gallery">("workbench");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [generationReviewOpen, setGenerationReviewOpen] = useState(false);
   const [modelId, setModelId] = useState("");
@@ -548,7 +550,7 @@ function App() {
   }
 
   shortcutRef.current = {
-    enabled: Boolean(componentState) && !settingsOpen && !busy,
+    enabled: view === "workbench" && Boolean(componentState) && !settingsOpen && !busy,
     undo: () => { void undoSelection(); },
     redo: () => { void redoSelection(); },
   };
@@ -702,7 +704,7 @@ function App() {
   };
 
   workflowShortcutRef.current = {
-    enabled: !settingsOpen && !generationReviewOpen && !busy && !submitting,
+    enabled: view === "workbench" && !settingsOpen && !generationReviewOpen && !busy && !submitting,
     goPrepare: () => navigateWorkflow("prepare"),
     goGenerate: () => navigateWorkflow("generate"),
     openSettings: () => {
@@ -734,103 +736,122 @@ function App() {
   }, []);
 
   return (
-    <div className="app-shell">
-      <ProjectSidebar
-        agent={agent}
-        projects={recentProjects}
-        activeProjectId={project?.id}
-        busy={busy}
-        onSelect={(projectId) => { void restoreProject(projectId); }}
-        onDelete={(value) => { void removeProject(value); }}
-      />
+    <div className={`app-shell ${view === "gallery" ? "gallery-mode" : ""}`}>
+      {view === "workbench" ? (
+        <ProjectSidebar
+          agent={agent}
+          projects={recentProjects}
+          activeProjectId={project?.id}
+          busy={busy}
+          onSelect={(projectId) => { void restoreProject(projectId); }}
+          onDelete={(value) => { void removeProject(value); }}
+        />
+      ) : null}
 
       <div className="app-main">
         <AppHeader
           projectTitle={project?.title}
+          view={view}
           agentReady={Boolean(agent?.running)}
           modalConnected={modalConnected}
           busy={busy}
+          onChangeView={(nextView) => {
+            if (nextView === "gallery") setGenerationReviewOpen(false);
+            setView(nextView);
+          }}
           onOpenSettings={() => setSettingsOpen(true)}
         />
 
-        <main className="workspace">
-          <WorkflowProgress
-            stage={stage}
-            message={workflowMessage}
-            generationActive={Boolean(job && jobIsActive(job))}
-            generationCount={generations.length}
-            modelName={selectedModel?.name}
-            onNavigate={navigateWorkflow}
+        {view === "gallery" ? (
+          <Gallery
+            agent={agent}
+            models={models}
+            onLibraryChanged={refreshRecent}
+            onOpenProject={(projectId) => {
+              setView("workbench");
+              void restoreProject(projectId);
+            }}
           />
-          <div className="workspace-columns">
-            <div ref={prepareSectionRef} className="workspace-lane workspace-lane-primary">
-              <PreprocessPanel
-                project={project}
-                sourceUrl={sourceUrl}
-                matteUrl={matteUrl}
-                canonical={canonical}
-                preprocessMeta={preprocessMeta}
-                modelDownload={modelDownload}
-                componentState={componentState}
-                selectionBox={selectionBox}
-                canUndo={selectionHistory.length > 0}
-                canRedo={selectionFuture.length > 0}
-                agentReady={Boolean(agent?.running)}
-                busy={busy}
-                hint={preprocessHint}
-                onChooseImage={(file) => { void chooseImage(file); }}
-                onPreprocess={() => { void preprocess(); }}
-                onToggleComponent={toggleComponent}
-                onSelectAll={selectAllComponents}
-                onUndo={() => { void undoSelection(); }}
-                onRedo={() => { void redoSelection(); }}
-                onPointerDown={beginBoxSelection}
-                onPointerMove={moveBoxSelection}
-                onPointerUp={finishBoxSelection}
-                onPointerCancel={() => setSelectionBox(null)}
+        ) : (
+          <>
+            <main className="workspace">
+              <WorkflowProgress
+                stage={stage}
+                message={workflowMessage}
+                generationActive={Boolean(job && jobIsActive(job))}
+                generationCount={generations.length}
+                modelName={selectedModel?.name}
+                onNavigate={navigateWorkflow}
               />
-            </div>
-            <div ref={generationSectionRef} className="workspace-lane workspace-lane-secondary">
-              <GenerationPanel
-                canonical={canonical}
-                resultUrl={resultUrl}
-                resultOutdated={resultOutdated}
-                models={models}
-                selectedModel={selectedModel}
-                selectedProfile={selectedProfile}
-                job={job}
-                resultJob={resultJob}
-                generations={generations}
-                selectedGenerationJobId={selectedGenerationJobId}
-                projectStatus={project?.status ?? null}
-                busy={busy || submitting}
-                hint={generationHint}
-                onSelectModel={(nextModelId) => {
-                  setModelId(nextModelId);
-                }}
-                onGenerate={requestGeneration}
-                onCancel={() => { void cancel(); }}
-                onAbandonUnknown={() => { void abandonUnknownGeneration(); }}
-                onSelectGeneration={(value) => { void selectGeneration(value); }}
-                onExport={() => { void downloadResult(project?.title); }}
-                onOpenSettings={() => setSettingsOpen(true)}
-              />
-            </div>
-          </div>
-        </main>
+              <div className="workspace-columns">
+                <div ref={prepareSectionRef} className="workspace-lane workspace-lane-primary">
+                  <PreprocessPanel
+                    project={project}
+                    sourceUrl={sourceUrl}
+                    matteUrl={matteUrl}
+                    canonical={canonical}
+                    preprocessMeta={preprocessMeta}
+                    modelDownload={modelDownload}
+                    componentState={componentState}
+                    selectionBox={selectionBox}
+                    canUndo={selectionHistory.length > 0}
+                    canRedo={selectionFuture.length > 0}
+                    agentReady={Boolean(agent?.running)}
+                    busy={busy}
+                    hint={preprocessHint}
+                    onChooseImage={(file) => { void chooseImage(file); }}
+                    onPreprocess={() => { void preprocess(); }}
+                    onToggleComponent={toggleComponent}
+                    onSelectAll={selectAllComponents}
+                    onUndo={() => { void undoSelection(); }}
+                    onRedo={() => { void redoSelection(); }}
+                    onPointerDown={beginBoxSelection}
+                    onPointerMove={moveBoxSelection}
+                    onPointerUp={finishBoxSelection}
+                    onPointerCancel={() => setSelectionBox(null)}
+                  />
+                </div>
+                <div ref={generationSectionRef} className="workspace-lane workspace-lane-secondary">
+                  <GenerationPanel
+                    canonical={canonical}
+                    resultUrl={resultUrl}
+                    resultOutdated={resultOutdated}
+                    models={models}
+                    selectedModel={selectedModel}
+                    selectedProfile={selectedProfile}
+                    job={job}
+                    resultJob={resultJob}
+                    generations={generations}
+                    selectedGenerationJobId={selectedGenerationJobId}
+                    projectStatus={project?.status ?? null}
+                    busy={busy || submitting}
+                    hint={generationHint}
+                    onSelectModel={(nextModelId) => { setModelId(nextModelId); }}
+                    onGenerate={requestGeneration}
+                    onCancel={() => { void cancel(); }}
+                    onAbandonUnknown={() => { void abandonUnknownGeneration(); }}
+                    onSelectGeneration={(value) => { void selectGeneration(value); }}
+                    onExport={() => { void downloadResult(project?.title); }}
+                    onOpenSettings={() => setSettingsOpen(true)}
+                  />
+                </div>
+              </div>
+            </main>
 
-        <GenerationReviewDialog
-          open={generationReviewOpen}
-          project={project}
-          canonical={canonical}
-          model={selectedModel}
-          profile={selectedProfile}
-          selectedComponents={componentState?.selected_component_ids.length ?? 0}
-          componentCount={componentState?.component_count ?? 0}
-          busy={busy || submitting}
-          onCancel={closeGenerationReview}
-          onConfirm={confirmGenerationReview}
-        />
+            <GenerationReviewDialog
+              open={generationReviewOpen}
+              project={project}
+              canonical={canonical}
+              model={selectedModel}
+              profile={selectedProfile}
+              selectedComponents={componentState?.selected_component_ids.length ?? 0}
+              componentCount={componentState?.component_count ?? 0}
+              busy={busy || submitting}
+              onCancel={closeGenerationReview}
+              onConfirm={confirmGenerationReview}
+            />
+          </>
+        )}
       </div>
 
       <CommandFeedback feedback={feedback} onDismiss={dismissFeedback} />

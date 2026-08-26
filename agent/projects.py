@@ -14,8 +14,11 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Iterator
+
+from PIL import Image, ImageOps
 
 from agent import image_input
 from agent.statuses import PROJECT_REMOTE_ACTIVE_STATUSES
@@ -206,6 +209,18 @@ class ProjectStore:
                 "CREATE UNIQUE INDEX IF NOT EXISTS project_generations_project_request "
                 "ON project_generations(project_id, request_id) WHERE request_id IS NOT NULL"
             )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS projects_created "
+                "ON projects(created_at DESC, id DESC)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS projects_updated "
+                "ON projects(updated_at DESC, id DESC)"
+            )
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS projects_source_sha256 "
+                "ON projects(source_sha256) WHERE source_sha256 IS NOT NULL"
+            )
             # 将旧版 projects 表中唯一的生成结果迁移为第一条成果记录。
             legacy = db.execute(
                 """
@@ -239,34 +254,74 @@ class ProjectStore:
         current_fields = {item.name for item in fields(Project)}
         return Project(**{key: value for key, value in dict(row).items() if key in current_fields})
 
-    def create(self, data: bytes, filename: str, limits: dict | None = None) -> dict:
-        name = Path(filename or "source.png").name
-        descriptor = image_input.describe(data, name, limits)
-        suffix = Path(name).suffix.lower()
+    @staticmethod
+    def _write_thumbnail(data: bytes, directory: Path) -> Path:
+        """生成图库轻量预览；固定文件名避免为派生资源扩 schema。"""
+        target = directory / "thumbnail.png"
+        temporary = directory / f".thumbnail-{uuid.uuid4().hex}.png"
+        try:
+            with Image.open(BytesIO(data)) as source:
+                image = ImageOps.exif_transpose(source)
+                image.load()
+                if image.mode == "P":
+                    image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+                elif image.mode not in {"L", "LA", "RGB", "RGBA"}:
+                    image = image.convert("RGB")
+                image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+                image.save(temporary, format="PNG", optimize=True)
+            temporary.replace(target)
+            return target
+        finally:
+            temporary.unlink(missing_ok=True)
 
+    def _create_validated(self, data: bytes, name: str, descriptor: dict) -> dict:
+        suffix = Path(name).suffix.lower()
         project_id = uuid.uuid4().hex
         directory = self.assets / project_id
         directory.mkdir(parents=True, exist_ok=False)
         source = directory / f"source{suffix}"
-        source.write_bytes(data)
-        now = datetime.now(UTC).isoformat()
-        title = Path(name).stem[:80] or "未命名项目"
-        with self._connect() as db:
-            db.execute(
-                """
-                INSERT INTO projects (
-                    id, title, source_name, source_path, source_bytes,
-                    source_id, source_sha256, source_mime, source_width, source_height,
-                    status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
-                """,
-                (
-                    project_id, title, name, str(source), len(data),
-                    descriptor["id"], descriptor["sha256"], descriptor["mime"],
-                    descriptor["width"], descriptor["height"], now, now,
-                ),
-            )
+        try:
+            source.write_bytes(data)
+            self._write_thumbnail(data, directory)
+            now = datetime.now(UTC).isoformat()
+            title = Path(name).stem[:80] or "未命名项目"
+            with self._connect() as db:
+                db.execute(
+                    """
+                    INSERT INTO projects (
+                        id, title, source_name, source_path, source_bytes,
+                        source_id, source_sha256, source_mime, source_width, source_height,
+                        status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+                    """,
+                    (
+                        project_id, title, name, str(source), len(data),
+                        descriptor["id"], descriptor["sha256"], descriptor["mime"],
+                        descriptor["width"], descriptor["height"], now, now,
+                    ),
+                )
+        except Exception:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
         return self.get(project_id)
+
+    def create(self, data: bytes, filename: str, limits: dict | None = None) -> dict:
+        name = Path(filename or "source.png").name
+        descriptor = image_input.describe(data, name, limits)
+        return self._create_validated(data, name, descriptor)
+
+    def import_library(self, data: bytes, filename: str, limits: dict | None = None) -> dict:
+        """图库导入保持幂等：相同源图复用已有 Project，不触发预处理。"""
+        name = Path(filename or "source.png").name
+        descriptor = image_input.describe(data, name, limits)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM projects WHERE source_sha256 = ? ORDER BY created_at ASC LIMIT 1",
+                (descriptor["sha256"],),
+            ).fetchone()
+        if row is not None:
+            return {"status": "duplicate", "project": self._project(row).public()}
+        return {"status": "imported", "project": self._create_validated(data, name, descriptor)}
 
     def get(self, project_id: str) -> dict:
         with self._connect() as db:
@@ -281,6 +336,77 @@ class ProjectStore:
                 "SELECT * FROM projects ORDER BY updated_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [self._project(row).public() for row in rows]
+
+    def list_gallery(self, page: int = 1, page_size: int = 48, sort: str = "created") -> dict:
+        page = max(1, page)
+        page_size = min(96, max(1, page_size))
+        order_column = "updated_at" if sort == "updated" else "created_at"
+        offset = (page - 1) * page_size
+        with self._connect() as db:
+            total = int(db.execute("SELECT COUNT(*) FROM projects").fetchone()[0])
+            rows = db.execute(
+                f"SELECT * FROM projects ORDER BY {order_column} DESC, id DESC LIMIT ? OFFSET ?",
+                (page_size, offset),
+            ).fetchall()
+            project_ids = [row["id"] for row in rows]
+            generation_rows = []
+            if project_ids:
+                placeholders = ",".join("?" for _ in project_ids)
+                generation_rows = db.execute(
+                    f"""
+                    SELECT id, project_id, canonical_sha256, model, profile, job_id,
+                           artifact_id, artifact_sha256, artifact_bytes, status, error,
+                           created_at, updated_at
+                    FROM project_generations
+                    WHERE project_id IN ({placeholders})
+                    ORDER BY updated_at DESC, created_at DESC, id DESC
+                    """,
+                    project_ids,
+                ).fetchall()
+
+        projects_by_id = {row["id"]: self._project(row).public() for row in rows}
+        newest: dict[tuple[str, str], dict] = {}
+        current: dict[tuple[str, str], dict] = {}
+        for row in generation_rows:
+            generation = dict(row)
+            key = (generation["project_id"], generation["model"])
+            newest.setdefault(key, generation)
+            canonical_sha = projects_by_id[generation["project_id"]]["canonical_sha256"]
+            if canonical_sha and generation["canonical_sha256"] == canonical_sha:
+                current.setdefault(key, generation)
+
+        items = []
+        for row in rows:
+            project = projects_by_id[row["id"]]
+            model_keys = {model for project_id, model in newest if project_id == project["id"]}
+            if project["model"]:
+                model_keys.add(project["model"])
+            summaries = []
+            for model in sorted(model_keys):
+                generation = current.get((project["id"], model)) or newest.get((project["id"], model))
+                if generation is None:
+                    generation = {
+                        "canonical_sha256": project["canonical_sha256"],
+                        "model": model,
+                        "profile": project["profile"] or "recommended",
+                        "job_id": project["job_id"],
+                        "artifact_id": project["artifact_id"],
+                        "artifact_sha256": project["artifact_sha256"],
+                        "artifact_bytes": project["artifact_bytes"],
+                        "status": project["status"],
+                        "error": project["error"],
+                        "created_at": project["created_at"],
+                        "updated_at": project["updated_at"],
+                    }
+                summary = dict(generation)
+                summary["is_current"] = bool(
+                    project["canonical_sha256"]
+                    and summary["canonical_sha256"] == project["canonical_sha256"]
+                )
+                summaries.append(summary)
+            items.append({"project": project, "generations": summaries})
+
+        return {"page": page, "page_size": page_size, "total": total, "items": items}
 
     def list_generations(self, project_id: str, limit: int = 50) -> list[dict]:
         self.get(project_id)
@@ -336,6 +462,13 @@ class ProjectStore:
 
     def source_bytes(self, project_id: str) -> bytes:
         return self.source_path(project_id).read_bytes()
+
+    def thumbnail_path(self, project_id: str) -> Path:
+        source = self.source_path(project_id)
+        target = source.parent / "thumbnail.png"
+        if not target.is_file():
+            self._write_thumbnail(source.read_bytes(), source.parent)
+        return target
 
     def _asset_path(self, project_id: str, name: str) -> Path:
         self.get(project_id)

@@ -163,6 +163,15 @@ export type Project = {
   title: string;
   source_name: string;
   source_bytes: number;
+  source: {
+    id: string;
+    role: "source-image";
+    mime: string | null;
+    bytes: number;
+    sha256: string | null;
+    width: number | null;
+    height: number | null;
+  } | null;
   canonical_id: string | null;
   canonical_sha256: string | null;
   canonical_bytes: number | null;
@@ -234,6 +243,38 @@ export type ProjectGeneration = {
   error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type LibraryGeneration = {
+  canonical_sha256: string | null;
+  model: string;
+  profile: string;
+  job_id: string | null;
+  artifact_id: string | null;
+  artifact_sha256: string | null;
+  artifact_bytes: number | null;
+  status: Project["status"];
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  is_current: boolean;
+};
+
+export type LibraryItem = {
+  project: Project;
+  generations: LibraryGeneration[];
+};
+
+export type LibraryPage = {
+  page: number;
+  page_size: number;
+  total: number;
+  items: LibraryItem[];
+};
+
+export type LibraryImportResult = {
+  status: "imported" | "duplicate";
+  project: Project;
 };
 
 export const startAgent = () => invoke<AgentInfo>("agent_start");
@@ -327,6 +368,26 @@ export function createProject(info: AgentInfo, image: File) {
   const form = new FormData();
   form.append("file", image);
   return json<Project>(info, "/v1/projects", { method: "POST", body: form });
+}
+
+export function importLibraryImage(info: AgentInfo, image: File) {
+  const form = new FormData();
+  form.append("file", image);
+  return json<LibraryImportResult>(info, "/v1/library/import", { method: "POST", body: form });
+}
+
+export const listLibrary = (
+  info: AgentInfo,
+  page = 1,
+  pageSize = 48,
+  sort: "created" | "updated" = "created",
+) => json<LibraryPage>(
+  info,
+  `/v1/library?page=${page}&page_size=${pageSize}&sort=${sort}`,
+);
+
+export async function libraryThumbnailBlob(info: AgentInfo, projectId: string) {
+  return (await request(info, `/v1/library/${projectId}/thumbnail`)).blob();
 }
 
 export const listProjects = (info: AgentInfo) =>

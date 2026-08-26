@@ -360,6 +360,60 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         self.assertEqual(generations[0]["artifact_id"], "art-old")
         self.assertEqual(generations[0]["status"], "succeeded")
 
+    def test_library_import_is_local_idempotent_and_creates_thumbnail(self) -> None:
+        source = _png(7, 5)
+
+        first = self.store.import_library(source, "chair.png")
+        duplicate = self.store.import_library(source, "same-content.png")
+
+        self.assertEqual(first["status"], "imported")
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertEqual(duplicate["project"]["id"], first["project"]["id"])
+        self.assertEqual(first["project"]["status"], "draft")
+        self.assertIsNone(first["project"]["canonical_id"])
+        self.assertTrue(self.store.thumbnail_path(first["project"]["id"]).is_file())
+        self.assertEqual(self.store.list_gallery()["total"], 1)
+
+    def test_gallery_paginates_and_marks_old_canonical_results_as_history(self) -> None:
+        first = self.store.create(_png(2, 2), "first.png")
+        second = self.store.create(_png(3, 2), "second.png")
+        third = self.store.create(_png(4, 2), "third.png")
+        canonical = _png(1024, 1024)
+        old = {"id": "can_gallery_old", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(first["id"], _png(2, 2), canonical, old)
+        self.record_generation(first["id"], "model-a", "default", "job-gallery-old")
+        self.store.record_job({
+            "id": "job-gallery-old",
+            "status": "succeeded",
+            "result": {"artifact": {"id": "art-gallery-old", "sha256": "c" * 64, "bytes": 128}},
+            "error": None,
+        })
+        current = {"id": "can_gallery_current", "sha256": "b" * 64, "bytes": len(canonical)}
+        self.store.save_canonical_selection(
+            first["id"], _png(2, 2), canonical, current, {"selected_component_ids": ["cc-1"]}
+        )
+
+        page_one = self.store.list_gallery(page=1, page_size=2)
+        page_two = self.store.list_gallery(page=2, page_size=2)
+        gallery_first = next(
+            item for item in page_one["items"] + page_two["items"]
+            if item["project"]["id"] == first["id"]
+        )
+
+        self.assertEqual(page_one["total"], 3)
+        self.assertEqual(len(page_one["items"]), 2)
+        self.assertEqual(len(page_two["items"]), 1)
+        self.assertEqual({item["project"]["id"] for item in page_one["items"] + page_two["items"]}, {first["id"], second["id"], third["id"]})
+        self.assertEqual(len(gallery_first["generations"]), 1)
+        self.assertEqual(gallery_first["generations"][0]["job_id"], "job-gallery-old")
+        self.assertFalse(gallery_first["generations"][0]["is_current"])
+
+        self.record_generation(first["id"], "model-a", "default", "job-gallery-current")
+        current_gallery = self.store.list_gallery(page=1, page_size=10)
+        gallery_first = next(item for item in current_gallery["items"] if item["project"]["id"] == first["id"])
+        self.assertEqual(gallery_first["generations"][0]["job_id"], "job-gallery-current")
+        self.assertTrue(gallery_first["generations"][0]["is_current"])
+
     def test_legacy_sam_columns_are_ignored(self) -> None:
         project = self.store.create(_png(), "legacy.png")
         with self.store._connect() as db:

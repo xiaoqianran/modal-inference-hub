@@ -211,6 +211,37 @@ def project_list() -> list[dict]:
     return projects.list()
 
 
+@app.post("/v1/library/import")
+async def library_import(file: Annotated[UploadFile, File()]) -> dict:
+    try:
+        limits = source_input_limits()
+        return projects.import_library(await file.read(), file.filename or "source.png", limits)
+    except CapabilityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except artifacts.ArtifactValidationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/v1/library")
+def library_list(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(48, ge=12, le=96),
+    sort: str = Query("created", pattern=r"^(created|updated)$"),
+) -> dict:
+    return projects.list_gallery(page, page_size, sort)
+
+
+@app.get("/v1/library/{project_id}/thumbnail")
+def library_thumbnail(project_id: str):
+    try:
+        path = projects.thumbnail_path(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="项目不存在") from exc
+    return FileResponse(path, media_type="image/png", filename="thumbnail.png")
+
+
 @app.delete("/v1/projects/{project_id}")
 def project_delete(project_id: str) -> dict:
     try:
