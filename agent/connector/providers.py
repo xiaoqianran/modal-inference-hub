@@ -100,6 +100,8 @@ class Modal2DAdapter:
         try:
             return self._opener.open(request, timeout=self.timeout)
         except HTTPError as exc:
+            if exc.code == 404:
+                raise ConnectorError("PROVIDER_NOT_FOUND", 404, "modal-2d job not found") from exc
             if exc.code in {401, 403, 409, 503}:
                 raise ConnectorError("CONNECTION_REQUIRED", 503, "modal-2d is not connected", recoverable=True) from exc
             if 400 <= exc.code < 500:
@@ -165,7 +167,7 @@ class Modal2DAdapter:
         *,
         connector_job_id: str,
     ) -> RemoteSubmission:
-        del connector_job_id
+        del store, owner
         inputs = request["inputs"]
         if not isinstance(inputs, dict):
             raise ConnectorError("INVALID_REQUEST", 422, "modal-2d inputs must be an object")
@@ -173,28 +175,65 @@ class Modal2DAdapter:
             "prompt": inputs.get("prompt"),
             "model": inputs.get("model"),
             "seed": inputs.get("seed", 42),
+            "job_id": connector_job_id,
         }
         if inputs.get("guidance") is not None:
             body["guidance"] = inputs["guidance"]
         state = self._json("POST", "/v1/jobs", body)
         remote_id = state.get("id")
-        if not isinstance(remote_id, str) or not SAFE_ID.fullmatch(remote_id):
+        if (
+            not isinstance(remote_id, str)
+            or not SAFE_ID.fullmatch(remote_id)
+            or remote_id != connector_job_id
+        ):
             raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d invalid job identity")
         if state.get("model") != body["model"]:
             raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d model identity drift")
+        status = state.get("status")
+        if status == "connection_required":
+            raise ConnectorError(
+                "CONNECTION_REQUIRED",
+                503,
+                "modal-2d submission outcome is unknown",
+                recoverable=True,
+            )
+        if status != "running":
+            raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d invalid submit status")
         return RemoteSubmission(
             remote_job_id=remote_id,
-            effective_options={key: value for key, value in body.items() if key != "prompt"},
+            effective_options={
+                key: value for key, value in body.items() if key not in {"prompt", "job_id"}
+            },
             model={"id": str(body["model"]), "version": None, "revision": None},
         )
 
     def recover_submission(
         self, connector_job_id: str, request: dict[str, object]
     ) -> RemoteSubmission | None:
-        # 2D provider-local API 目前没有可由 Connector Job ID 反查的 durable identity。
-        # 结果未知时必须保持 fail-closed，绝不自动重提。
-        del connector_job_id, request
-        return None
+        if not SAFE_ID.fullmatch(connector_job_id):
+            raise ConnectorError("INVALID_REQUEST", 422, "modal-2d connector job identity invalid")
+        try:
+            state = self._json("GET", f"/v1/jobs/{connector_job_id}")
+        except ConnectorError as exc:
+            if exc.code == "PROVIDER_NOT_FOUND":
+                return None
+            raise
+        if state.get("id") != connector_job_id:
+            raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d job identity drift")
+        inputs = request.get("inputs")
+        if not isinstance(inputs, dict):
+            raise ConnectorError("INVALID_REQUEST", 422, "modal-2d inputs must be an object")
+        model = str(inputs.get("model") or "")
+        if state.get("model") != model:
+            raise ConnectorError("PROVIDER_IDENTITY_MISMATCH", 409, "modal-2d model identity drift")
+        effective = {"model": model, "seed": inputs.get("seed", 42)}
+        if inputs.get("guidance") is not None:
+            effective["guidance"] = inputs["guidance"]
+        return RemoteSubmission(
+            remote_job_id=connector_job_id,
+            effective_options=effective,
+            model={"id": model, "version": None, "revision": None},
+        )
 
     def poll(self, remote_job_id: str) -> dict[str, object]:
         if not SAFE_ID.fullmatch(remote_job_id):

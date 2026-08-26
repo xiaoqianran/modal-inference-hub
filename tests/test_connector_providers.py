@@ -215,3 +215,157 @@ def test_modal3d_recovers_existing_connector_local_job(monkeypatch) -> None:
         "version": None,
         "revision": None,
     }
+
+
+def test_modal2d_submit_uses_connector_job_id(monkeypatch) -> None:
+    adapter = Modal2DAdapter("http://127.0.0.1:3212")
+    captured: dict[str, object] = {}
+
+    def fake_json(method, path, body=None):
+        captured.update(method=method, path=path, body=body)
+        return {
+            "id": "job_connector_2d",
+            "model": "sana-sprint-1.6b",
+            "status": "running",
+        }
+
+    monkeypatch.setattr(adapter, "_json", fake_json)
+    result = adapter.submit(
+        {
+            "inputs": {
+                "prompt": "mossy shrine",
+                "model": "sana-sprint-1.6b",
+                "seed": 7,
+                "guidance": 4.5,
+            }
+        },
+        FakeStore(),
+        "owner",
+        connector_job_id="job_connector_2d",
+    )
+
+    assert captured == {
+        "method": "POST",
+        "path": "/v1/jobs",
+        "body": {
+            "prompt": "mossy shrine",
+            "model": "sana-sprint-1.6b",
+            "seed": 7,
+            "job_id": "job_connector_2d",
+            "guidance": 4.5,
+        },
+    }
+    assert result.remote_job_id == "job_connector_2d"
+    assert result.effective_options == {
+        "model": "sana-sprint-1.6b",
+        "seed": 7,
+        "guidance": 4.5,
+    }
+
+
+def test_modal2d_recovers_existing_provider_job_without_resubmit(monkeypatch) -> None:
+    adapter = Modal2DAdapter("http://127.0.0.1:3212")
+    calls: list[tuple[str, str]] = []
+
+    def fake_json(method, path, body=None):
+        calls.append((method, path))
+        assert body is None
+        return {
+            "id": "job_connector_2d",
+            "model": "sana-sprint-1.6b",
+            "status": "connection_required",
+            "error_code": "remote.submission_unknown",
+            "retryable": False,
+        }
+
+    monkeypatch.setattr(adapter, "_json", fake_json)
+    recovered = adapter.recover_submission(
+        "job_connector_2d",
+        {
+            "inputs": {
+                "prompt": "mossy shrine",
+                "model": "sana-sprint-1.6b",
+                "seed": 7,
+            }
+        },
+    )
+
+    assert calls == [("GET", "/v1/jobs/job_connector_2d")]
+    assert recovered is not None
+    assert recovered.remote_job_id == "job_connector_2d"
+    assert recovered.effective_options == {"model": "sana-sprint-1.6b", "seed": 7}
+
+
+def test_modal2d_recovery_returns_none_only_when_provider_job_is_missing(monkeypatch) -> None:
+    adapter = Modal2DAdapter("http://127.0.0.1:3212")
+
+    def missing(method, path, body=None):
+        raise ConnectorError("PROVIDER_NOT_FOUND", 404, "missing")
+
+    monkeypatch.setattr(adapter, "_json", missing)
+    recovered = adapter.recover_submission(
+        "job_connector_2d",
+        {"inputs": {"model": "sana-sprint-1.6b", "seed": 42}},
+    )
+    assert recovered is None
+
+
+def test_modal2d_submit_propagates_connection_required_immediately(monkeypatch) -> None:
+    adapter = Modal2DAdapter("http://127.0.0.1:3212")
+    monkeypatch.setattr(
+        adapter,
+        "_json",
+        lambda method, path, body=None: {
+            "id": "job_connector_2d",
+            "model": "sana-sprint-1.6b",
+            "status": "connection_required",
+            "error_code": "remote.submission_unknown",
+            "retryable": False,
+        },
+    )
+
+    with pytest.raises(ConnectorError) as exc:
+        adapter.submit(
+            {
+                "inputs": {
+                    "prompt": "mossy shrine",
+                    "model": "sana-sprint-1.6b",
+                    "seed": 7,
+                }
+            },
+            FakeStore(),
+            "owner",
+            connector_job_id="job_connector_2d",
+        )
+
+    assert exc.value.code == "CONNECTION_REQUIRED"
+    assert exc.value.recoverable is True
+
+
+def test_modal2d_submit_rejects_unknown_provider_status(monkeypatch) -> None:
+    adapter = Modal2DAdapter("http://127.0.0.1:3212")
+    monkeypatch.setattr(
+        adapter,
+        "_json",
+        lambda method, path, body=None: {
+            "id": "job_connector_2d",
+            "model": "sana-sprint-1.6b",
+            "status": "mystery",
+        },
+    )
+
+    with pytest.raises(ConnectorError) as exc:
+        adapter.submit(
+            {
+                "inputs": {
+                    "prompt": "mossy shrine",
+                    "model": "sana-sprint-1.6b",
+                    "seed": 7,
+                }
+            },
+            FakeStore(),
+            "owner",
+            connector_job_id="job_connector_2d",
+        )
+
+    assert exc.value.code == "PROVIDER_INVALID_RESPONSE"
