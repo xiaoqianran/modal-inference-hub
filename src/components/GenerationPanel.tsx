@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type {
   CanonicalAsset,
   GenerationJob,
@@ -17,6 +17,15 @@ function activityLabel(status: GenerationJob["status"]) {
   return "云端生成中";
 }
 
+function elapsedLabel(startedAt: string, now: number) {
+  const started = new Date(startedAt).getTime();
+  if (!Number.isFinite(started)) return "—";
+  const seconds = Math.max(0, Math.floor((now - started) / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes ? `${minutes}m ${remainder.toString().padStart(2, "0")}s` : `${seconds}s`;
+}
+
 const generationStatusLabels: Record<ProjectGeneration["status"], string> = {
   draft: "等待处理",
   segmented: "旧项目",
@@ -32,6 +41,50 @@ const generationStatusLabels: Record<ProjectGeneration["status"], string> = {
   cancelled: "已取消",
   expired: "已过期",
 };
+
+function GenerationActivity({
+  job,
+  modelName,
+  onCancel,
+}: {
+  job: GenerationJob;
+  modelName: string;
+  onCancel: () => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const waitingConnection = job.status === "connection_required";
+  const cancelling = job.status === "cancel_requested";
+  return (
+    <div className={`generation-activity ${waitingConnection ? "paused" : ""}`}>
+      <div className="generation-activity-head">
+        <span>
+          <small>ACTIVE JOB</small>
+          <strong>{activityLabel(job.status)}</strong>
+        </span>
+        <span className="generation-elapsed">{elapsedLabel(job.created_at, now)}</span>
+      </div>
+      <div className="generation-activity-track"><i /></div>
+      <div className="generation-activity-meta">
+        <span><small>MODEL</small><strong>{modelName}</strong></span>
+        <span><small>JOB</small><strong>{job.id.slice(0, 8)}</strong></span>
+        <span><small>STATE</small><strong>{generationStatusLabels[job.status]}</strong></span>
+      </div>
+      <div className="generation-activity-steps" aria-label="生成状态">
+        <span className="complete"><i />任务已提交</span>
+        <span className={waitingConnection || cancelling ? "waiting" : "current"}><i />{waitingConnection ? "等待云端连接" : cancelling ? "等待取消确认" : "云端处理中"}</span>
+        <span><i />GLB 回传</span>
+      </div>
+      <button type="button" className="danger-button" disabled={cancelling} onClick={onCancel}>
+        {cancelling ? "取消确认中" : "取消任务"}
+      </button>
+    </div>
+  );
+}
 
 function generationTime(value: string) {
   const date = new Date(value);
@@ -90,15 +143,31 @@ export default function GenerationPanel({
 }: GenerationPanelProps) {
   const activeJob = isJobActive(job);
   const submissionUnknown = projectStatus === "submission_unknown";
+  const latestAvailableGeneration = generations.find((generation) =>
+    generation.status === "succeeded" && Boolean(generation.artifact_id)
+  ) ?? null;
+  const latestAvailableJobId = latestAvailableGeneration?.job_id ?? null;
+  const selectedGeneration = generations.find(
+    (generation) => generation.job_id === selectedGenerationJobId
+  ) ?? null;
+  const comparingHistory = Boolean(
+    selectedGeneration && latestAvailableGeneration
+    && selectedGeneration.job_id !== latestAvailableGeneration.job_id
+  );
 
   return (
     <section className="workspace-panel generation-panel" aria-labelledby="generation-title">
       <div className="panel-header">
         <div>
-          <span className="panel-step">02 · 云端重构</span>
-          <h2 id="generation-title">3D 模型</h2>
+          <span className="panel-step">03–04 · CLOUD & OUTPUT</span>
+          <h2 id="generation-title">3D 重构工作台</h2>
+          <p className="panel-description">仅在生成时上传 Canonical；结果保留为可切换的 GLB 版本。</p>
         </div>
-        {resultUrl ? <span className={`asset-badge ${resultOutdated ? "outdated" : ""}`}>{resultOutdated ? "上一版模型" : "已保存"}</span> : null}
+        {resultUrl ? (
+          <span className={`asset-badge ${resultOutdated ? "outdated" : "ready"}`}>
+            {resultOutdated ? "PREVIOUS VERSION" : "GLB READY"}
+          </span>
+        ) : null}
       </div>
 
       <div className="result-viewport">
@@ -108,53 +177,20 @@ export default function GenerationPanel({
           </Suspense>
         ) : (
           <div className="glb-viewer model-empty-state">
-            <div className="empty-preview"><span>3D MODEL</span><strong>{canonical ? "选择模型并开始生成" : "图片处理完成后生成"}</strong></div>
+            <div className="empty-preview"><span>3D VIEWPORT</span><strong>{canonical ? "选择模型并开始重构" : "完成前景处理后进入 3D"}</strong></div>
           </div>
         )}
       </div>
 
       {resultOutdated ? (
-        <div className="result-version-note"><strong>模型已保留</strong><span>当前图片有新修改；再次生成前，这里继续展示上一版结果。</span></div>
+        <div className="result-version-note"><strong>正在查看上一版</strong><span>当前前景已经变化；新生成完成前仍保留这一版供比较。</span></div>
       ) : null}
 
-      <div className="generation-library">
-        <div className="section-label">
-          <span>模型成果</span>
-          <small>{generations.length ? `${generations.length} 个版本` : "生成后保存在这里"}</small>
-        </div>
-        {generations.length ? (
-          <div className="generation-list">
-            {generations.map((generation) => {
-              const available = generation.status === "succeeded" && Boolean(generation.artifact_id);
-              const active = generation.job_id === selectedGenerationJobId;
-              const modelName = models.find((model) => model.id === generation.model)?.name ?? generation.model;
-              return (
-                <button
-                  type="button"
-                  key={generation.id}
-                  className={`generation-item ${active ? "active" : ""}`}
-                  disabled={busy || !available}
-                  aria-pressed={active}
-                  onClick={() => onSelectGeneration(generation)}
-                >
-                  <span>
-                    <strong>{modelName}</strong>
-                    <small>{generationTime(generation.created_at)} · {generation.profile}</small>
-                  </span>
-                  <span className={`generation-status ${available ? "available" : ""}`}>
-                    {generationStatusLabels[generation.status]}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="generation-library-empty">这个项目还没有模型成果</div>
-        )}
-      </div>
-
       <div className="model-section">
-        <div className="section-label"><span>生成模型</span>{selectedProfile ? <small>{selectedProfile.name}</small> : null}</div>
+        <div className="section-label">
+          <span>生成引擎</span>
+          {selectedProfile ? <small>{selectedProfile.name}</small> : null}
+        </div>
         <div className="model-options">
           {models.map((model) => (
             <button
@@ -170,15 +206,15 @@ export default function GenerationPanel({
           ))}
           {!models.length ? (
             <div className="workspace-recovery">
-              <span><strong>尚未连接 Modal</strong><small>本地处理不受影响</small></span>
-              <button type="button" className="quiet-button" onClick={onOpenSettings}>连接</button>
+              <span><strong>尚未连接 Modal</strong><small>本地图片处理仍可继续</small></span>
+              <button type="button" className="quiet-button" onClick={onOpenSettings}>连接云端</button>
             </div>
           ) : null}
         </div>
       </div>
 
       {submissionUnknown ? (
-        <div className="generation-actions">
+        <div className="generation-actions generation-warning">
           <span>
             <strong>上次提交结果无法确认</strong>
             <small>为避免重复计费，已暂停自动重提。解锁后再次生成可能产生重复云任务。</small>
@@ -188,22 +224,19 @@ export default function GenerationPanel({
           </button>
         </div>
       ) : activeJob && job ? (
-        <div className="generation-actions">
-          <button type="button" className="primary-button" disabled>{activityLabel(job.status)}…</button>
-          <button type="button" className="danger-button" disabled={job.status === "cancel_requested"} onClick={onCancel}>{job.status === "cancel_requested" ? "确认中" : "取消"}</button>
-        </div>
+        <GenerationActivity job={job} modelName={selectedModel?.name ?? job.model} onCancel={onCancel} />
       ) : (
-        <div className="panel-actions">
+        <div className="panel-actions generation-primary-action">
           <button type="button" className="primary-button" disabled={busy || !canonical || !selectedModel || selectedModel.status === "disabled"} onClick={onGenerate}>
-            使用 {selectedModel?.name ?? "模型"} 生成
+            使用 {selectedModel?.name ?? "模型"} 开始 3D 重构
           </button>
           <span>{hint}</span>
         </div>
       )}
 
       {resultJob?.result ? (
-        <div className="result-card">
-          <span><strong>GLB 已就绪</strong><small>{(resultJob.result.artifact.bytes / 1024 / 1024).toFixed(2)} MiB</small></span>
+        <div className="result-card result-delivery-card">
+          <span><strong>GLB 可交付</strong><small>{(resultJob.result.artifact.bytes / 1024 / 1024).toFixed(2)} MiB</small></span>
           <span className="result-timing">
             {resultJob.result.timing.inference_s !== undefined ? <small>推理 {resultJob.result.timing.inference_s.toFixed(2)}s</small> : null}
             {resultJob.result.timing.load_s !== undefined ? <small>加载 {resultJob.result.timing.load_s.toFixed(2)}s</small> : null}
@@ -211,6 +244,68 @@ export default function GenerationPanel({
           <button type="button" className="primary-button" onClick={onExport}>导出 GLB</button>
         </div>
       ) : null}
+
+      <div className="generation-library">
+        <div className="section-label">
+          <span>版本历史</span>
+          <small>{generations.length ? `${generations.length} 个模型版本` : "生成后自动保存在这里"}</small>
+        </div>
+        {comparingHistory && selectedGeneration && latestAvailableGeneration ? (
+          <div className="version-compare-strip">
+            <span>
+              <small>VERSION COMPARE</small>
+              <strong>正在查看历史版本</strong>
+            </span>
+            <span className="version-compare-meta">
+              <small>{selectedGeneration.canonical_sha256 === latestAvailableGeneration.canonical_sha256 ? "同一前景" : "前景版本不同"}</small>
+              {selectedGeneration.artifact_bytes && latestAvailableGeneration.artifact_bytes ? (
+                <small>
+                  体积差 {(
+                    (selectedGeneration.artifact_bytes - latestAvailableGeneration.artifact_bytes)
+                    / 1024 / 1024
+                  ).toFixed(2)} MiB
+                </small>
+              ) : null}
+            </span>
+            <button type="button" className="quiet-button" disabled={busy} onClick={() => onSelectGeneration(latestAvailableGeneration)}>
+              查看最新
+            </button>
+          </div>
+        ) : null}
+        {generations.length ? (
+          <div className="generation-list">
+            {generations.map((generation) => {
+              const available = generation.status === "succeeded" && Boolean(generation.artifact_id);
+              const active = generation.job_id === selectedGenerationJobId;
+              const latest = generation.job_id === latestAvailableJobId;
+              const modelName = models.find((model) => model.id === generation.model)?.name ?? generation.model;
+              return (
+                <button
+                  type="button"
+                  key={generation.id}
+                  className={`generation-item ${active ? "active" : ""}`}
+                  disabled={busy || !available}
+                  aria-pressed={active}
+                  onClick={() => onSelectGeneration(generation)}
+                >
+                  <span>
+                    <strong>{modelName}{latest ? <em>LATEST</em> : null}</strong>
+                    <small>
+                      {generationTime(generation.created_at)} · {generation.profile}
+                      {generation.artifact_bytes ? ` · ${(generation.artifact_bytes / 1024 / 1024).toFixed(2)} MiB` : ""}
+                    </small>
+                  </span>
+                  <span className={`generation-status ${available ? "available" : ""} ${active ? "viewing" : ""}`}>
+                    {active ? "正在查看" : generationStatusLabels[generation.status]}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="generation-library-empty">暂无版本 · 第一次生成完成后会出现在这里</div>
+        )}
+      </div>
     </section>
   );
 }

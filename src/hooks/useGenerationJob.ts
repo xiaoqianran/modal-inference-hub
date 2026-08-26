@@ -179,7 +179,8 @@ export function useGenerationJob({
       if (!agent?.running || !resultJob?.result) return;
       try {
         const prepared = await prepareExport(agent, resultJob.id);
-        await savePreparedExport(prepared.id, `${title || "modal-3d"}.glb`);
+        const saved = await savePreparedExport(prepared.id, `${title || "modal-3d"}.glb`);
+        setWorkflowMessage(saved ? `GLB 已导出 · ${saved}` : "已取消 GLB 导出。");
       } catch (error) {
         setWorkflowMessage(error instanceof Error ? error.message : String(error));
       }

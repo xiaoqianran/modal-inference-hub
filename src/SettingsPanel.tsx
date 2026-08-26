@@ -73,10 +73,10 @@ export default function SettingsPanel({
     <div className="settings-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={dialogRef} className="settings-shell" role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1}>
         <aside className="settings-nav">
-          <div className="settings-brand"><strong id="settings-title">设置</strong><small>modal-3D</small></div>
-          <button type="button" className={page === "account" ? "active" : ""} aria-current={page === "account" ? "page" : undefined} onClick={() => setPage("account")}><span>◈</span><div>Modal 账户<small>{modalConnected ? "已连接" : "未连接"}</small></div></button>
-          <button type="button" className={page === "preprocess" ? "active" : ""} aria-current={page === "preprocess" ? "page" : undefined} onClick={() => setPage("preprocess")}><span>AI</span><div>本地预处理<small>{preprocessing?.engine ?? "rembg"}</small></div></button>
-          <button type="button" className={page === "advanced" ? "active" : ""} aria-current={page === "advanced" ? "page" : undefined} onClick={() => setPage("advanced")}><span>⋯</span><div>高级与诊断<small>{agent?.running ? "Agent 正常" : "Agent 停止"}</small></div></button>
+          <div className="settings-brand"><strong id="settings-title">控制中心</strong><small>SYSTEM CONTROL</small></div>
+          <button type="button" className={page === "account" ? "active" : ""} aria-current={page === "account" ? "page" : undefined} onClick={() => setPage("account")}><span>CL</span><div>云端连接<small>{modalConnected ? "Modal 已连接" : "等待凭据"}</small></div></button>
+          <button type="button" className={page === "preprocess" ? "active" : ""} aria-current={page === "preprocess" ? "page" : undefined} onClick={() => setPage("preprocess")}><span>AI</span><div>本地 AI<small>{preprocessing?.provider?.toUpperCase() ?? preprocessing?.engine ?? "rembg"}</small></div></button>
+          <button type="button" className={page === "advanced" ? "active" : ""} aria-current={page === "advanced" ? "page" : undefined} onClick={() => setPage("advanced")}><span>DX</span><div>系统诊断<small>{agent?.running ? "Agent 正常" : "Agent 停止"}</small></div></button>
           <button type="button" className="settings-close" onClick={onClose}>关闭</button>
         </aside>
 
@@ -87,6 +87,20 @@ export default function SettingsPanel({
               <button type="button" onClick={controller.dismissNotice} aria-label="关闭提示">×</button>
             </div>
           ) : null}
+          <div className="command-status-overview" aria-label="系统状态">
+            <div className={`command-status-card ${agent?.running ? "ok" : "warn"}`}>
+              <i />
+              <span><small>LOCAL AGENT</small><strong>{agent?.running ? `127.0.0.1:${agent.port}` : "未启动"}</strong></span>
+            </div>
+            <div className={`command-status-card ${preprocessing ? "ok" : "warn"}`}>
+              <i />
+              <span><small>LOCAL AI</small><strong>{preprocessing ? `${preprocessing.provider.toUpperCase()} · ${preprocessing.gpu_warm ? "Warm" : "Ready"}` : "待检测"}</strong></span>
+            </div>
+            <div className={`command-status-card ${modalConnected ? "ok" : "warn"}`}>
+              <i />
+              <span><small>MODAL CLOUD</small><strong>{modalConnected ? "Connected" : "Disconnected"}</strong></span>
+            </div>
+          </div>
           {page === "account" ? (
             <section className="settings-page">
               <div className="settings-page-title"><div><span className="eyebrow">Connection</span><h3>Modal 账户</h3><p>只用于发现 3D Worker、上传一次 Canonical RGBA 和提交生成任务。</p></div><Status ok={modalConnected}>{modalConnected ? "已连接" : "未连接"}</Status></div>
@@ -194,6 +208,13 @@ export default function SettingsPanel({
                 <button type="button" className="quiet-button" disabled={!controller.inTauri} onClick={() => void controller.openDataDirectory()}>打开数据目录</button>
                 <button type="button" className="quiet-button" disabled={!agent?.running || busy} onClick={() => void controller.refresh()}>重新检查状态</button>
                 {agent?.running ? <button type="button" className="quiet-button danger-text" disabled={busy} onClick={() => void controller.stop()}>停止 Agent</button> : <button type="button" className="primary-button" disabled={busy} onClick={() => void controller.start()}>启动 Agent</button>}
+              </div>
+              <div className="settings-shortcuts" aria-label="工作流快捷键">
+                <div><span>跳到图像与前景</span><kbd>Alt 1</kbd></div>
+                <div><span>跳到 3D 重构</span><kbd>Alt 2</kbd></div>
+                <div><span>开始生成</span><kbd>Ctrl Enter</kbd></div>
+                <div><span>打开控制中心</span><kbd>Ctrl ,</kbd></div>
+                <div><span>前景撤销 / 重做</span><kbd>Ctrl Z · Ctrl Shift Z</kbd></div>
               </div>
             </section>
           ) : null}

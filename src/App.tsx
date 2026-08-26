@@ -25,12 +25,16 @@ import {
 import SettingsPanel from "./SettingsPanel";
 import { useRuntimeController } from "./useRuntimeController";
 import AppHeader from "./components/AppHeader";
+import CommandFeedback from "./components/CommandFeedback";
 import GenerationPanel from "./components/GenerationPanel";
+import GenerationReviewDialog from "./components/GenerationReviewDialog";
 import PreprocessPanel, { type SelectionBox } from "./components/PreprocessPanel";
 import ProjectSidebar from "./components/ProjectSidebar";
 import WorkflowProgress from "./components/WorkflowProgress";
+import { useCommandFeedback } from "./hooks/useCommandFeedback";
 import { useObjectUrl } from "./hooks/useObjectUrl";
 import { isProjectGenerationActive } from "./generationState";
+import { workflowShortcutAction } from "./workflowShortcuts";
 
 import { useGenerationJob, jobIsActive } from "./hooks/useGenerationJob";
 
@@ -49,6 +53,7 @@ function App() {
   const runtimeController = useRuntimeController();
   const { agent, modalConnected, models } = runtimeController;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [generationReviewOpen, setGenerationReviewOpen] = useState(false);
   const [modelId, setModelId] = useState("");
   const [project, setProject] = useState<Project | null>(null);
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
@@ -67,11 +72,27 @@ function App() {
   const [workflowMessage, setWorkflowMessage] = useState(
     "选择图片后，在本机完成 rembg 抠图和 Canonical 规范化。",
   );
+  const { feedback, notify, dismiss: dismissFeedback } = useCommandFeedback();
   const [busy, setBusy] = useState(false);
   const restoredAgent = useRef<number | null>(null);
   const selectionRequestRef = useRef(false);
   const projectRequestRef = useRef(0);
+  const prepareSectionRef = useRef<HTMLDivElement | null>(null);
+  const generationSectionRef = useRef<HTMLDivElement | null>(null);
   const shortcutRef = useRef({ enabled: false, undo: () => undefined, redo: () => undefined });
+  const workflowShortcutRef = useRef<{
+    enabled: boolean;
+    goPrepare: () => void;
+    goGenerate: () => void;
+    generate: () => void;
+    openSettings: () => void;
+  }>({
+    enabled: false,
+    goPrepare: () => undefined,
+    goGenerate: () => undefined,
+    generate: () => undefined,
+    openSettings: () => undefined,
+  });
 
   const selectedModel = modelId
     ? models.find((model) => model.id === modelId)
@@ -98,7 +119,16 @@ function App() {
 
   const handleResultReady = useCallback((jobId: string) => {
     setSelectedGenerationJobId(jobId);
-  }, []);
+    notify({
+      tone: "success",
+      title: "3D 生成完成",
+      detail: "GLB 已回传到本机，可以检查视角、版本并导出。",
+      action: {
+        label: "查看结果",
+        run: () => generationSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      },
+    }, 5_200);
+  }, [notify]);
 
   const {
     job, resultJob, resultCanonicalSha, submitting, resetOutput, pollJob, restoreJob,
@@ -108,6 +138,12 @@ function App() {
     replaceResultUrl, setProject, refreshRecent, refreshGenerations,
     onResultReady: handleResultReady, setWorkflowMessage,
   });
+
+  const closeGenerationReview = useCallback(() => setGenerationReviewOpen(false), []);
+  const confirmGenerationReview = useCallback(() => {
+    setGenerationReviewOpen(false);
+    void generate();
+  }, [generate]);
 
   const restoreProject = useCallback(async (projectId: string) => {
     if (!agent?.running) return;
@@ -250,6 +286,11 @@ function App() {
       setWorkflowMessage(
         `本地抠图完成 · ${value.preprocess.provider.toUpperCase()} · ${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
       );
+      notify({
+        tone: "success",
+        title: "前景准备完成",
+        detail: `${value.component_state.component_count} 个可选前景 · ${value.preprocess.elapsed_ms.toFixed(0)} ms`,
+      });
       await refreshRecent();
     } finally {
       polling = false;
@@ -269,8 +310,10 @@ function App() {
     if (!agent?.running || !file) return;
     projectRequestRef.current += 1;
     setBusy(true);
+    let createdProject: Project | null = null;
     try {
       const value = await createProject(agent, file);
+      createdProject = value;
       setProject(value);
       setCanonical(null);
       setPreprocessMeta(null);
@@ -284,27 +327,55 @@ function App() {
       replaceSourceUrl(file);
       replaceMatteUrl(null);
       setWorkflowMessage("原图已保存在本机，正在自动开始 rembg 预处理…");
+      notify({
+        tone: "info",
+        title: "项目已创建",
+        detail: `${file.name} · 原图仅保存在本机`,
+      });
       await refreshRecent();
       await runLocalPreprocess(value);
     } catch (error) {
-      setWorkflowMessage(
-        `${error instanceof Error ? error.message : String(error)}；原图已保留，可直接重试本地抠图。`,
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      const retryProject = createdProject;
+      setWorkflowMessage(retryProject
+        ? `${message}；项目与原图已保留，可直接重试本地抠图。`
+        : `图片导入失败：${message}`);
+      notify({
+        tone: "error",
+        title: retryProject ? "本地预处理失败" : "图片导入失败",
+        detail: message,
+        action: retryProject ? {
+          label: "重试 rembg",
+          run: () => { void retryPreprocessTarget(retryProject); },
+        } : undefined,
+      }, 5_500);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retryPreprocessTarget(target: Project) {
+    if (!agent?.running || busy) return;
+    setBusy(true);
+    try {
+      await runLocalPreprocess(target);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setWorkflowMessage(message);
+      notify({
+        tone: "error",
+        title: "本地预处理失败",
+        detail: message,
+        action: { label: "再次重试", run: () => { void retryPreprocessTarget(target); } },
+      }, 5_500);
     } finally {
       setBusy(false);
     }
   }
 
   async function preprocess() {
-    if (!agent?.running || !project) return;
-    setBusy(true);
-    try {
-      await runLocalPreprocess(project);
-    } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
+    if (!project) return;
+    await retryPreprocessTarget(project);
   }
 
   async function applyComponentSelection(
@@ -500,6 +571,15 @@ function App() {
     if (!agent?.running) return;
     if (isProjectGenerationActive(value.status)) {
       setWorkflowMessage("该项目仍有远程任务活动，请先等待或取消。");
+      notify({
+        tone: "warning",
+        title: "项目正在生成",
+        detail: "活动任务结束或取消前不能删除本地项目。",
+        action: {
+          label: "查看任务",
+          run: () => generationSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        },
+      });
       return;
     }
     if (!window.confirm(`确认删除“${value.title}”？本地项目文件会一并移除。`)) return;
@@ -520,8 +600,11 @@ function App() {
         replaceMatteUrl(null);
       }
       await refreshRecent();
+      notify({ tone: "success", title: "项目已删除", detail: value.title });
     } catch (error) {
-      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setWorkflowMessage(message);
+      notify({ tone: "error", title: "项目删除失败", detail: message }, 5_500);
     }
   }
 
@@ -537,6 +620,11 @@ function App() {
       setProject(updated);
       await refreshRecent();
       setWorkflowMessage("已放弃待确认状态。再次生成将创建新的远端任务。");
+      notify({
+        tone: "warning",
+        title: "已解除提交锁定",
+        detail: "再次生成会创建新的远端任务，请留意潜在重复任务。",
+      }, 5_000);
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -565,13 +653,13 @@ function App() {
   }
 
 
-  const stage = resultUrl ? 3 : canonical ? 2 : project ? 1 : 0;
   const resultOutdated = Boolean(
     resultUrl && (
       (job && jobIsActive(job) && !job.result)
       || (resultCanonicalSha && canonical?.sha256 !== resultCanonicalSha)
     ),
   );
+  const stage = resultUrl && !resultOutdated ? 3 : canonical ? 2 : project ? 1 : 0;
   const preprocessHint = !project
     ? "选择 PNG / JPEG / WebP 后会自动本地抠图"
     : canonical
@@ -584,10 +672,71 @@ function App() {
       : !selectedModel
         ? "暂无可用模型"
         : "点击生成时仅上传一次 1024×1024 Canonical RGBA";
+  const navigateWorkflow = (target: "prepare" | "generate") => {
+    const element = target === "prepare" ? prepareSectionRef.current : generationSectionRef.current;
+    element?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const requestGeneration = () => {
+    if (!canonical) {
+      navigateWorkflow("prepare");
+      setWorkflowMessage("先完成本地 rembg 与 Canonical，再开始 3D 重构。");
+      notify({
+        tone: "warning",
+        title: "还不能开始 3D 重构",
+        detail: "先完成本地 rembg 与 Canonical。",
+      });
+      return;
+    }
+    if (!modalConnected) {
+      notify({
+        tone: "warning",
+        title: "Modal Cloud 尚未连接",
+        detail: "已打开控制中心，请先完成云端凭据连接。",
+      });
+      setSettingsOpen(true);
+      return;
+    }
+    if (!selectedModel || !selectedProfile || (job && jobIsActive(job)) || busy || submitting) return;
+    setGenerationReviewOpen(true);
+  };
+
+  workflowShortcutRef.current = {
+    enabled: !settingsOpen && !generationReviewOpen && !busy && !submitting,
+    goPrepare: () => navigateWorkflow("prepare"),
+    goGenerate: () => navigateWorkflow("generate"),
+    openSettings: () => {
+      setGenerationReviewOpen(false);
+      setSettingsOpen(true);
+    },
+    generate: requestGeneration,
+  };
+
+  useEffect(() => {
+    function handleWorkflowShortcut(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      const action = workflowShortcutAction(event);
+      if (!action) return;
+      if (action === "settings") {
+        event.preventDefault();
+        workflowShortcutRef.current.openSettings();
+        return;
+      }
+      if (!workflowShortcutRef.current.enabled) return;
+      event.preventDefault();
+      if (action === "prepare") workflowShortcutRef.current.goPrepare();
+      else if (action === "generate") workflowShortcutRef.current.goGenerate();
+      else workflowShortcutRef.current.generate();
+    }
+    window.addEventListener("keydown", handleWorkflowShortcut);
+    return () => window.removeEventListener("keydown", handleWorkflowShortcut);
+  }, []);
 
   return (
     <div className="app-shell">
       <ProjectSidebar
+        agent={agent}
         projects={recentProjects}
         activeProjectId={project?.id}
         busy={busy}
@@ -605,61 +754,86 @@ function App() {
         />
 
         <main className="workspace">
-          <WorkflowProgress stage={stage} message={workflowMessage} />
+          <WorkflowProgress
+            stage={stage}
+            message={workflowMessage}
+            generationActive={Boolean(job && jobIsActive(job))}
+            generationCount={generations.length}
+            modelName={selectedModel?.name}
+            onNavigate={navigateWorkflow}
+          />
           <div className="workspace-columns">
-            <PreprocessPanel
-              project={project}
-              sourceUrl={sourceUrl}
-              matteUrl={matteUrl}
-              canonical={canonical}
-              preprocessMeta={preprocessMeta}
-              modelDownload={modelDownload}
-              componentState={componentState}
-              selectionBox={selectionBox}
-              canUndo={selectionHistory.length > 0}
-              canRedo={selectionFuture.length > 0}
-              agentReady={Boolean(agent?.running)}
-              busy={busy}
-              hint={preprocessHint}
-              onChooseImage={(file) => { void chooseImage(file); }}
-              onPreprocess={() => { void preprocess(); }}
-              onToggleComponent={toggleComponent}
-              onSelectAll={selectAllComponents}
-              onUndo={() => { void undoSelection(); }}
-              onRedo={() => { void redoSelection(); }}
-              onPointerDown={beginBoxSelection}
-              onPointerMove={moveBoxSelection}
-              onPointerUp={finishBoxSelection}
-              onPointerCancel={() => setSelectionBox(null)}
-            />
-            <GenerationPanel
-              canonical={canonical}
-              resultUrl={resultUrl}
-              resultOutdated={resultOutdated}
-              models={models}
-              selectedModel={selectedModel}
-              selectedProfile={selectedProfile}
-              job={job}
-              resultJob={resultJob}
-              generations={generations}
-              selectedGenerationJobId={selectedGenerationJobId}
-              projectStatus={project?.status ?? null}
-              busy={busy || submitting}
-              hint={generationHint}
-              onSelectModel={(nextModelId) => {
-                setModelId(nextModelId);
-              }}
-              onGenerate={() => { if (!modalConnected) { setSettingsOpen(true); return; } void generate(); }}
-              onCancel={() => { void cancel(); }}
-              onAbandonUnknown={() => { void abandonUnknownGeneration(); }}
-              onSelectGeneration={(value) => { void selectGeneration(value); }}
-              onExport={() => { void downloadResult(project?.title); }}
-              onOpenSettings={() => setSettingsOpen(true)}
-            />
+            <div ref={prepareSectionRef} className="workspace-lane workspace-lane-primary">
+              <PreprocessPanel
+                project={project}
+                sourceUrl={sourceUrl}
+                matteUrl={matteUrl}
+                canonical={canonical}
+                preprocessMeta={preprocessMeta}
+                modelDownload={modelDownload}
+                componentState={componentState}
+                selectionBox={selectionBox}
+                canUndo={selectionHistory.length > 0}
+                canRedo={selectionFuture.length > 0}
+                agentReady={Boolean(agent?.running)}
+                busy={busy}
+                hint={preprocessHint}
+                onChooseImage={(file) => { void chooseImage(file); }}
+                onPreprocess={() => { void preprocess(); }}
+                onToggleComponent={toggleComponent}
+                onSelectAll={selectAllComponents}
+                onUndo={() => { void undoSelection(); }}
+                onRedo={() => { void redoSelection(); }}
+                onPointerDown={beginBoxSelection}
+                onPointerMove={moveBoxSelection}
+                onPointerUp={finishBoxSelection}
+                onPointerCancel={() => setSelectionBox(null)}
+              />
+            </div>
+            <div ref={generationSectionRef} className="workspace-lane workspace-lane-secondary">
+              <GenerationPanel
+                canonical={canonical}
+                resultUrl={resultUrl}
+                resultOutdated={resultOutdated}
+                models={models}
+                selectedModel={selectedModel}
+                selectedProfile={selectedProfile}
+                job={job}
+                resultJob={resultJob}
+                generations={generations}
+                selectedGenerationJobId={selectedGenerationJobId}
+                projectStatus={project?.status ?? null}
+                busy={busy || submitting}
+                hint={generationHint}
+                onSelectModel={(nextModelId) => {
+                  setModelId(nextModelId);
+                }}
+                onGenerate={requestGeneration}
+                onCancel={() => { void cancel(); }}
+                onAbandonUnknown={() => { void abandonUnknownGeneration(); }}
+                onSelectGeneration={(value) => { void selectGeneration(value); }}
+                onExport={() => { void downloadResult(project?.title); }}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
+            </div>
           </div>
         </main>
+
+        <GenerationReviewDialog
+          open={generationReviewOpen}
+          project={project}
+          canonical={canonical}
+          model={selectedModel}
+          profile={selectedProfile}
+          selectedComponents={componentState?.selected_component_ids.length ?? 0}
+          componentCount={componentState?.component_count ?? 0}
+          busy={busy || submitting}
+          onCancel={closeGenerationReview}
+          onConfirm={confirmGenerationReview}
+        />
       </div>
 
+      <CommandFeedback feedback={feedback} onDismiss={dismissFeedback} />
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} controller={runtimeController} />
     </div>
   );

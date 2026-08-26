@@ -75,6 +75,7 @@ class ComponentSelectionTests(unittest.TestCase):
         actual = Image.open(io.BytesIO(selected["canonical_bytes"])).convert("RGBA")
         self.assertEqual(actual.size, expected.size)
         self.assertEqual(actual.tobytes(), expected.tobytes())
+        self.assertEqual(selected["canonical_bytes"], image_ops._png_bytes(expected))
 
     def test_selection_preview_hides_unselected_objects_in_source_coordinates(self) -> None:
         matte = self._matte()
