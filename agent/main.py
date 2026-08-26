@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from agent import artifacts, exports, generation, rembg_preprocess
 from agent.capabilities import capabilities
+from agent.connector.api import create_router
 from agent.hardware import detect_hardware
 from agent.jobs import jobs
 from agent.modal_client import NotConnectedError, connect, connected, disconnect
@@ -39,9 +40,17 @@ app.add_middleware(
         "http://tauri.localhost",
         "https://tauri.localhost",
         "tauri://localhost",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
     ],
     allow_methods=["*"],
-    allow_headers=["Content-Type", "X-Modal-3D-Session"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Origin",
+        "X-Connector-Pairing",
+        "X-Modal-3D-Session",
+    ],
 )
 
 
@@ -70,6 +79,8 @@ async def request_diagnostics(request: Request, call_next):
 
 @app.middleware("http")
 async def require_session(request: Request, call_next):
+    if request.url.path.startswith("/connector/v1/"):
+        return await call_next(request)
     expected = os.environ.get("MODAL_3D_AGENT_TOKEN")
     if expected and request.method != "OPTIONS":
         provided = request.headers.get("X-Modal-3D-Session", "")
@@ -106,6 +117,8 @@ class ProjectGenerationRequest(BaseModel):
 class ExportRequest(BaseModel):
     job_id: str
 
+
+app.include_router(create_router())
 
 @app.get("/health")
 def health() -> dict:
