@@ -178,6 +178,7 @@ export type Project = {
     | "segmented"
     | "ready"
     | "submitting"
+    | "submission_unknown"
     | "generating"
     | "running"
     | "connection_required"
@@ -388,6 +389,11 @@ export const submitProjectGeneration = (
   json<{ project: Project; job: GenerationJob }>(info, `/v1/projects/${projectId}/generation`, {
     method: "POST",
     body: JSON.stringify({ request_id: requestId, model, profile, seed: 42 }),
+  });
+
+export const abandonUnknownProjectGeneration = (info: AgentInfo, projectId: string) =>
+  json<Project>(info, `/v1/projects/${projectId}/generation/abandon-unknown`, {
+    method: "POST",
   });
 
 export const getCapabilities = (info: AgentInfo) =>

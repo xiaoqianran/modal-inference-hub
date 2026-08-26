@@ -33,6 +33,18 @@ class JobManagerTests(unittest.TestCase):
     def create(self) -> dict:
         return self.manager.create("fastsam3d-plus-plus", "fc-test")
 
+    def test_create_is_idempotent_by_remote_call_id(self) -> None:
+        first = self.create()
+        second = self.manager.create("fastsam3d-plus-plus", "fc-test")
+
+        self.assertEqual(second["id"], first["id"])
+        self.assertEqual(len(self.manager.list()), 1)
+
+    def test_create_rejects_remote_call_model_mismatch(self) -> None:
+        self.create()
+        with self.assertRaisesRegex(ValueError, "不同模型"):
+            self.manager.create("other-model", "fc-test")
+
     def poll_with(self, job_id: str, *, result=None, error: BaseException | None = None):
         call = Mock()
         if error is not None:

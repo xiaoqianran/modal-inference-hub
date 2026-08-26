@@ -8,6 +8,11 @@ import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from agent.generation_store import (
+    GenerationConflict,
+    GenerationIntentStore,
+    GenerationSubmissionUnknown,
+)
 from agent.projects import ProjectStore
 
 
@@ -32,6 +37,7 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.store = ProjectStore(Path(self.temp.name))
+        self.intents = GenerationIntentStore(self.store.db_path)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -40,13 +46,17 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         self, project_id: str, model: str, profile: str, job_id: str
     ) -> dict:
         request_id = f"request-{job_id}"
-        claim = self.store.claim_generation(project_id, request_id)
+        claim = self.intents.claim(project_id, request_id, model, profile)
         self.assertTrue(claim["claimed"])
-        return self.store.record_generation(project_id, model, profile, job_id, request_id)
+        self.intents.begin_remote(request_id)
+        self.intents.mark_remote(request_id, f"remote-{job_id}")
+        self.intents.bind_job(request_id, job_id)
+        return self.store.get(project_id)
 
     def test_active_generation_states_cannot_be_deleted(self) -> None:
         for status in (
             "submitting",
+            "submission_unknown",
             "generating",
             "running",
             "connection_required",
@@ -64,28 +74,35 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         descriptor = {"id": "can_claim", "sha256": "a" * 64, "bytes": len(canonical)}
         self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
 
-        first = self.store.claim_generation(project["id"], "request-claim-a")
+        first = self.intents.claim(project["id"], "request-claim-a", "model-a", "default")
         self.assertTrue(first["claimed"])
-        self.assertEqual(first["project"]["status"], "submitting")
+        self.assertEqual(self.store.get(project["id"])["status"], "submitting")
 
-        retry = self.store.claim_generation(project["id"], "request-claim-a")
+        retry = self.intents.claim(project["id"], "request-claim-a", "model-a", "default")
         self.assertFalse(retry["claimed"])
         self.assertIsNone(retry["job_id"])
-        with self.assertRaisesRegex(ValueError, "已有远程生成任务"):
-            self.store.claim_generation(project["id"], "request-claim-b")
+        with self.assertRaisesRegex(GenerationConflict, "已有远程生成任务"):
+            self.intents.claim(project["id"], "request-claim-b", "model-a", "default")
 
-        generated = self.store.record_generation(
-            project["id"], "model-a", "default", "job-claim", "request-claim-a"
-        )
+        self.intents.begin_remote("request-claim-a")
+        self.intents.mark_remote("request-claim-a", "remote-claim")
+        self.intents.bind_job("request-claim-a", "job-claim")
+        generated = self.store.get(project["id"])
         self.assertEqual(generated["status"], "generating")
-        bound_retry = self.store.claim_generation(project["id"], "request-claim-a")
+        bound_retry = self.intents.claim(
+            project["id"], "request-claim-a", "model-a", "default"
+        )
         self.assertFalse(bound_retry["claimed"])
         self.assertEqual(bound_retry["job_id"], "job-claim")
 
         self.store._update(project["id"], status="succeeded")
-        terminal_retry = self.store.claim_generation(project["id"], "request-claim-a")
+        terminal_retry = self.intents.claim(
+            project["id"], "request-claim-a", "model-a", "default"
+        )
         self.assertFalse(terminal_retry["claimed"])
         self.assertEqual(terminal_retry["job_id"], "job-claim")
+        with self.assertRaisesRegex(GenerationConflict, "不同的生成参数"):
+            self.intents.claim(project["id"], "request-claim-a", "model-b", "default")
 
     def test_concurrent_generation_claim_has_single_winner(self) -> None:
         project = self.store.create(_png(), "concurrent-claim.png")
@@ -97,8 +114,12 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         def claim(request_id: str) -> bool:
             barrier.wait()
             try:
-                return bool(self.store.claim_generation(project["id"], request_id)["claimed"])
-            except ValueError:
+                return bool(
+                    self.intents.claim(project["id"], request_id, "model-a", "default")[
+                        "claimed"
+                    ]
+                )
+            except GenerationConflict:
                 return False
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -107,17 +128,55 @@ class ProjectStoreLifecycleTests(unittest.TestCase):
         self.assertEqual(results.count(True), 1)
         self.assertEqual(results.count(False), 1)
 
-    def test_unbound_generation_claim_is_recovered_after_restart(self) -> None:
+    def test_preparing_generation_is_safely_released_after_restart(self) -> None:
         project = self.store.create(_png(), "recover-claim.png")
         canonical = _png(1024, 1024)
         descriptor = {"id": "can_recover", "sha256": "a" * 64, "bytes": len(canonical)}
         self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
-        self.store.claim_generation(project["id"], "request-crashed")
+        self.intents.claim(project["id"], "request-crashed", "model-a", "default")
 
-        restored = ProjectStore(Path(self.temp.name))
-        restored.recover_generation_claims()
-        self.assertEqual(restored.get(project["id"])["status"], "ready")
-        self.assertTrue(restored.claim_generation(project["id"], "request-retry")["claimed"])
+        restored = GenerationIntentStore(self.store.db_path)
+        self.assertEqual(restored.recover_after_restart(), [])
+        self.assertEqual(self.store.get(project["id"])["status"], "ready")
+        self.assertTrue(
+            restored.claim(project["id"], "request-retry", "model-a", "default")["claimed"]
+        )
+
+    def test_remote_submission_window_fails_closed_after_restart(self) -> None:
+        project = self.store.create(_png(), "uncertain.png")
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_uncertain", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
+        self.intents.claim(project["id"], "request-uncertain", "model-a", "default")
+        self.intents.begin_remote("request-uncertain")
+
+        restored = GenerationIntentStore(self.store.db_path)
+        self.assertEqual(restored.recover_after_restart(), [])
+        self.assertEqual(self.store.get(project["id"])["status"], "submission_unknown")
+        with self.assertRaises(GenerationSubmissionUnknown):
+            restored.claim(project["id"], "request-uncertain", "model-a", "default")
+        with self.assertRaises(GenerationConflict):
+            restored.claim(project["id"], "request-new", "model-a", "default")
+
+    def test_uncertain_generation_can_only_be_unlocked_explicitly(self) -> None:
+        project = self.store.create(_png(), "abandon-uncertain.png")
+        canonical = _png(1024, 1024)
+        descriptor = {"id": "can_abandon", "sha256": "a" * 64, "bytes": len(canonical)}
+        self.store.save_preprocessed(project["id"], _png(2, 2), canonical, descriptor)
+        self.intents.claim(project["id"], "request-abandon", "model-a", "default")
+        self.intents.begin_remote("request-abandon")
+        self.intents.recover_after_restart()
+
+        self.intents.abandon_uncertain(project["id"])
+
+        self.assertEqual(self.store.get(project["id"])["status"], "ready")
+        with self.assertRaisesRegex(GenerationConflict, "已放弃"):
+            self.intents.claim(project["id"], "request-abandon", "model-a", "default")
+        self.assertTrue(
+            self.intents.claim(project["id"], "request-after-abandon", "model-a", "default")[
+                "claimed"
+            ]
+        )
 
     def test_local_canonical_is_saved_before_remote_upload(self) -> None:
         project = self.store.create(_png(), "source.png")

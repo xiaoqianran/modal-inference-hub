@@ -1,18 +1,12 @@
 import type { Project } from "../agent";
-
-const activeStatuses = new Set<Project["status"]>([
-  "submitting",
-  "generating",
-  "running",
-  "connection_required",
-  "cancel_requested",
-]);
+import { isProjectGenerationActive } from "../generationState";
 
 const statusLabels: Record<Project["status"], string> = {
   draft: "待抠图",
   segmented: "旧项目",
   ready: "可生成",
   submitting: "提交中",
+  submission_unknown: "待确认",
   generating: "提交中",
   running: "生成中",
   connection_required: "等待连接",
@@ -53,7 +47,7 @@ export default function ProjectSidebar({
       <div className="recent-projects">
         {projects.length ? projects.map((item) => {
           const active = item.id === activeProjectId;
-          const locked = activeStatuses.has(item.status);
+          const locked = isProjectGenerationActive(item.status);
           return (
             <div key={item.id} className={`recent-project ${active ? "active" : ""}`}>
               <button type="button" className="project-open" disabled={busy} onClick={() => onSelect(item.id)}>

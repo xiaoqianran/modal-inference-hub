@@ -5,10 +5,8 @@
 
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-
-if ($env:OS -ne "Windows_NT") {
-    throw "当前仅支持在 Windows 上构建本地代理。"
-}
+$windowsEnvScript = Join-Path $PSScriptRoot "ensure-windows-env.ps1"
+. $windowsEnvScript
 
 if (-not $TargetTriple) {
     $hostLine = rustc -vV | Where-Object { $_ -like "host: *" } | Select-Object -First 1
@@ -48,7 +46,8 @@ if (Test-Path -LiteralPath $legacyOutputPath -PathType Leaf) {
 $inputPaths = @(
     (Join-Path $projectRoot "pyproject.toml"),
     (Join-Path $projectRoot "uv.lock"),
-    $PSCommandPath
+    $PSCommandPath,
+    $windowsEnvScript
 )
 $inputPaths += Get-ChildItem -LiteralPath (Join-Path $projectRoot "agent") -Recurse -File -Filter "*.py" |
     Select-Object -ExpandProperty FullName

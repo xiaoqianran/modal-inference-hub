@@ -18,14 +18,21 @@ def _validate_submission(value, expected_model: str) -> dict:
     return value
 
 
+def prepare_options(model: str, profile: str = "recommended", seed: int = 42) -> dict:
+    """只做本地参数校验，不触发任何远端调用。"""
+    return options_for(model, profile, seed)
+
+
 def submit(
     model: str,
     input_path: str,
     profile: str = "recommended",
     seed: int = 42,
+    *,
+    options: dict | None = None,
 ) -> dict:
     fn = modal.Function.from_name(APP_NAME, SUBMIT_FUNCTION, client=client())
-    value = fn.remote(model, input_path, options_for(model, profile, seed))
+    value = fn.remote(model, input_path, options or prepare_options(model, profile, seed))
     return _validate_submission(value, model)
 
 

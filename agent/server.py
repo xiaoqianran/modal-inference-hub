@@ -6,10 +6,14 @@ import sys
 import threading
 from pathlib import Path
 
+from agent.windows_env import normalize_windows_environment
+
+normalize_windows_environment()
+
 import uvicorn
 
 from agent import rembg_preprocess
-from agent.main import app
+from agent.main import app, recover_generation_state
 from agent.modal_client import connect
 
 
@@ -63,6 +67,7 @@ def main() -> None:
 
     print(f"[agent] starting pid={os.getpid()}", flush=True)
     _start_parent_watchdog()
+    recover_generation_state()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))

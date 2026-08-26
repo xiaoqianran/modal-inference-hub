@@ -1,4 +1,5 @@
 ﻿$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "ensure-windows-env.ps1")
 
 $agent = (Get-ChildItem -LiteralPath "src-tauri/binaries" -Filter "modal-3d-agent-*.exe" -File -Recurse |
   Where-Object { $_.Directory.Name -like "modal-3d-agent-*" } |

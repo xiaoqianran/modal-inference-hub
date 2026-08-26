@@ -4,12 +4,12 @@ import type {
   GenerationJob,
   ModelProfile,
   ModelSpec,
+  Project,
   ProjectGeneration,
 } from "../agent";
+import { isJobActive } from "../generationState";
 
 const GlbViewer = lazy(() => import("../GlbViewer"));
-
-const activeStatuses = new Set<GenerationJob["status"]>(["running", "connection_required", "cancel_requested"]);
 
 function activityLabel(status: GenerationJob["status"]) {
   if (status === "connection_required") return "等待云端连接";
@@ -22,6 +22,7 @@ const generationStatusLabels: Record<ProjectGeneration["status"], string> = {
   segmented: "旧项目",
   ready: "等待生成",
   submitting: "提交中",
+  submission_unknown: "提交待确认",
   generating: "提交中",
   running: "生成中",
   connection_required: "等待连接",
@@ -53,11 +54,13 @@ type GenerationPanelProps = {
   resultJob: GenerationJob | null;
   generations: ProjectGeneration[];
   selectedGenerationJobId: string | null;
+  projectStatus: Project["status"] | null;
   busy: boolean;
   hint: string;
   onSelectModel: (modelId: string) => void;
   onGenerate: () => void;
   onCancel: () => void;
+  onAbandonUnknown: () => void;
   onSelectGeneration: (generation: ProjectGeneration) => void;
   onExport: () => void;
   onOpenSettings: () => void;
@@ -74,16 +77,19 @@ export default function GenerationPanel({
   resultJob,
   generations,
   selectedGenerationJobId,
+  projectStatus,
   busy,
   hint,
   onSelectModel,
   onGenerate,
   onCancel,
+  onAbandonUnknown,
   onSelectGeneration,
   onExport,
   onOpenSettings,
 }: GenerationPanelProps) {
-  const activeJob = Boolean(job && activeStatuses.has(job.status));
+  const activeJob = isJobActive(job);
+  const submissionUnknown = projectStatus === "submission_unknown";
 
   return (
     <section className="workspace-panel generation-panel" aria-labelledby="generation-title">
@@ -171,7 +177,17 @@ export default function GenerationPanel({
         </div>
       </div>
 
-      {activeJob && job ? (
+      {submissionUnknown ? (
+        <div className="generation-actions">
+          <span>
+            <strong>上次提交结果无法确认</strong>
+            <small>为避免重复计费，已暂停自动重提。解锁后再次生成可能产生重复云任务。</small>
+          </span>
+          <button type="button" className="danger-button" disabled={busy} onClick={onAbandonUnknown}>
+            放弃待确认并解锁
+          </button>
+        </div>
+      ) : activeJob && job ? (
         <div className="generation-actions">
           <button type="button" className="primary-button" disabled>{activityLabel(job.status)}…</button>
           <button type="button" className="danger-button" disabled={job.status === "cancel_requested"} onClick={onCancel}>{job.status === "cancel_requested" ? "确认中" : "取消"}</button>

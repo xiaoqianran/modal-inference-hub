@@ -11,23 +11,8 @@ import {
   type GenerationJob,
   type Project,
 } from "../agent";
-
-const ACTIVE_JOB_STATUSES = new Set([
-  "running",
-  "connection_required",
-  "cancel_requested",
-]);
-const POLL_INTERVAL_MS = 1_400;
-const MAX_RETRY_DELAY_MS = 10_000;
-
-const sleep = (milliseconds: number) =>
-  new Promise((resolve) => setTimeout(resolve, milliseconds));
-const nextRetryDelay = (current: number) =>
-  Math.min(current * 2, MAX_RETRY_DELAY_MS);
-
-export function jobIsActive(job: GenerationJob | null): boolean {
-  return job ? ACTIVE_JOB_STATUSES.has(job.status) : false;
-}
+import { pollGenerationJob } from "../generationPoller";
+export { isJobActive as jobIsActive } from "../generationState";
 
 interface UseGenerationJobOptions {
   agent: AgentInfo | null;
@@ -80,50 +65,34 @@ export function useGenerationJob({
       if (!agent?.running) return;
       const pollId = ++pollIdRef.current;
       activeProjectIdRef.current = projectId;
-      let retryDelay = POLL_INTERVAL_MS;
+      const isCurrent = () =>
+        pollId === pollIdRef.current && activeProjectIdRef.current === projectId;
 
-      while (pollId === pollIdRef.current && activeProjectIdRef.current === projectId) {
-        let value: GenerationJob;
-        try {
-          value = await getJob(agent, jobId);
-          retryDelay = POLL_INTERVAL_MS;
-        } catch (error) {
-          if (pollId !== pollIdRef.current || activeProjectIdRef.current !== projectId) return;
+      await pollGenerationJob({
+        getJob: () => getJob(agent, jobId),
+        getArtifact: () => jobArtifactBlob(agent, jobId),
+        isCurrent,
+        onJob: setJob,
+        onTransientError: (error, artifact) => {
+          const message = error instanceof Error ? error.message : String(error);
           setWorkflowMessage(
-            `任务状态暂时不可用，正在自动重试：${error instanceof Error ? error.message : String(error)}`,
+            artifact
+              ? `3D 已生成，结果读取暂时失败，正在自动重试：${message}`
+              : `任务状态暂时不可用，正在自动重试：${message}`,
           );
-          await sleep(retryDelay);
-          retryDelay = nextRetryDelay(retryDelay);
-          continue;
-        }
-
-        if (pollId !== pollIdRef.current || activeProjectIdRef.current !== projectId) return;
-        setJob(value);
-        if (!jobIsActive(value)) {
-          if (value.status === "succeeded" && value.result) {
-            try {
-              replaceResultUrl(await jobArtifactBlob(agent, jobId));
-            } catch (error) {
-              if (pollId !== pollIdRef.current || activeProjectIdRef.current !== projectId) return;
-              setWorkflowMessage(
-                `3D 已生成，结果读取暂时失败，正在自动重试：${error instanceof Error ? error.message : String(error)}`,
-              );
-              await sleep(retryDelay);
-              retryDelay = nextRetryDelay(retryDelay);
-              continue;
-            }
-            setResultJob(value);
-            setResultCanonicalSha(canonicalSha ?? null);
-            onResultReady(jobId);
-            setWorkflowMessage("3D 生成完成，可以检查并导出 GLB。");
-          } else if (value.error) {
-            setWorkflowMessage(value.error);
-          }
+        },
+        onSucceeded: (value, artifact) => {
+          replaceResultUrl(artifact);
+          setResultJob(value);
+          setResultCanonicalSha(canonicalSha ?? null);
+          onResultReady(jobId);
+          setWorkflowMessage("3D 生成完成，可以检查并导出 GLB。");
+        },
+        onTerminal: async (value) => {
+          if (value.error) setWorkflowMessage(value.error);
           await Promise.allSettled([refreshRecent(), refreshGenerations(projectId)]);
-          return;
-        }
-        await sleep(POLL_INTERVAL_MS);
-      }
+        },
+      });
     },
     [agent, onResultReady, refreshGenerations, refreshRecent, replaceResultUrl, setWorkflowMessage],
   );

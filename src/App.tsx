@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import "./App.css";
 import {
+  abandonUnknownProjectGeneration,
   createProject,
   deleteProject,
   getJob,
@@ -29,6 +30,7 @@ import PreprocessPanel, { type SelectionBox } from "./components/PreprocessPanel
 import ProjectSidebar from "./components/ProjectSidebar";
 import WorkflowProgress from "./components/WorkflowProgress";
 import { useObjectUrl } from "./hooks/useObjectUrl";
+import { isProjectGenerationActive } from "./generationState";
 
 import { useGenerationJob, jobIsActive } from "./hooks/useGenerationJob";
 
@@ -496,7 +498,7 @@ function App() {
 
   async function removeProject(value: Project) {
     if (!agent?.running) return;
-    if (["submitting", "generating", "running", "connection_required", "cancel_requested"].includes(value.status)) {
+    if (isProjectGenerationActive(value.status)) {
       setWorkflowMessage("该项目仍有远程任务活动，请先等待或取消。");
       return;
     }
@@ -520,6 +522,25 @@ function App() {
       await refreshRecent();
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function abandonUnknownGeneration() {
+    if (!agent?.running || !project || project.status !== "submission_unknown") return;
+    if (!window.confirm(
+      "上次远端提交结果无法确认。解锁后再次生成可能产生重复云任务和重复计费。确认放弃待确认状态？",
+    )) return;
+
+    setBusy(true);
+    try {
+      const updated = await abandonUnknownProjectGeneration(agent, project.id);
+      setProject(updated);
+      await refreshRecent();
+      setWorkflowMessage("已放弃待确认状态。再次生成将创建新的远端任务。");
+    } catch (error) {
+      setWorkflowMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -622,6 +643,7 @@ function App() {
               resultJob={resultJob}
               generations={generations}
               selectedGenerationJobId={selectedGenerationJobId}
+              projectStatus={project?.status ?? null}
               busy={busy || submitting}
               hint={generationHint}
               onSelectModel={(nextModelId) => {
@@ -629,6 +651,7 @@ function App() {
               }}
               onGenerate={() => { if (!modalConnected) { setSettingsOpen(true); return; } void generate(); }}
               onCancel={() => { void cancel(); }}
+              onAbandonUnknown={() => { void abandonUnknownGeneration(); }}
               onSelectGeneration={(value) => { void selectGeneration(value); }}
               onExport={() => { void downloadResult(project?.title); }}
               onOpenSettings={() => setSettingsOpen(true)}

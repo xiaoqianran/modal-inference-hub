@@ -39,12 +39,11 @@ from modal.exception import TimeoutError as ModalTimeoutError
 
 from agent import artifacts
 from agent.modal_client import NotConnectedError, client
+from agent.statuses import JOB_TERMINAL_STATUSES
 from agent.storage import data_dir
 
 _DB_VERSION = 3
 _REMOTE_NOT_FOUND_CONFIRMATIONS = 2
-# 终态集合：进入这些状态后不再变化，也不再轮询远端。
-_TERMINAL = {"succeeded", "failed", "cancelled", "expired"}
 _AUTH_ERRORS = (NotConnectedError, AuthError, PermissionDeniedError)
 _TRANSIENT_ERRORS = (ModalConnectionError, InternalError, ServiceError, ResourceExhaustedError)
 _RECOVERABLE_ERRORS = (*_AUTH_ERRORS, *_TRANSIENT_ERRORS, ModalTimeoutError, BuiltinTimeoutError)
@@ -236,7 +235,7 @@ class JobManager:
     ) -> dict:
         with self._lock:
             job = self._jobs[job_id]
-            if job.status in _TERMINAL:
+            if job.status in JOB_TERMINAL_STATUSES:
                 return job.public()
             job.status = status
             job.updated_at = _now()
@@ -296,19 +295,29 @@ class JobManager:
         )
 
     def create(self, model: str, remote_call_id: str) -> dict:
-        timestamp = _now()
-        job = Job(
-            id=uuid.uuid4().hex,
-            model=model,
-            remote_call_id=remote_call_id,
-            status="running",
-            created_at=timestamp,
-            updated_at=timestamp,
-        )
+        """按 remote_call_id 幂等创建本地 Job。"""
         with self._lock:
+            existing = next(
+                (job for job in self._jobs.values() if job.remote_call_id == remote_call_id),
+                None,
+            )
+            if existing is not None:
+                if existing.model != model:
+                    raise ValueError("同一远端任务不能绑定不同模型")
+                return existing.public()
+
+            timestamp = _now()
+            job = Job(
+                id=uuid.uuid4().hex,
+                model=model,
+                remote_call_id=remote_call_id,
+                status="running",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
             self._jobs[job.id] = job
             self._save(job)
-        return job.public()
+            return job.public()
 
     def list(self, limit: int = 50) -> list[dict]:
         with self._lock:
@@ -341,7 +350,7 @@ class JobManager:
                 retryable=True,
             )
         current = self._get(job.id)
-        if current.status in _TERMINAL:
+        if current.status in JOB_TERMINAL_STATUSES:
             return current.public()
         if current.error is None and current.error_code is None and current.retryable is True:
             return current.public()
@@ -349,7 +358,7 @@ class JobManager:
 
     def poll(self, job_id: str) -> dict:
         job = self._get(job_id)
-        if job.status in _TERMINAL:
+        if job.status in JOB_TERMINAL_STATUSES:
             return job.public()
 
         call: modal.FunctionCall | None = None
@@ -486,7 +495,7 @@ class JobManager:
 
     def cancel(self, job_id: str) -> dict:
         job = self._get(job_id)
-        if job.status in _TERMINAL:
+        if job.status in JOB_TERMINAL_STATUSES:
             return job.public()
 
         self._set_state(job.id, "cancel_requested", retryable=True)

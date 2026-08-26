@@ -38,6 +38,45 @@ fn random_token() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+#[cfg(target_os = "windows")]
+fn windows_drive(path: &str) -> Option<&str> {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':').then(|| &path[..2])
+}
+
+#[cfg(target_os = "windows")]
+fn configure_windows_child_env(command: &mut Command) {
+    let system_drive = std::env::var("SystemDrive")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            std::env::var("SystemRoot")
+                .ok()
+                .and_then(|root| windows_drive(&root).map(str::to_owned))
+        });
+
+    if let Some(drive) = system_drive {
+        if std::env::var_os("SystemDrive").is_none() {
+            command.env("SystemDrive", &drive);
+        }
+        if std::env::var_os("ProgramData").is_none() {
+            command.env("ProgramData", format!(r"{}\ProgramData", drive));
+        }
+        if std::env::var_os("ALLUSERSPROFILE").is_none() {
+            command.env("ALLUSERSPROFILE", format!(r"{}\ProgramData", drive));
+        }
+    }
+
+    if std::env::var_os("USERPROFILE").is_none() {
+        if let Some(home) = std::env::var_os("HOME") {
+            command.env("USERPROFILE", home);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_windows_child_env(_command: &mut Command) {}
+
 fn client_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("MODAL_3D_AGENT_DATA_DIR") {
         return Ok(PathBuf::from(path));
@@ -264,6 +303,7 @@ fn agent_start_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
     let _ = fs::remove_file(&handshake);
 
     let mut command = agent_command(app)?;
+    configure_windows_child_env(&mut command);
     command.env("MODAL_3D_AGENT_DATA_DIR", &data_dir);
     if let Ok(Some((token_id, token_secret))) = credentials::load() {
         command
@@ -508,4 +548,16 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_drive_accepts_drive_paths_only() {
+        assert_eq!(super::windows_drive(r"C:\Windows"), Some("C:"));
+        assert_eq!(super::windows_drive(r"d:\Users\test"), Some("d:"));
+        assert_eq!(super::windows_drive(r"\\server\share"), None);
+        assert_eq!(super::windows_drive(""), None);
+    }
 }

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "vitest run",
     "agent:sync": "uv sync --upgrade-package modal",
     "agent:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-agent.ps1",
     "preview": "vite preview",
@@ -26,6 +27,7 @@
     "@types/three": "^0.179.0",
     "@vitejs/plugin-react": "^4.6.0",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^3.2.7"
   }
 }
