@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { parseModalCommand } from "./modalCommand";
 import type { RuntimeController } from "./useRuntimeController";
 
 type SettingsPage = "account" | "preprocess" | "advanced";
@@ -63,8 +64,11 @@ export default function SettingsPanel({
   const {
     agent, agentMessage, modalConnected, modalMessage,
     tokenId, setTokenId, tokenSecret, setTokenSecret,
+    commandText, applyCommand,
     persistence, remember, setRemember, runtime, operations,
+    rembgDeployed,
   } = controller;
+  const commandParsed = commandText.trim() ? parseModalCommand(commandText) !== null : false;
   const active = (name: typeof operations[number]) => operations.includes(name);
   const busy = operations.length > 0;
   const preprocessing = runtime?.preprocessing;
@@ -105,6 +109,21 @@ export default function SettingsPanel({
             <section className="settings-page">
               <div className="settings-page-title"><div><span className="eyebrow">云端连接</span><h3>Modal 账户</h3><p>只用于发现 3D Worker、上传一次标准化前景并提交生成任务。</p></div><Status ok={modalConnected}>{modalConnected ? "已连接" : "未连接"}</Status></div>
               <div className="settings-form">
+                <label className="command-paste-row">
+                  <span>粘贴命令快速填入</span>
+                  <input
+                    value={commandText}
+                    onChange={(event) => applyCommand(event.target.value)}
+                    placeholder="modal token set --token-id ak-… --token-secret as-…"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                {commandText.trim() ? (
+                  <p className={`command-paste-hint ${commandParsed ? "ok" : ""}`}>
+                    {commandParsed ? "已识别 Token ID 与密钥，自动填入下方" : "未识别凭据；请粘贴完整的 modal token set 命令"}
+                  </p>
+                ) : null}
                 <label><span>Token ID</span><input value={tokenId} onChange={(event) => setTokenId(event.target.value)} placeholder="ak-…" autoComplete="off" /></label>
                 <label><span>Token Secret</span><input type="password" value={tokenSecret} onChange={(event) => setTokenSecret(event.target.value)} placeholder="as-…" autoComplete="off" /></label>
                 {persistence.supported ? <label className="remember-row"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /><span>保存到 Windows 凭据管理器</span></label> : null}
@@ -113,6 +132,27 @@ export default function SettingsPanel({
                 {modalConnected ? <button type="button" className="quiet-button" disabled={busy} onClick={() => void controller.disconnect()}>{active("disconnect") ? "断开中…" : "断开"}</button> : <button type="button" className="primary-button" disabled={busy || !tokenId.trim() || !tokenSecret.trim()} onClick={() => void controller.connect()}>{active("connect") ? "连接中…" : "连接 Modal"}</button>}
                 {persistence.stored ? <button type="button" className="quiet-button danger-text" disabled={busy} onClick={() => void controller.forget()}>删除保存凭据</button> : null}
               </div>
+              {modalConnected ? (
+                <div className="deploy-card">
+                  <div className="deploy-card-head">
+                    <div>
+                      <strong>云端抠图应用</strong>
+                      <p>没有 NVIDIA GPU 时，抠图会在你自己 Modal 账户的 T4 上运行。首次使用需先部署这个应用（约几分钟构建一次镜像）。</p>
+                    </div>
+                    <span className={`status-chip ${rembgDeployed ? "ok" : ""}`}>{rembgDeployed === null ? "检测中" : rembgDeployed ? "已部署" : "未部署"}</span>
+                  </div>
+                  <div className="settings-actions">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={busy}
+                      onClick={() => void controller.deployRembg()}
+                    >
+                      {active("deploy") ? "部署中…" : rembgDeployed ? "重新部署 / 更新" : "一键部署云端抠图"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div className="settings-explainer"><strong>数据边界</strong><p>原图和 rembg 抠图都只在本机处理。只有最终 1024×1024 Canonical RGBA 会在点击生成时上传一次。</p></div>
               <p className="control-explanation">{modalMessage}</p>
             </section>

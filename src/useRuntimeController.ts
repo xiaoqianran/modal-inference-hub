@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { parseModalCommand } from "./modalCommand";
 import {
   agentStatus,
   clearCredentials,
   connectModal,
   credentialsStatus,
+  deployRembg,
   disconnectModal,
   getAppDiagnostics,
   getCapabilities,
   getPreprocessStatus,
+  getRembgDeployStatus,
   listModels,
   modalStatus,
   probeAgent,
@@ -27,7 +30,7 @@ import {
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-export type RuntimeAction = "agent" | "connect" | "disconnect" | "forget" | "refresh" | "provider" | "model";
+export type RuntimeAction = "agent" | "connect" | "disconnect" | "forget" | "refresh" | "provider" | "model" | "deploy";
 export type RuntimeNotice = { tone: "info" | "success" | "error"; text: string };
 
 function errorText(error: unknown) {
@@ -59,9 +62,11 @@ export function useRuntimeController() {
   const [modalMessage, setModalMessage] = useState("尚未连接");
   const [tokenId, setTokenId] = useState("");
   const [tokenSecret, setTokenSecret] = useState("");
+  const [commandText, setCommandText] = useState("");
   const [persistence, setPersistence] = useState<CredentialStatus>({ supported: false, stored: false });
   const [remember, setRemember] = useState(false);
   const [models, setModels] = useState<ModelSpec[]>([]);
+  const [rembgDeployed, setRembgDeployed] = useState<boolean | null>(null);
   const [runtime, setRuntime] = useState<RuntimeCapabilities | null>(null);
   const [operations, setOperations] = useState<RuntimeAction[]>([]);
   const [notice, setNotice] = useState<RuntimeNotice | null>(null);
@@ -192,6 +197,16 @@ export function useRuntimeController() {
     }
   }, [begin, finish, inTauri]);
 
+  const applyCommand = useCallback((raw: string) => {
+    setCommandText(raw);
+    const parsed = parseModalCommand(raw);
+    if (parsed) {
+      setTokenId(parsed.tokenId);
+      setTokenSecret(parsed.tokenSecret);
+    }
+    return parsed !== null;
+  }, []);
+
   const connect = useCallback(async () => {
     if (!agent?.running || !tokenId.trim() || !tokenSecret.trim() || !begin("connect")) return;
     const credentials = { token_id: tokenId.trim(), token_secret: tokenSecret.trim() };
@@ -207,6 +222,7 @@ export function useRuntimeController() {
       setPersistence((current) => ({ ...current, stored }));
       setModels(await modelsOrEmpty(agent));
       setRuntime(await getCapabilities(agent));
+      setRembgDeployed(await getRembgDeployStatus(agent).then((s) => s.deployed).catch(() => null));
       setTokenSecret("");
       setModalMessage(stored ? "已连接并安全保存凭据" : "当前会话已连接");
       setNotice({ tone: "success", text: "Modal 已连接" });
@@ -226,6 +242,7 @@ export function useRuntimeController() {
       await disconnectModal(agent);
       setModalConnected(false);
       setModels([]);
+      setRembgDeployed(null);
       setModalMessage(persistence.stored ? "已断开；Windows 中仍保留凭据" : "已断开 Modal");
     } catch (error) {
       setNotice({ tone: "error", text: errorText(error) });
@@ -325,6 +342,25 @@ export function useRuntimeController() {
     }
   }, [agent, begin, finish]);
 
+  const deployRembgAction = useCallback(async () => {
+    if (!agent?.running || !modalConnected || !begin("deploy")) return;
+    try {
+      setModalMessage("正在部署云端抠图应用（首次需构建镜像，约几分钟）…");
+      const result = await deployRembg(agent);
+      setRembgDeployed(true);
+      setModalMessage("云端抠图已就绪");
+      setNotice({
+        tone: "success",
+        text: result.redeploy ? "云端抠图已更新到最新版本" : "云端抠图部署完成，可直接使用",
+      });
+    } catch (error) {
+      setRembgDeployed((current) => current);
+      setNotice({ tone: "error", text: errorText(error) });
+    } finally {
+      finish("deploy");
+    }
+  }, [agent, begin, finish, modalConnected]);
+
   const openDataDirectory = useCallback(async () => {
     try {
       await revealAppData();
@@ -344,10 +380,13 @@ export function useRuntimeController() {
     setTokenId,
     tokenSecret,
     setTokenSecret,
+    commandText,
+    applyCommand,
     persistence,
     remember,
     setRemember,
     models,
+    rembgDeployed,
     runtime,
     operations,
     notice,
@@ -362,6 +401,7 @@ export function useRuntimeController() {
     prepareModel,
     changePreprocessProvider,
     changePreprocessExecution,
+    deployRembg: deployRembgAction,
     openDataDirectory,
   };
 }

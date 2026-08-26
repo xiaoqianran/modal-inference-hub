@@ -1280,8 +1280,24 @@ progress::-webkit-progress-value { border-radius: 999px; background: var(--accen
 .settings-form input:not([type="checkbox"]):focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .remember-row { display: flex; grid-column: 1 / -1; gap: 9px; align-items: center; border-top: 1px solid var(--border); padding-top: 14px; cursor: pointer; font-size: var(--f-sm); color: var(--text-2); }
 .remember-row input { margin: 0; accent-color: var(--accent); }
+
+.command-paste-row { grid-column: 1 / -1; display: grid; gap: 7px; }
+.command-paste-row input { font-family: "Cascadia Code", Consolas, monospace; font-size: var(--f-xs); }
+.command-paste-hint { grid-column: 1 / -1; margin: -4px 0 0; color: var(--warning); font-size: var(--f-xs); }
+.command-paste-hint.ok { color: var(--success); }
 .settings-actions, .advanced-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .danger-text { color: var(--danger); }
+
+.deploy-card {
+  display: grid; gap: 4px;
+  border: 1px solid var(--accent-border); border-radius: var(--r-md);
+  padding: 14px; background: var(--accent-soft);
+}
+.deploy-card-head { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between; }
+.deploy-card-head > div { display: grid; gap: 4px; min-width: 0; }
+.deploy-card-head strong { color: var(--text); font-size: var(--f-sm); font-weight: 600; }
+.deploy-card-head p { margin: 0; color: var(--text-3); font-size: var(--f-xs); line-height: 1.5; }
+.deploy-card .settings-actions { justify-content: flex-start; margin-top: 8px; }
 
 .settings-explainer { border: 1px solid var(--border); border-radius: var(--r-md); padding: 13px 14px; background: var(--inset); }
 .settings-explainer strong { color: var(--text-2); font-size: var(--f-sm); font-weight: 600; }
