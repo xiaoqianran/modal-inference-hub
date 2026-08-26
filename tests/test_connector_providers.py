@@ -100,7 +100,7 @@ def test_modal2d_artifact_headers_must_match_descriptor(monkeypatch) -> None:
     monkeypatch.setattr(
         adapter,
         "_request",
-        lambda method, path, body=None: FakeResponse(
+        lambda method, path, body=None, **kwargs: FakeResponse(
             PNG,
             {"Content-Type": "image/png", "X-Artifact-ID": "wrong-id", "X-Artifact-SHA256": digest},
         ),
@@ -110,13 +110,38 @@ def test_modal2d_artifact_headers_must_match_descriptor(monkeypatch) -> None:
     assert exc.value.code == "ARTIFACT_INVALID"
 
 
+def test_modal2d_artifact_uses_extended_timeout(monkeypatch) -> None:
+    adapter = Modal2DAdapter(
+        "http://127.0.0.1:3212",
+        timeout=15.0,
+        artifact_timeout=90.0,
+    )
+    digest = hashlib.sha256(PNG).hexdigest()
+    captured: dict[str, object] = {}
+
+    def request(method, path, body=None, *, timeout=None):
+        captured.update(method=method, path=path, body=body, timeout=timeout)
+        return FakeResponse(
+            PNG,
+            {
+                "Content-Type": "image/png",
+                "X-Artifact-ID": "artifact_png",
+                "X-Artifact-SHA256": digest,
+            },
+        )
+
+    monkeypatch.setattr(adapter, "_request", request)
+    adapter.collect("job_remote", artifact_state(digest), FakeStore(), "owner", "job_connector")
+    assert captured["timeout"] == 90.0
+
+
 def test_modal2d_collects_only_verified_png(monkeypatch) -> None:
     adapter = Modal2DAdapter("http://127.0.0.1:3212")
     digest = hashlib.sha256(PNG).hexdigest()
     monkeypatch.setattr(
         adapter,
         "_request",
-        lambda method, path, body=None: FakeResponse(
+        lambda method, path, body=None, **kwargs: FakeResponse(
             PNG,
             {
                 "Content-Type": "image/png; charset=binary",

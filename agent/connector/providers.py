@@ -82,13 +82,28 @@ class Modal2DAdapter:
     id = MODAL_2D_PROVIDER
     operation = MODAL_2D_OPERATION
 
-    def __init__(self, base_url: str, session_token: str = "", *, timeout: float = 15.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        session_token: str = "",
+        *,
+        timeout: float = 15.0,
+        artifact_timeout: float = 120.0,
+    ) -> None:
         self.base_url = _loopback_origin(base_url)
         self.session_token = str(session_token or "")
         self.timeout = timeout
+        self.artifact_timeout = max(timeout, artifact_timeout)
         self._opener = build_opener(_NoRedirect)
 
-    def _request(self, method: str, path: str, body: dict[str, object] | None = None):
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, object] | None = None,
+        *,
+        timeout: float | None = None,
+    ):
         headers = {"Accept": "application/json"}
         if self.session_token:
             headers["X-Modal-2D-Session"] = self.session_token
@@ -98,7 +113,10 @@ class Modal2DAdapter:
             data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         request = Request(self.base_url + path, data=data, headers=headers, method=method)
         try:
-            return self._opener.open(request, timeout=self.timeout)
+            return self._opener.open(
+                request,
+                timeout=self.timeout if timeout is None else timeout,
+            )
         except HTTPError as exc:
             if exc.code == 404:
                 raise ConnectorError("PROVIDER_NOT_FOUND", 404, "modal-2d job not found") from exc
@@ -282,7 +300,11 @@ class Modal2DAdapter:
             raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact length invalid")
         if not SAFE_ID.fullmatch(remote_job_id):
             raise ConnectorError("PROVIDER_INVALID_RESPONSE", 502, "modal-2d invalid job identity")
-        with self._request("GET", f"/v1/jobs/{remote_job_id}/artifact") as response:
+        with self._request(
+            "GET",
+            f"/v1/jobs/{remote_job_id}/artifact",
+            timeout=self.artifact_timeout,
+        ) as response:
             content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             if content_type != "image/png":
                 raise ConnectorError("ARTIFACT_INVALID", 502, "modal-2d artifact MIME mismatch")
