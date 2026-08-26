@@ -1,14 +1,14 @@
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
-    throw "当前仅支持 Windows 环境。"
+    throw "This script only supports Windows."
 }
 
 if (-not $env:SystemDrive) {
-    if (-not $env:SystemRoot) { throw "无法确定 Windows 系统盘。" }
+    if (-not $env:SystemRoot) { throw "Unable to determine the Windows system drive." }
     $env:SystemDrive = [System.IO.Path]::GetPathRoot($env:SystemRoot).TrimEnd('\')
 }
 if (-not $env:USERPROFILE) {
     $env:USERPROFILE = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile)
-    if (-not $env:USERPROFILE) { throw "无法确定 Windows 用户目录。" }
+    if (-not $env:USERPROFILE) { throw "Unable to determine the Windows user profile." }
 }
 if (-not $env:HOMEDRIVE) {
     $env:HOMEDRIVE = [System.IO.Path]::GetPathRoot($env:USERPROFILE).TrimEnd('\')
