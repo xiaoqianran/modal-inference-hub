@@ -117,6 +117,10 @@ class PreprocessProviderRequest(BaseModel):
     provider: str
 
 
+class PreprocessExecutionRequest(BaseModel):
+    execution: str
+
+
 class ProjectComponentSelectionRequest(BaseModel):
     selected_component_ids: list[str]
 
@@ -165,6 +169,14 @@ def preprocess_provider(request: PreprocessProviderRequest) -> dict:
 @app.post("/v1/preprocess/model")
 def preprocess_prepare_model() -> dict:
     return rembg_preprocess.prepare_model_async()
+
+
+@app.post("/v1/preprocess/execution")
+def preprocess_execution(request: PreprocessExecutionRequest) -> dict:
+    try:
+        return rembg_preprocess.set_execution_preference(request.execution)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/modal/status")

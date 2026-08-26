@@ -23,7 +23,10 @@ class RembgPreprocessTests(unittest.TestCase):
         mask = Image.new("L", (800, 400), 0)
         # 2:1 foreground should become 1024x512, vertically centred.
         mask.paste(255, (100, 100, 700, 400))
-        with patch("agent.preprocess.runtime.predict_mask", return_value=(mask, "gpu", None)):
+        with (
+            patch("agent.rembg_preprocess.execution_preference", return_value="local"),
+            patch("agent.preprocess.runtime.predict_mask", return_value=(mask, "gpu", None)),
+        ):
             result = rembg_preprocess.process(self._source())
         canonical = Image.open(io.BytesIO(result["canonical_bytes"]))
         self.assertEqual(canonical.mode, "RGBA")
@@ -33,10 +36,12 @@ class RembgPreprocessTests(unittest.TestCase):
         self.assertEqual(result["foreground_bbox"], [100, 100, 700, 400])
         self.assertEqual(result["engine"], "birefnet-general-lite")
         self.assertEqual(result["provider"], "gpu")
+        self.assertEqual(result["execution"], "local")
 
     def test_no_foreground_is_rejected(self) -> None:
         mask = Image.new("L", (800, 400), 0)
         with (
+            patch("agent.rembg_preprocess.execution_preference", return_value="local"),
             patch("agent.preprocess.runtime.predict_mask", return_value=(mask, "gpu", None)),
             self.assertRaisesRegex(ValueError, "未检测到可用前景"),
         ):
