@@ -7,9 +7,11 @@ import json
 import os
 import threading
 from pathlib import Path
+
 import numpy as np
 from PIL import Image
-from . import model_store
+
+from . import gpu_runtime, model_store
 from .image_ops import CANONICAL_SIZE
 
 ENGINE = model_store.ENGINE
@@ -125,6 +127,7 @@ def status() -> dict:
         "canonical_size": CANONICAL_SIZE,
         "cpu_threads": _available_cpu_threads(),
         "local_only": True,
+        "gpu_runtime": gpu_runtime.status(),
     }
 
 
@@ -147,48 +150,137 @@ def _session_options(ort):
     return options
 
 
-def _preload_cuda_runtime(ort) -> None:
-    """Load the CUDA/cuDNN DLLs shipped by the ONNX Runtime Python extras."""
+def _register_cuda_directory(directory: Path) -> str:
+    resolved = str(directory.resolve())
+    if os.name == "nt":
+        _cuda_dll_directory_handles.append(os.add_dll_directory(resolved))
+    current_path = os.environ.get("PATH", "")
+    entries = {entry.casefold() for entry in current_path.split(os.pathsep) if entry}
+    if resolved.casefold() not in entries:
+        os.environ["PATH"] = os.pathsep.join([resolved, current_path])
+    return resolved
+
+
+def _preload_cuda_runtime(ort, *, runtime_directory: Path | None = None, force: bool = False) -> None:
+    """Expose CUDA/cuDNN without forcing the multi-GiB runtime into NSIS.
+
+    Developer environments may have NVIDIA Python wheels already installed;
+    end-user machines may instead have a compatible system runtime.  The
+    verified on-demand runtime pack is passed explicitly on the retry path.
+    """
     global _cuda_runtime_loaded
     with _cuda_runtime_lock:
-        if _cuda_runtime_loaded:
+        if _cuda_runtime_loaded and not force:
             return
 
         bin_directories: list[str] = []
-        for package_name in _CUDA_PACKAGE_MODULES:
-            package = importlib.import_module(f"nvidia.{package_name}")
-            for package_root in package.__path__:
-                binary_directory = Path(package_root) / "bin"
-                if binary_directory.is_dir():
-                    resolved = str(binary_directory.resolve())
-                    bin_directories.append(resolved)
-                    if os.name == "nt":
-                        _cuda_dll_directory_handles.append(os.add_dll_directory(resolved))
+        explicit_directory: Path | None = None
+        if runtime_directory is not None and runtime_directory.is_dir():
+            explicit_directory = runtime_directory
+        elif gpu_runtime.ready():
+            explicit_directory = gpu_runtime.bin_dir()
 
-        if not bin_directories:
-            raise RuntimeError("没有找到随应用安装的 NVIDIA CUDA/cuDNN DLL")
-
-        # cuDNN 9 loads split sub-libraries by filename at inference time.  Keep
-        # their directories in PATH as well as the Windows DLL directory list.
-        current_path = os.environ.get("PATH", "")
-        current_entries = {entry.casefold() for entry in current_path.split(os.pathsep) if entry}
-        missing = [entry for entry in bin_directories if entry.casefold() not in current_entries]
-        if missing:
-            os.environ["PATH"] = os.pathsep.join([*missing, current_path])
+        if explicit_directory is not None:
+            bin_directories.append(_register_cuda_directory(explicit_directory))
+        else:
+            # Dynamic imports are deliberate. The desktop PyInstaller build
+            # explicitly excludes nvidia.*, while a developer venv can still
+            # reuse the official CUDA wheels it already has.
+            for package_name in _CUDA_PACKAGE_MODULES:
+                try:
+                    package = importlib.import_module(f"nvidia.{package_name}")
+                except (ImportError, ModuleNotFoundError):
+                    continue
+                for package_root in package.__path__:
+                    binary_directory = Path(package_root) / "bin"
+                    if binary_directory.is_dir():
+                        bin_directories.append(_register_cuda_directory(binary_directory))
 
         preload = getattr(ort, "preload_dlls", None)
         if preload is not None:
-            # An empty directory tells ORT to load from NVIDIA's Python packages.
-            preload(directory="")
+            if explicit_directory is not None:
+                preload(cuda=True, cudnn=True, directory=str(explicit_directory))
+            elif bin_directories:
+                # Empty directory asks ORT to discover NVIDIA Python packages.
+                preload(cuda=True, cudnn=True, directory="")
+            else:
+                # Last cheap attempt before downloading the runtime pack: use a
+                # compatible system CUDA/cuDNN installation if one is present.
+                preload(cuda=True, cudnn=True)
         _cuda_runtime_loaded = True
+
+
+def _install_and_preload_cuda_runtime(ort) -> Path:
+    directory = gpu_runtime.ensure_runtime()
+    _preload_cuda_runtime(ort, runtime_directory=directory, force=True)
+    return directory
+
+
+class _BiRefNetSession:
+    """Small BiRefNet-Lite ONNX adapter used by the desktop runtime.
+
+    This intentionally mirrors only the normalization/prediction behavior we
+    use from rembg.  The cloud deployment still installs rembg inside Modal,
+    while the Windows sidecar no longer needs rembg's pymatting/numba/skimage
+    dependency tree.
+    """
+
+    def __init__(self, inner_session) -> None:
+        self.inner_session = inner_session
+
+    def normalize(
+        self,
+        image: Image.Image,
+        mean: tuple[float, float, float],
+        std: tuple[float, float, float],
+        size: tuple[int, int],
+    ) -> dict[str, np.ndarray]:
+        resized = image.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+        values = np.asarray(resized, dtype=np.float32)
+        values /= max(float(np.max(values)), 1e-6)
+        values = (values - np.asarray(mean, dtype=np.float32)) / np.asarray(std, dtype=np.float32)
+        values = np.transpose(values, (2, 0, 1))[None, ...].astype(np.float32, copy=False)
+        return {self.inner_session.get_inputs()[0].name: values}
+
+    @staticmethod
+    def sigmoid(values: np.ndarray) -> np.ndarray:
+        return 1.0 / (1.0 + np.exp(-values))
+
+    def predict(self, image: Image.Image) -> list[Image.Image]:
+        outputs = self.inner_session.run(
+            None,
+            self.normalize(
+                image,
+                (0.485, 0.456, 0.406),
+                (0.229, 0.224, 0.225),
+                (CANONICAL_SIZE, CANONICAL_SIZE),
+            ),
+        )
+        prediction = self.sigmoid(outputs[0][:, 0, :, :])
+        maximum = float(np.max(prediction))
+        minimum = float(np.min(prediction))
+        if maximum > minimum:
+            prediction = (prediction - minimum) / (maximum - minimum)
+        prediction = np.squeeze(prediction)
+        mask = Image.fromarray((prediction * 255).astype(np.uint8), mode="L")
+        return [mask.resize(image.size, Image.Resampling.LANCZOS)]
+
+
+def _new_birefnet_session(ort, *, sess_opts, providers):
+    return _BiRefNetSession(
+        ort.InferenceSession(
+            str(model_store.model_path()),
+            sess_options=sess_opts,
+            providers=providers,
+        )
+    )
 
 
 def _new_cpu_session():
     import onnxruntime as ort
-    from rembg.session_factory import new_session
 
-    return new_session(
-        ENGINE,
+    return _new_birefnet_session(
+        ort,
         sess_opts=_session_options(ort),
         providers=["CPUExecutionProvider"],
     )
@@ -196,15 +288,21 @@ def _new_cpu_session():
 
 def _build_session(preference: str):
     import onnxruntime as ort
-    from rembg.session_factory import new_session
 
     available = ort.get_available_providers()
     requested = ["CPUExecutionProvider"]
     fallback: str | None = None
+
+    def create_candidate():
+        return _new_birefnet_session(
+            ort,
+            sess_opts=_session_options(ort),
+            providers=requested,
+        )
+
     try:
         if preference == "gpu":
             if "CUDAExecutionProvider" in available:
-                _preload_cuda_runtime(ort)
                 requested = [
                     (
                         "CUDAExecutionProvider",
@@ -219,10 +317,44 @@ def _build_session(preference: str):
                     ),
                     "CPUExecutionProvider",
                 ]
+                try:
+                    _preload_cuda_runtime(ort)
+                except Exception:
+                    if os.name != "nt":
+                        raise
+                    _install_and_preload_cuda_runtime(ort)
             else:
                 fallback = "没有可用的 CUDA ExecutionProvider，已回退 CPU"
-        candidate = new_session(ENGINE, sess_opts=_session_options(ort), providers=requested)
+
+        try:
+            candidate = create_candidate()
+        except Exception:
+            if (
+                preference != "gpu"
+                or os.name != "nt"
+                or "CUDAExecutionProvider" not in available
+                or gpu_runtime.ready()
+            ):
+                raise
+            _install_and_preload_cuda_runtime(ort)
+            candidate = create_candidate()
+
         actual = list(candidate.inner_session.get_providers())
+        if (
+            preference == "gpu"
+            and os.name == "nt"
+            and "CUDAExecutionProvider" in available
+            and "CUDAExecutionProvider" not in actual
+            and not gpu_runtime.ready()
+        ):
+            # ORT can silently fall back to CPU when a native CUDA DLL is
+            # missing. Install the verified pack and give CUDA one real retry.
+            del candidate
+            gc.collect()
+            _install_and_preload_cuda_runtime(ort)
+            candidate = create_candidate()
+            actual = list(candidate.inner_session.get_providers())
+
         ort_provider = actual[0] if actual else None
         provider = "gpu" if "CUDAExecutionProvider" in actual else "cpu"
         if preference == "gpu" and provider != "gpu":

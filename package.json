@@ -12,7 +12,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
-    "desktop:build": "tauri build"
+    "desktop:build": "tauri build",
+    "desktop:build:nsis": "tauri build --bundles nsis",
+    "desktop:build:release": "tauri build --bundles nsis,msi"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

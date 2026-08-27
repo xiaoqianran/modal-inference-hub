@@ -17,10 +17,13 @@ class RembgDeployTests(unittest.TestCase):
             self.assertFalse(rembg_deploy.deployed())
 
     def test_deployed_true_when_function_resolves(self) -> None:
-        with patch.object(modal_client, "client", return_value=object()), patch(
-            "modal.Function.from_name", return_value=object()
+        function = unittest.mock.Mock()
+        client = object()
+        with patch.object(modal_client, "client", return_value=client), patch(
+            "modal.Function.from_name", return_value=function
         ):
             self.assertTrue(rembg_deploy.deployed())
+        function.hydrate.assert_called_once_with(client=client)
 
     def test_deployed_false_when_lookup_fails(self) -> None:
         with patch.object(modal_client, "client", return_value=object()), patch(

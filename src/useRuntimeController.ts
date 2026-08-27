@@ -5,10 +5,12 @@ import {
   clearCredentials,
   connectModal,
   credentialsStatus,
+  deployModal3D,
   deployRembg,
   disconnectModal,
   getAppDiagnostics,
   getCapabilities,
+  getModal3DDeployStatus,
   getPreprocessStatus,
   getRembgDeployStatus,
   listModels,
@@ -24,13 +26,14 @@ import {
   type AgentInfo,
   type AppDiagnostics,
   type CredentialStatus,
+  type Modal3DDeployStatus,
   type ModelSpec,
   type RuntimeCapabilities,
 } from "./agent";
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-export type RuntimeAction = "agent" | "connect" | "disconnect" | "forget" | "refresh" | "provider" | "model" | "deploy";
+export type RuntimeAction = "agent" | "connect" | "disconnect" | "forget" | "refresh" | "provider" | "model" | "deploy" | "deploy3d";
 export type RuntimeNotice = { tone: "info" | "success" | "error"; text: string };
 
 function errorText(error: unknown) {
@@ -67,6 +70,7 @@ export function useRuntimeController() {
   const [remember, setRemember] = useState(false);
   const [models, setModels] = useState<ModelSpec[]>([]);
   const [rembgDeployed, setRembgDeployed] = useState<boolean | null>(null);
+  const [modal3DDeploy, setModal3DDeploy] = useState<Modal3DDeployStatus | null>(null);
   const [runtime, setRuntime] = useState<RuntimeCapabilities | null>(null);
   const [operations, setOperations] = useState<RuntimeAction[]>([]);
   const [notice, setNotice] = useState<RuntimeNotice | null>(null);
@@ -166,6 +170,21 @@ export function useRuntimeController() {
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [agent]);
 
+  useEffect(() => {
+    if (!initialized || !agent?.running || !modalConnected) return;
+    const info = agent;
+    let cancelled = false;
+    void Promise.all([
+      getRembgDeployStatus(info).then((value) => value.deployed).catch(() => null),
+      getModal3DDeployStatus(info).catch(() => null),
+    ]).then(([rembgStatus, suiteStatus]) => {
+      if (cancelled) return;
+      setRembgDeployed(rembgStatus);
+      setModal3DDeploy(suiteStatus);
+    });
+    return () => { cancelled = true; };
+  }, [agent, initialized, modalConnected]);
+
   const start = useCallback(async () => {
     if (!inTauri || !begin("agent")) return;
     try {
@@ -222,7 +241,12 @@ export function useRuntimeController() {
       setPersistence((current) => ({ ...current, stored }));
       setModels(await modelsOrEmpty(agent));
       setRuntime(await getCapabilities(agent));
-      setRembgDeployed(await getRembgDeployStatus(agent).then((s) => s.deployed).catch(() => null));
+      const [rembgStatus, suiteStatus] = await Promise.all([
+        getRembgDeployStatus(agent).then((s) => s.deployed).catch(() => null),
+        getModal3DDeployStatus(agent).catch(() => null),
+      ]);
+      setRembgDeployed(rembgStatus);
+      setModal3DDeploy(suiteStatus);
       setTokenSecret("");
       setModalMessage(stored ? "已连接并安全保存凭据" : "当前会话已连接");
       setNotice({ tone: "success", text: "Modal 已连接" });
@@ -243,6 +267,7 @@ export function useRuntimeController() {
       setModalConnected(false);
       setModels([]);
       setRembgDeployed(null);
+      setModal3DDeploy(null);
       setModalMessage(persistence.stored ? "已断开；Windows 中仍保留凭据" : "已断开 Modal");
     } catch (error) {
       setNotice({ tone: "error", text: errorText(error) });
@@ -259,6 +284,8 @@ export function useRuntimeController() {
       setPersistence((current) => ({ ...current, stored: false }));
       setModalConnected(false);
       setModels([]);
+      setRembgDeployed(null);
+      setModal3DDeploy(null);
       setModalMessage("已删除保存的凭据");
       setNotice({ tone: "success", text: "Modal 凭据已删除" });
     } catch (error) {
@@ -275,6 +302,17 @@ export function useRuntimeController() {
       setRuntime(capabilities);
       setModalConnected(status.connected);
       setModels(status.connected ? await modelsOrEmpty(agent) : []);
+      if (status.connected) {
+        const [rembgStatus, suiteStatus] = await Promise.all([
+          getRembgDeployStatus(agent).then((value) => value.deployed).catch(() => null),
+          getModal3DDeployStatus(agent).catch(() => null),
+        ]);
+        setRembgDeployed(rembgStatus);
+        setModal3DDeploy(suiteStatus);
+      } else {
+        setRembgDeployed(null);
+        setModal3DDeploy(null);
+      }
       setNotice({ tone: "success", text: "本地预处理与云端状态已刷新" });
     } catch (error) {
       setNotice({ tone: "error", text: errorText(error) });
@@ -361,6 +399,45 @@ export function useRuntimeController() {
     }
   }, [agent, begin, finish, modalConnected]);
 
+  const deployModal3DAction = useCallback(async () => {
+    if (!agent?.running || !modalConnected || !begin("deploy3d")) return;
+    setModalMessage("正在部署完整 3D 模型套件：4 个 Worker + Gateway…");
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const status = await getModal3DDeployStatus(agent);
+        setModal3DDeploy(status);
+        if (status.running && status.component) {
+          setModalMessage(`正在部署 3D 模型套件 · ${status.component}`);
+        }
+      } catch {
+        // The deploy request remains authoritative; transient status polling failures are harmless.
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 1_500);
+    void poll();
+    try {
+      const result = await deployModal3D(agent);
+      const status = await getModal3DDeployStatus(agent);
+      setModal3DDeploy(status);
+      setModels(await modelsOrEmpty(agent));
+      setModalMessage(`3D 模型套件已就绪 · ${result.models.length} 个模型`);
+      setNotice({ tone: "success", text: `3D 模型套件部署完成：${result.models.length} 个 Worker 已注册` });
+    } catch (error) {
+      setModal3DDeploy(await getModal3DDeployStatus(agent).catch(() => null));
+      const text = errorText(error);
+      setModalMessage(text);
+      setNotice({ tone: "error", text });
+    } finally {
+      window.clearInterval(timer);
+      finish("deploy3d");
+    }
+  }, [agent, begin, finish, modalConnected]);
+
   const openDataDirectory = useCallback(async () => {
     try {
       await revealAppData();
@@ -387,6 +464,7 @@ export function useRuntimeController() {
     setRemember,
     models,
     rembgDeployed,
+    modal3DDeploy,
     runtime,
     operations,
     notice,
@@ -402,6 +480,7 @@ export function useRuntimeController() {
     changePreprocessProvider,
     changePreprocessExecution,
     deployRembg: deployRembgAction,
+    deployModal3D: deployModal3DAction,
     openDataDirectory,
   };
 }

@@ -97,23 +97,11 @@ try {
         --specpath $workDirectory `
         --paths $projectRoot `
         --additional-hooks-dir $hookDirectory `
-        --collect-data rembg `
-        --collect-submodules rembg.sessions `
-        --copy-metadata rembg `
-        --copy-metadata pymatting `
-        --exclude-module numba.np.ufunc.tbbpool `
-        --hidden-import nvidia.cublas `
-        --hidden-import nvidia.cuda_runtime `
-        --hidden-import nvidia.cudnn `
-        --hidden-import nvidia.cufft `
-        --collect-binaries nvidia.cublas `
-        --collect-binaries nvidia.cuda_runtime `
-        --collect-binaries nvidia.cudnn `
-        --collect-binaries nvidia.cufft `
-        --copy-metadata nvidia-cublas-cu12 `
-        --copy-metadata nvidia-cuda-runtime-cu12 `
-        --copy-metadata nvidia-cudnn-cu12 `
-        --copy-metadata nvidia-cufft-cu12 `
+        --exclude-module rembg `
+        --exclude-module pymatting `
+        --exclude-module numba `
+        --exclude-module skimage `
+        --exclude-module nvidia `
         (Join-Path $projectRoot "agent\server.py")
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller 打包失败，退出码：$LASTEXITCODE"

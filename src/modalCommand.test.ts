@@ -4,8 +4,8 @@ import { parseModalCommand } from "./modalCommand";
 describe("parseModalCommand", () => {
   it("parses a standard modal token set command", () => {
     expect(parseModalCommand(
-      "modal token set --token-id ak-rUjxOsykqXQEealjoNqTt1 --token-secret as-h205JkHPq4BsEsUldGPiIG",
-    )).toEqual({ tokenId: "ak-rUjxOsykqXQEealjoNqTt1", tokenSecret: "as-h205JkHPq4BsEsUldGPiIG" });
+      "modal token set --token-id ak-example123 --token-secret as-example456",
+    )).toEqual({ tokenId: "ak-example123", tokenSecret: "as-example456" });
   });
 
   it("accepts flags in any order", () => {
@@ -27,8 +27,8 @@ describe("parseModalCommand", () => {
   });
 
   it("ignores surrounding whitespace and prose", () => {
-    expect(parseModalCommand("  run:  modal token set --token-id ak-x1 --token-secret as-y2  "))
-      .toEqual({ tokenId: "ak-x1", tokenSecret: "as-y2" });
+    expect(parseModalCommand("  run:  modal token set --token-id ak-example123 --token-secret as-example456  "))
+      .toEqual({ tokenId: "ak-example123", tokenSecret: "as-example456" });
   });
 
   it("returns null when either part is missing", () => {

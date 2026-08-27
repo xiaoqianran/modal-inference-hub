@@ -129,7 +129,7 @@ def deployed() -> bool:
     except modal_client.NotConnectedError:
         return False
     try:
-        modal.Function.from_name(APP_NAME, "web", client=client)
+        modal.Function.from_name(APP_NAME, "web", client=client).hydrate(client=client)
     except Exception:  # noqa: BLE001 - any lookup failure means "not deployed"
         return False
     return True

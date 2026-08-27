@@ -91,8 +91,19 @@ def main() -> None:
     tmp.write_text(str(port), encoding="utf-8")
     os.replace(tmp, path)
     print(f"[agent] listening port={port}", flush=True)
-    if os.environ.get("MODAL_3D_AGENT_SMOKE") != "1" and rembg_preprocess.warmup_gpu_async():
-        print("[agent] GPU preprocess warmup scheduled", flush=True)
+
+    # Let the WebView paint the real application before model download / CUDA
+    # DLL loading starts competing for disk, CPU and GPU resources. The GPU
+    # remains the preferred backend; this only moves warmup off the critical
+    # startup path.
+    if os.environ.get("MODAL_3D_AGENT_SMOKE") != "1":
+        def delayed_gpu_warmup() -> None:
+            if rembg_preprocess.warmup_gpu_async():
+                print("[agent] GPU preprocess warmup scheduled", flush=True)
+
+        timer = threading.Timer(3.0, delayed_gpu_warmup)
+        timer.daemon = True
+        timer.start()
 
     config = uvicorn.Config(
         app,

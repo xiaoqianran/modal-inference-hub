@@ -66,7 +66,7 @@ export default function SettingsPanel({
     tokenId, setTokenId, tokenSecret, setTokenSecret,
     commandText, applyCommand,
     persistence, remember, setRemember, runtime, operations,
-    rembgDeployed,
+    rembgDeployed, modal3DDeploy,
   } = controller;
   const commandParsed = commandText.trim() ? parseModalCommand(commandText) !== null : false;
   const active = (name: typeof operations[number]) => operations.includes(name);
@@ -151,6 +151,31 @@ export default function SettingsPanel({
                       {active("deploy") ? "部署中…" : rembgDeployed ? "重新部署 / 更新" : "一键部署云端抠图"}
                     </button>
                   </div>
+                </div>
+              ) : null}
+              {modalConnected ? (
+                <div className="deploy-card">
+                  <div className="deploy-card-head">
+                    <div>
+                      <strong>完整 3D 模型套件</strong>
+                      <p>一键部署 4 个官方 Worker，逐个注册到你的 Modal Registry，最后部署并验证 modal-3d-gateway。部署定义来自固定 commit 的官方仓库快照并经过 SHA-256 校验。</p>
+                    </div>
+                    <span className={`status-chip ${modal3DDeploy?.deployed ? "ok" : ""}`}>{modal3DDeploy === null ? "检测中" : modal3DDeploy.deployed ? "已部署" : active("deploy3d") ? "部署中" : "未完整部署"}</span>
+                  </div>
+                  {modal3DDeploy?.components?.length ? (
+                    <div className="diagnostic-grid">
+                      {modal3DDeploy.components.map((component) => (
+                        <div key={component.app}><span>{component.kind === "gateway" ? "Gateway" : "Worker"}</span><strong>{component.app} · {component.deployed ? "已部署" : "待部署"}</strong></div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {active("deploy3d") && modal3DDeploy?.component ? <p className="control-explanation">当前：{modal3DDeploy.component}</p> : null}
+                  <div className="settings-actions">
+                    <button type="button" className="primary-button" disabled={busy} onClick={() => void controller.deployModal3D()}>
+                      {active("deploy3d") ? "正在部署 3D 套件…" : modal3DDeploy?.deployed ? "重新部署 / 更新 3D 套件" : "一键部署完整 3D 模型"}
+                    </button>
+                  </div>
+                  <p className="control-explanation">首次部署会构建多个模型镜像，耗时取决于 Modal 构建缓存；重新执行是幂等的，会重新注册 Worker。</p>
                 </div>
               ) : null}
               <div className="settings-explainer"><strong>数据边界</strong><p>原图和 rembg 抠图都只在本机处理。只有最终 1024×1024 Canonical RGBA 会在点击生成时上传一次。</p></div>

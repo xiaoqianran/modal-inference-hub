@@ -351,6 +351,36 @@ export const deployRembg = (info: AgentInfo) =>
     600_000,
   );
 
+export type Modal3DDeployComponent = {
+  kind: "worker" | "gateway";
+  module: string;
+  app: string;
+  function: string;
+  deployed: boolean;
+};
+
+export type Modal3DDeployStatus = {
+  deployed: boolean;
+  running: boolean;
+  step: string | null;
+  component: string | null;
+  error: string | null;
+  source_ready: boolean;
+  source_commit: string;
+  components: Modal3DDeployComponent[];
+};
+
+export const getModal3DDeployStatus = (info: AgentInfo) =>
+  json<Modal3DDeployStatus>(info, "/modal/deploy/3d");
+
+export const deployModal3D = (info: AgentInfo) =>
+  json<{ ok: boolean; deployed: boolean; source_commit: string; gateway: string; models: string[] }>(
+    info,
+    "/modal/deploy/3d",
+    { method: "POST" },
+    3_600_000,
+  );
+
 export const connectModal = (info: AgentInfo, credentials: ModalCredentials) =>
   json<{ ok: boolean }>(info, "/modal/connect", {
     method: "POST",

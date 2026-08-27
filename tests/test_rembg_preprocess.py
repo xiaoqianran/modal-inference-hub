@@ -244,7 +244,7 @@ class ProviderPreferenceTests(unittest.TestCase):
             "onnxruntime.get_available_providers",
             return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
         ), patch("agent.preprocess.runtime._preload_cuda_runtime"), patch(
-            "rembg.session_factory.new_session", return_value=Session()
+            "agent.preprocess.runtime._new_birefnet_session", return_value=Session()
         ):
             runtime._get_session()
             current = rembg_preprocess.status()
@@ -263,7 +263,7 @@ class ProviderPreferenceTests(unittest.TestCase):
 
         captured = {}
 
-        def fake_new_session(_model, *, sess_opts, providers):
+        def fake_new_session(_ort, *, sess_opts, providers):
             captured["enable_cpu_mem_arena"] = sess_opts.enable_cpu_mem_arena
             captured["providers"] = list(providers)
             return Session()
@@ -274,7 +274,7 @@ class ProviderPreferenceTests(unittest.TestCase):
             "onnxruntime.get_available_providers",
             return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
         ), preload as preload_cuda, patch(
-            "rembg.session_factory.new_session", side_effect=fake_new_session
+            "agent.preprocess.runtime._new_birefnet_session", side_effect=fake_new_session
         ):
             runtime._get_session()
         self.assertFalse(captured["enable_cpu_mem_arena"])
@@ -299,11 +299,40 @@ class ProviderPreferenceTests(unittest.TestCase):
             "onnxruntime.get_available_providers",
             return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
         ), patch("agent.preprocess.runtime._preload_cuda_runtime"), patch(
-            "rembg.session_factory.new_session", side_effect=[RuntimeError("cuda init failed"), Session()]
+            "agent.preprocess.runtime.gpu_runtime.ready", return_value=True
+        ), patch(
+            "agent.preprocess.runtime._new_birefnet_session", side_effect=[RuntimeError("cuda init failed"), Session()]
         ):
             runtime._get_session()
             self.assertEqual(runtime._session_provider, "cpu")
             self.assertIn("CUDA 初始化失败", runtime._session_fallback_reason or "")
+        rembg_preprocess.reset_session()
+
+    def test_gpu_session_retries_after_installing_runtime_pack(self) -> None:
+        class Inner:
+            @staticmethod
+            def get_providers():
+                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+        class Session:
+            inner_session = Inner()
+
+        rembg_preprocess.reset_session()
+        with patch("agent.preprocess.runtime.provider_preference", return_value="gpu"), patch(
+            "onnxruntime.get_available_providers",
+            return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        ), patch("agent.preprocess.runtime._preload_cuda_runtime"), patch(
+            "agent.preprocess.runtime.gpu_runtime.ready", return_value=False
+        ), patch(
+            "agent.preprocess.runtime._install_and_preload_cuda_runtime"
+        ) as install_runtime, patch(
+            "agent.preprocess.runtime._new_birefnet_session",
+            side_effect=[RuntimeError("missing cudnn"), Session()],
+        ):
+            runtime._get_session()
+            self.assertEqual(runtime._session_provider, "gpu")
+
+        install_runtime.assert_called_once()
         rembg_preprocess.reset_session()
 
     def test_gpu_inference_decode_failure_releases_gpu_and_retries_on_cpu(self) -> None:

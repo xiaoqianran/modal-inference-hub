@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+from agent import modal_3d_deploy, modal_client
+
+
+class Modal3DDeployTests(unittest.TestCase):
+    def setUp(self) -> None:
+        modal_3d_deploy._set_state(running=False, step=None, component=None, completed_apps=[], error=None)
+
+    def test_suite_contract_has_four_workers_and_gateway(self) -> None:
+        self.assertEqual(len(modal_3d_deploy.WORKERS), 4)
+        self.assertEqual(modal_3d_deploy.GATEWAY_APP, "modal-3d-gateway")
+        self.assertEqual(
+            [app for _module, app in modal_3d_deploy.WORKERS],
+            [
+                "modal-3d-fastsam3d",
+                "modal-3d-hunyuan",
+                "modal-3d-hermit-trellis2-plus-plus",
+                "modal-3d-pixal3d",
+            ],
+        )
+
+    def test_status_is_not_deployed_when_modal_is_disconnected(self) -> None:
+        with patch.object(modal_client, "client", side_effect=modal_client.NotConnectedError), patch(
+            "agent.modal_3d_deploy._source_ready", return_value=False
+        ):
+            status = modal_3d_deploy.status()
+        self.assertFalse(status["deployed"])
+        self.assertEqual(len(status["components"]), 5)
+        self.assertTrue(all(not component["deployed"] for component in status["components"]))
+
+    def test_function_exists_requires_remote_hydration(self) -> None:
+        function = Mock()
+        with patch("modal.Function.from_name", return_value=function):
+            self.assertTrue(modal_3d_deploy._function_exists("app", "fn", object()))
+        function.hydrate.assert_called_once()
+
+    def test_function_exists_returns_false_on_lookup_error(self) -> None:
+        function = Mock()
+        function.hydrate.side_effect = RuntimeError("missing")
+        with patch("modal.Function.from_name", return_value=function):
+            self.assertFalse(modal_3d_deploy._function_exists("app", "fn", object()))
+
+    def test_safe_extract_rejects_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "bad.zip"
+            with zipfile.ZipFile(archive, "w") as package:
+                package.writestr("repo/../escape.py", "bad")
+            with self.assertRaisesRegex(RuntimeError, "不安全路径"):
+                modal_3d_deploy._safe_extract(archive, root / "out")
+
+    def test_ensure_source_installs_verified_snapshot_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "source"
+
+            def fake_download(_url: str, destination: Path) -> None:
+                with zipfile.ZipFile(destination, "w") as package:
+                    package.writestr("repo/modal_3d/__init__.py", "")
+                    package.writestr("repo/modal_3d/gateway.py", "APP_NAME='modal-3d-gateway'")
+
+            with patch("agent.modal_3d_deploy._source_parent", return_value=parent), patch(
+                "agent.modal_3d_deploy._download", side_effect=fake_download
+            ) as download:
+                first = modal_3d_deploy.ensure_source()
+                second = modal_3d_deploy.ensure_source()
+
+            self.assertEqual(first, second)
+            self.assertTrue((first / "modal_3d" / "__init__.py").is_file())
+            self.assertTrue((first / ".modal-3d-source.json").is_file())
+            download.assert_called_once()
+
+    def test_preflight_normalizes_missing_huggingface_secret(self) -> None:
+        secret = Mock()
+        secret.hydrate.side_effect = RuntimeError("not found")
+        with patch("modal.Secret.from_name", return_value=secret):
+            with self.assertRaisesRegex(RuntimeError, "huggingface"):
+                modal_3d_deploy._preflight(object())
+
+    def test_deploy_workers_register_then_gateway_and_verify(self) -> None:
+        client = object()
+        worker_modules = {}
+        for module_name, app_name in modal_3d_deploy.WORKERS:
+            app = Mock(name=f"app-{app_name}")
+            worker_modules[module_name] = SimpleNamespace(app=app)
+        gateway_app = Mock(name="gateway-app")
+        modules = {**worker_modules, "gateway": SimpleNamespace(app=gateway_app)}
+
+        function_calls: list[tuple[str, str]] = []
+
+        def function_from_name(app_name: str, function_name: str, **_kwargs):
+            function_calls.append((app_name, function_name))
+            function = Mock()
+            if app_name == modal_3d_deploy.GATEWAY_APP and function_name == "capabilities":
+                function.remote.return_value = {
+                    "models": [{"id": f"model-{index}"} for index in range(4)]
+                }
+            else:
+                function.remote.return_value = {"registered": app_name}
+            return function
+
+        with patch.object(modal_client, "client", return_value=client), patch(
+            "agent.modal_3d_deploy._preflight"
+        ), patch("agent.modal_3d_deploy.ensure_source"), patch(
+            "agent.modal_3d_deploy._load_module", side_effect=lambda name: modules[name]
+        ), patch("modal.Function.from_name", side_effect=function_from_name):
+            result = modal_3d_deploy.deploy()
+
+        for module_name, _app_name in modal_3d_deploy.WORKERS:
+            worker_modules[module_name].app.deploy.assert_called_once_with(client=client)
+        gateway_app.deploy.assert_called_once_with(client=client)
+        self.assertEqual(
+            function_calls,
+            [(app_name, "register") for _module, app_name in modal_3d_deploy.WORKERS]
+            + [(modal_3d_deploy.GATEWAY_APP, "capabilities")],
+        )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["deployed"])
+        self.assertEqual(len(result["models"]), 4)
+
+    def test_deploy_rejects_parallel_run(self) -> None:
+        modal_3d_deploy._lock.acquire()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "正在部署"):
+                modal_3d_deploy.deploy()
+        finally:
+            modal_3d_deploy._lock.release()
+
+
+if __name__ == "__main__":
+    unittest.main()

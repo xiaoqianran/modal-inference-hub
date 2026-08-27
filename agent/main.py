@@ -22,7 +22,7 @@ from modal.exception import (
 )
 from pydantic import BaseModel, Field, SecretStr
 
-from agent import artifacts, exports, rembg_deploy, rembg_preprocess
+from agent import artifacts, exports, modal_3d_deploy, rembg_deploy, rembg_preprocess
 from agent.capabilities import capabilities
 from agent.connector.api import create_router
 from agent.connector.service import connector_allowed_origins
@@ -222,6 +222,30 @@ def rembg_deploy_run() -> dict:
         raise HTTPException(status_code=401, detail="当前凭据无权部署 Modal 应用") from exc
     except (ModalConnectionError, ModalTimeoutError) as exc:
         raise HTTPException(status_code=503, detail="Modal 服务当前不可用，部署未完成") from exc
+
+
+@app.get("/modal/deploy/3d")
+def modal_3d_deploy_status() -> dict:
+    return modal_3d_deploy.status()
+
+
+@app.post("/modal/deploy/3d")
+def modal_3d_deploy_run() -> dict:
+    if not connected():
+        raise HTTPException(status_code=409, detail="请先连接 Modal，再部署 3D 模型套件")
+    try:
+        return modal_3d_deploy.deploy()
+    except NotConnectedError as exc:
+        raise HTTPException(status_code=409, detail="Modal 尚未连接") from exc
+    except (AuthError, PermissionDeniedError) as exc:
+        raise HTTPException(status_code=401, detail="当前凭据无权部署 Modal 3D 应用") from exc
+    except (ModalConnectionError, ModalTimeoutError) as exc:
+        raise HTTPException(status_code=503, detail="Modal 服务当前不可用，3D 部署未完成") from exc
+    except RuntimeError as exc:
+        detail = str(exc)
+        if "huggingface" in detail.lower():
+            detail = "Modal 账户缺少名为 huggingface 的 Secret；请先在 Modal 创建该 Secret 后重试"
+        raise HTTPException(status_code=409, detail=detail) from exc
 
 
 @app.post("/v1/projects")

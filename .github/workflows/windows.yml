@@ -62,7 +62,7 @@ jobs:
           cargo check --manifest-path src-tauri/Cargo.toml
 
       - name: Build NSIS installer
-        run: npm run tauri build -- --bundles nsis
+        run: npm run desktop:build:nsis
 
       - name: Upload installer
         uses: actions/upload-artifact@v7.0.1
