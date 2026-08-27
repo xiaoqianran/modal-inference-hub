@@ -4,7 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
-_APP_DIR = "modal-3D-client"
+_APP_DIR = "modal-inference-hub"
+_LEGACY_APP_DIR = "modal-3D-client"
 
 
 def _platform_data_root() -> Path:
@@ -22,7 +23,15 @@ def _platform_data_root() -> Path:
 
 
 def data_dir() -> Path:
-    override = os.environ.get("MODAL_3D_AGENT_DATA_DIR")
-    path = Path(override) if override else _platform_data_root() / _APP_DIR
+    override = os.environ.get("MODAL_INFERENCE_HUB_DATA_DIR") or os.environ.get(
+        "MODAL_3D_AGENT_DATA_DIR"
+    )
+    if override:
+        path = Path(override)
+    else:
+        root = _platform_data_root()
+        current = root / _APP_DIR
+        legacy = root / _LEGACY_APP_DIR
+        path = legacy if legacy.exists() and not current.exists() else current
     path.mkdir(parents=True, exist_ok=True)
     return path

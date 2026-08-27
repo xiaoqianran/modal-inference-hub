@@ -129,7 +129,7 @@ def _download_model() -> Path:
             error="MD5 校验失败；损坏的 partial 已删除",
             integrity="failed",
         )
-    headers = {"User-Agent": "modal-3D-client/1"}
+    headers = {"User-Agent": "modal-inference-hub/1"}
     if existing:
         headers["Range"] = f"bytes={existing}-"
     request = urllib.request.Request(MODEL_URL, headers=headers)

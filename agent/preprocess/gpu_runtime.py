@@ -21,7 +21,7 @@ from agent.storage import data_dir
 
 _RUNTIME_VERSION = 1
 _PYPI = "https://pypi.org/pypi/{name}/{version}/json"
-_USER_AGENT = "modal-3D-client/0.4 cuda-runtime-bootstrap"
+_USER_AGENT = "modal-inference-hub/0.4 cuda-runtime-bootstrap"
 
 # Versions match the CUDA 12 / cuDNN 9 stack used by onnxruntime-gpu 1.24.x.
 # Hashes are the official win_amd64 wheels locked by this project.

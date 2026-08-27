@@ -1,7 +1,7 @@
 [project]
-name = "modal-3d-client-agent"
-version = "0.4.1"
-description = "Local agent for modal-3D Client"
+name = "modal-inference-hub"
+version = "0.5.0"
+description = "Local inference hub composing modal-2D and modal-3D workflows"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",

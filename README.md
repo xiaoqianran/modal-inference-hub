@@ -1,4 +1,37 @@
-# modal-3D Client
+# modal-inference-hub
+
+`modal-inference-hub` 是本地 **Inference Composition Hub**。它和 AgentScape 处在同一类“调用/组合层”，负责 Project、Preprocess、Workflow Composition；具体 Provider execution 由独立 Reference Sidecar 承担。
+
+```text
+                     Local UI / Workspace
+                              │
+                              ▼
+                  modal-inference-hub
+                   Project / Preprocess
+                    Workflow Composition
+                     │              │
+                     ▼              ▼
+              modal-2D-client   modal-3D-client
+                     │              │
+                     ▼              ▼
+                  modal-2D       modal-3D
+                     │              │
+                     └──── Artifact ┘
+```
+
+目标边界：
+
+- Hub owns：Project、原图、rembg/component selection、canonicalization、2D→3D composition、UI/Workspace state。
+- Hub does **not** own：Modal Provider Job internals、Provider Artifact transport、GPU model lifecycle。
+- `modal-2D-client` / `modal-3D-client` 是平级 Reference Sidecar；Hub 通过它们调用 `modal-2D` / `modal-3D`。
+- 旧 `MODAL_3D_AGENT_*` 环境变量和旧本地数据目录暂时保留兼容，后续再做无损迁移。
+
+---
+
+## 当前实现兼容区
+
+下面内容描述现有本地 preprocess + 3D workflow；它会逐步迁移到上面的 Hub → 2D/3D Sidecar 架构。
+
 
 Windows-first desktop client for **local 2D preprocessing** and Modal-backed 3D generation.
 

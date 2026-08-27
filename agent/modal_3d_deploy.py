@@ -124,7 +124,7 @@ def _source_ready() -> bool:
 
 
 def _download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "modal-3D-client/0.4 deploy"})
+    request = urllib.request.Request(url, headers={"User-Agent": "modal-inference-hub/0.4 deploy"})
     digest = hashlib.sha256()
     temporary = destination.with_suffix(destination.suffix + ".part")
     with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as output:
