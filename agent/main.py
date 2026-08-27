@@ -234,7 +234,7 @@ def modal_3d_deploy_run() -> dict:
     if not connected():
         raise HTTPException(status_code=409, detail="请先连接 Modal，再部署 3D 模型套件")
     try:
-        return modal_3d_deploy.deploy()
+        return modal_3d_deploy.start_deploy()
     except NotConnectedError as exc:
         raise HTTPException(status_code=409, detail="Modal 尚未连接") from exc
     except (AuthError, PermissionDeniedError) as exc:

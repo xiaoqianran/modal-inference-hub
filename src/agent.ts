@@ -325,6 +325,9 @@ async function request(
     if (controller.signal.aborted && !upstream?.aborted) {
       throw new Error(`本地服务在 ${Math.round(timeoutMs / 1000)} 秒内没有响应`);
     }
+    if (error instanceof TypeError && /failed to fetch|fetch failed/i.test(error.message)) {
+      throw new Error("暂时无法连接本地代理。请保持客户端开启并刷新状态；已启动的云端部署任务不会因为这次连接中断而取消。");
+    }
     throw error;
   } finally {
     window.clearTimeout(timer);
@@ -367,6 +370,10 @@ export type Modal3DDeployStatus = {
   error: string | null;
   source_ready: boolean;
   source_commit: string;
+  completed_apps: string[];
+  skipped_apps: string[];
+  component_errors: Record<string, string>;
+  component_states: Record<string, "pending" | "deploying" | "registering" | "completed" | "skipped" | "waiting" | "verifying" | "blocked" | "failed">;
   components: Modal3DDeployComponent[];
 };
 
@@ -374,11 +381,11 @@ export const getModal3DDeployStatus = (info: AgentInfo) =>
   json<Modal3DDeployStatus>(info, "/modal/deploy/3d");
 
 export const deployModal3D = (info: AgentInfo) =>
-  json<{ ok: boolean; deployed: boolean; source_commit: string; gateway: string; models: string[] }>(
+  json<{ ok: boolean; accepted: boolean; running: boolean }>(
     info,
     "/modal/deploy/3d",
     { method: "POST" },
-    3_600_000,
+    30_000,
   );
 
 export const connectModal = (info: AgentInfo, credentials: ModalCredentials) =>

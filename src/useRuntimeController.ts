@@ -185,6 +185,36 @@ export function useRuntimeController() {
     return () => { cancelled = true; };
   }, [agent, initialized, modalConnected]);
 
+  useEffect(() => {
+    if (!agent?.running || !modalConnected || !modal3DDeploy?.running || operationRef.current.has("deploy3d")) return;
+    const info = agent;
+    let cancelled = false;
+    let timer = 0;
+    async function pollBackgroundDeployment() {
+      try {
+        const status = await getModal3DDeployStatus(info);
+        if (cancelled) return;
+        setModal3DDeploy(status);
+        if (status.running) {
+          const activeWorkers = Object.entries(status.component_states ?? {})
+            .filter(([, state]) => state === "deploying" || state === "registering")
+            .map(([app]) => app).length;
+          setModalMessage(`3D 模型正在后台并行部署 · 已完成 ${status.completed_apps.length}/5 · 进行中 ${activeWorkers}`);
+          timer = window.setTimeout(pollBackgroundDeployment, 1_500);
+        } else if (status.deployed) {
+          setModels(await modelsOrEmpty(info));
+          setModalMessage("3D 模型套件已就绪");
+        } else if (status.error) {
+          setModalMessage(status.error);
+        }
+      } catch {
+        if (!cancelled) timer = window.setTimeout(pollBackgroundDeployment, 3_000);
+      }
+    }
+    timer = window.setTimeout(pollBackgroundDeployment, 1_500);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [agent, modal3DDeploy?.running, modalConnected]);
+
   const start = useCallback(async () => {
     if (!inTauri || !begin("agent")) return;
     try {
@@ -401,39 +431,50 @@ export function useRuntimeController() {
 
   const deployModal3DAction = useCallback(async () => {
     if (!agent?.running || !modalConnected || !begin("deploy3d")) return;
-    setModalMessage("正在部署完整 3D 模型套件：4 个 Worker + Gateway…");
-    let polling = false;
-    const poll = async () => {
-      if (polling) return;
-      polling = true;
-      try {
-        const status = await getModal3DDeployStatus(agent);
-        setModal3DDeploy(status);
-        if (status.running && status.component) {
-          setModalMessage(`正在部署 3D 模型套件 · ${status.component}`);
-        }
-      } catch {
-        // The deploy request remains authoritative; transient status polling failures are harmless.
-      } finally {
-        polling = false;
-      }
-    };
-    const timer = window.setInterval(() => void poll(), 1_500);
-    void poll();
+    setModalMessage("正在启动 3D 模型后台部署任务…");
     try {
-      const result = await deployModal3D(agent);
-      const status = await getModal3DDeployStatus(agent);
-      setModal3DDeploy(status);
-      setModels(await modelsOrEmpty(agent));
-      setModalMessage(`3D 模型套件已就绪 · ${result.models.length} 个模型`);
-      setNotice({ tone: "success", text: `3D 模型套件部署完成：${result.models.length} 个 Worker 已注册` });
+      await deployModal3D(agent);
+      const deadline = Date.now() + 2 * 60 * 60 * 1_000;
+      let transientFailures = 0;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+        try {
+          const status = await getModal3DDeployStatus(agent);
+          transientFailures = 0;
+          setModal3DDeploy(status);
+          if (status.running) {
+            const completed = status.completed_apps?.length ?? 0;
+            const activeWorkers = Object.values(status.component_states ?? {})
+              .filter((state) => state === "deploying" || state === "registering").length;
+            const gateway = status.component === "modal-3d-gateway" ? " · Gateway 阶段" : "";
+            setModalMessage(`正在后台并行部署 3D 模型 · 已完成 ${completed}/5 · 进行中 ${activeWorkers}${gateway}`);
+            continue;
+          }
+          if (status.step === "failed" || status.error) {
+            throw new Error(status.error || "3D 模型套件部署失败");
+          }
+          if (status.deployed) {
+            const models = await modelsOrEmpty(agent);
+            setModels(models);
+            setModalMessage(`3D 模型套件已就绪 · ${models.length} 个模型`);
+            setNotice({ tone: "success", text: `3D 模型套件部署完成：${models.length} 个模型可用` });
+            return;
+          }
+          throw new Error("3D 部署任务已停止，但模型套件仍不完整；请查看下方组件错误后重试");
+        } catch (error) {
+          if (error instanceof Error && /部署失败|任务已停止|RuntimeError|Error:/.test(error.message)) throw error;
+          transientFailures += 1;
+          if (transientFailures >= 10) throw error;
+          setModalMessage(`本地状态连接暂时中断，正在自动重连（${transientFailures}/10）…`);
+        }
+      }
+      throw new Error("3D 云端部署超过 2 小时仍未完成，请刷新状态后继续部署；已完成的 Worker 不会重复构建");
     } catch (error) {
       setModal3DDeploy(await getModal3DDeployStatus(agent).catch(() => null));
       const text = errorText(error);
       setModalMessage(text);
       setNotice({ tone: "error", text });
     } finally {
-      window.clearInterval(timer);
       finish("deploy3d");
     }
   }, [agent, begin, finish, modalConnected]);

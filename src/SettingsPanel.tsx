@@ -8,6 +8,26 @@ function Status({ ok, children }: { ok: boolean; children: string }) {
   return <span className={`status-chip ${ok ? "ok" : ""}`}>{children}</span>;
 }
 
+const deploymentNames: Record<string, string> = {
+  "modal-3d-fastsam3d": "FastSAM3D++",
+  "modal-3d-hunyuan": "Hunyuan2.1++",
+  "modal-3d-hermit-trellis2-plus-plus": "Hermit-TRELLIS2++",
+  "modal-3d-pixal3d": "Pixal3D",
+  "modal-3d-gateway": "Gateway",
+};
+
+const deploymentStateLabels: Record<string, string> = {
+  pending: "排队中",
+  deploying: "部署中",
+  registering: "注册中",
+  completed: "已完成",
+  skipped: "已就绪 · 已跳过",
+  waiting: "等待 Worker",
+  verifying: "验证中",
+  blocked: "Worker 失败 · 未更新",
+  failed: "部署失败",
+};
+
 export default function SettingsPanel({
   open,
   onClose,
@@ -158,14 +178,18 @@ export default function SettingsPanel({
                   <div className="deploy-card-head">
                     <div>
                       <strong>完整 3D 模型套件</strong>
-                      <p>一键部署 4 个官方 Worker，逐个注册到你的 Modal Registry，最后部署并验证 modal-3d-gateway。部署定义来自固定 commit 的官方仓库快照并经过 SHA-256 校验。</p>
+                      <p>4 个官方 Worker 以最多 3 路并发独立部署、完成后立即注册；全部成功后再统一部署并验证 Gateway。部署定义来自固定 commit 的官方仓库快照并经过 SHA-256 校验。</p>
                     </div>
-                    <span className={`status-chip ${modal3DDeploy?.deployed ? "ok" : ""}`}>{modal3DDeploy === null ? "检测中" : modal3DDeploy.deployed ? "已部署" : active("deploy3d") ? "部署中" : "未完整部署"}</span>
+                    <span className={`status-chip ${modal3DDeploy?.deployed ? "ok" : ""}`}>{modal3DDeploy === null ? "检测中" : modal3DDeploy.deployed ? "已部署" : modal3DDeploy.step === "failed" ? "部署失败" : active("deploy3d") || modal3DDeploy.running ? "部署中" : "未完整部署"}</span>
                   </div>
                   {modal3DDeploy?.components?.length ? (
                     <div className="diagnostic-grid">
                       {modal3DDeploy.components.map((component) => (
-                        <div key={component.app}><span>{component.kind === "gateway" ? "Gateway" : "Worker"}</span><strong>{component.app} · {component.deployed ? "已部署" : "待部署"}</strong></div>
+                        <div key={component.app}>
+                          <span>{component.kind === "gateway" ? "Gateway" : "Worker"}</span>
+                          <strong>{deploymentNames[component.app] ?? component.app} · {modal3DDeploy.component_states?.[component.app] ? deploymentStateLabels[modal3DDeploy.component_states[component.app]] : component.deployed ? "已部署" : modal3DDeploy.component_errors?.[component.app] ? "部署失败" : "待部署"}</strong>
+                          {modal3DDeploy.component_errors?.[component.app] ? <code>{modal3DDeploy.component_errors[component.app]}</code> : null}
+                        </div>
                       ))}
                     </div>
                   ) : null}
@@ -175,7 +199,7 @@ export default function SettingsPanel({
                       {active("deploy3d") ? "正在部署 3D 套件…" : modal3DDeploy?.deployed ? "重新部署 / 更新 3D 套件" : "一键部署完整 3D 模型"}
                     </button>
                   </div>
-                  <p className="control-explanation">首次部署会构建多个模型镜像，耗时取决于 Modal 构建缓存；重新执行是幂等的，会重新注册 Worker。</p>
+                  <p className="control-explanation">部署在本地代理后台持续运行，不依赖单个页面请求。默认最多同时部署 3 个 Worker；再次执行会自动跳过已部署且已注册的 Worker，从缺失组件继续。</p>
                 </div>
               ) : null}
               <div className="settings-explainer"><strong>数据边界</strong><p>原图和 rembg 抠图都只在本机处理。只有最终 1024×1024 Canonical RGBA 会在点击生成时上传一次。</p></div>
