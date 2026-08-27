@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelJob,
   getJob,
@@ -12,6 +12,7 @@ import {
   type Project,
 } from "../agent";
 import { pollGenerationJob } from "../generationPoller";
+import { isJobActive } from "../generationState";
 export { isJobActive as jobIsActive } from "../generationState";
 
 interface UseGenerationJobOptions {
@@ -98,6 +99,26 @@ export function useGenerationJob({
     [agent, onResultReady, refreshGenerations, refreshRecent, replaceResultUrl, setWorkflowMessage],
   );
 
+  useEffect(() => {
+    if (!agent?.running || !job || !isJobActive(job)) return;
+    const projectId = activeProjectIdRef.current ?? project?.id ?? null;
+    if (!projectId) return;
+
+    // Polling belongs to the active job, not to the page action that created it.
+    // Re-entering here makes an in-flight generation self-heal after an Agent
+    // restart, WebView reload, or project restore. pollJob invalidates any older
+    // loop before starting the replacement, so there is still only one owner.
+    void pollJob(job.id, projectId, canonical?.sha256 ?? null);
+  }, [
+    agent?.port,
+    agent?.running,
+    agent?.session_token,
+    canonical?.sha256,
+    job?.id,
+    pollJob,
+    project?.id,
+  ]);
+
   const restoreJob = useCallback(
     (value: GenerationJob | null, projectId: string | null) => {
       setJob(value);
@@ -142,7 +163,6 @@ export function useGenerationJob({
       activeProjectIdRef.current = value.project.id;
       setWorkflowMessage("Canonical 已上传，云端只负责 3D 重构。");
       void refreshGenerations(value.project.id);
-      void pollJob(value.job.id, value.project.id, canonical.sha256);
       return true;
     } catch (error) {
       setWorkflowMessage(error instanceof Error ? error.message : String(error));
@@ -155,7 +175,6 @@ export function useGenerationJob({
     agent,
     canonical,
     modalConnected,
-    pollJob,
     project,
     refreshGenerations,
     selectedModel,

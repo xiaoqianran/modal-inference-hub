@@ -26,8 +26,8 @@ import modal
 from agent import modal_client
 from agent.storage import data_dir
 
-SOURCE_COMMIT = "ff48ef3e5185cea446af5b152062683c51f1ffee"
-SOURCE_SHA256 = "3f4e93998a9491b93b0261fd11d3b2f2ffca7719ab2dd7560b7663738310aa45"
+SOURCE_COMMIT = "8512e113f32a2354153b319bfa32c2935bbfbe8a"
+SOURCE_SHA256 = "affd8561b0474579d2906e5240e9d3cf52d76f01d84455dde77caa0ef327af4f"
 SOURCE_URL = f"https://codeload.github.com/xiaoqianran/modal-3D/zip/{SOURCE_COMMIT}"
 GATEWAY_APP = "modal-3d-gateway"
 REGISTRY_NAME = "modal-3d-model-registry"

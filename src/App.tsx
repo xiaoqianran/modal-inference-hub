@@ -133,7 +133,7 @@ function App() {
   }, [notify]);
 
   const {
-    job, resultJob, resultCanonicalSha, submitting, resetOutput, pollJob, restoreJob,
+    job, resultJob, resultCanonicalSha, submitting, resetOutput, restoreJob,
     restoreResult, generate, cancel, downloadResult,
   } = useGenerationJob({
     agent, project, canonical, selectedModel, selectedProfile, modalConnected,
@@ -196,9 +196,6 @@ function App() {
       restoreResult(displayedJob, selectedGeneration?.canonical_sha256);
       replaceResultUrl(displayedArtifact);
       if (value.model) setModelId(value.model);
-      if (currentJob && jobIsActive(currentJob)) {
-        void pollJob(currentJob.id, value.id, value.canonical_sha256);
-      }
       setWorkflowMessage(
         displayedJob?.result
           ? `项目与 ${projectGenerations.length} 个模型成果已恢复。`
@@ -213,7 +210,7 @@ function App() {
     } finally {
       if (requestId === projectRequestRef.current) setBusy(false);
     }
-  }, [agent, pollJob, replaceMatteUrl, replaceResultUrl, replaceSourceUrl, restoreJob, restoreResult]);
+  }, [agent, replaceMatteUrl, replaceResultUrl, replaceSourceUrl, restoreJob, restoreResult]);
 
   useEffect(() => {
     if (!modelId && models.length) {
