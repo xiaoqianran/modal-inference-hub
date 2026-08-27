@@ -29,6 +29,10 @@ _cuda_runtime_loaded = False
 _cuda_dll_directory_handles: list[object] = []
 _CUDA_PACKAGE_MODULES = ("cublas", "cuda_runtime", "cudnn", "cufft")
 
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
 def _provider_settings_path() -> Path:
     return model_store.rembg_home() / "provider.json"
 
@@ -152,7 +156,7 @@ def _session_options(ort):
 
 def _register_cuda_directory(directory: Path) -> str:
     resolved = str(directory.resolve())
-    if os.name == "nt":
+    if _is_windows():
         _cuda_dll_directory_handles.append(os.add_dll_directory(resolved))
     current_path = os.environ.get("PATH", "")
     entries = {entry.casefold() for entry in current_path.split(os.pathsep) if entry}
@@ -320,7 +324,7 @@ def _build_session(preference: str):
                 try:
                     _preload_cuda_runtime(ort)
                 except Exception:
-                    if os.name != "nt":
+                    if not _is_windows():
                         raise
                     _install_and_preload_cuda_runtime(ort)
             else:
@@ -331,7 +335,7 @@ def _build_session(preference: str):
         except Exception:
             if (
                 preference != "gpu"
-                or os.name != "nt"
+                or not _is_windows()
                 or "CUDAExecutionProvider" not in available
                 or gpu_runtime.ready()
             ):
@@ -342,7 +346,7 @@ def _build_session(preference: str):
         actual = list(candidate.inner_session.get_providers())
         if (
             preference == "gpu"
-            and os.name == "nt"
+            and _is_windows()
             and "CUDAExecutionProvider" in available
             and "CUDAExecutionProvider" not in actual
             and not gpu_runtime.ready()

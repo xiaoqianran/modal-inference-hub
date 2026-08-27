@@ -118,7 +118,7 @@ class ModelCapabilityTests(unittest.TestCase):
             patch("agent.models.connected", return_value=True),
             patch("agent.models.modal.Function.from_name", return_value=fn),
         ):
-            value = models.capabilities_document()
+            value = models.capabilities_document(refresh=True)
         self.assertEqual(value["contract"], models.CONTRACT)
         cached = json.loads((Path(self.temp.name) / "generation-capabilities.json").read_text())
         self.assertEqual(cached["models"][0]["id"], "fastsam3d-plus-plus")
@@ -150,7 +150,32 @@ class ModelCapabilityTests(unittest.TestCase):
             patch("agent.models.modal.Function.from_name", return_value=fn),
             self.assertRaisesRegex(models.IncompatibleCapability, "incompatible"),
         ):
-            models.capabilities_document()
+            models.capabilities_document(refresh=True)
+
+    def test_cached_capability_returns_immediately_and_refreshes_stale_cache_in_background(self) -> None:
+        cached = capability_fixture()
+        path = Path(self.temp.name) / "generation-capabilities.json"
+        path.write_text(json.dumps(cached))
+        old = 1_700_000_000
+        os.utime(path, (old, old))
+        with (
+            patch("agent.models.connected", return_value=True),
+            patch("agent.models._refresh_in_background") as background,
+        ):
+            value = models.capabilities_document()
+        self.assertEqual(value["contract"], models.CONTRACT)
+        background.assert_called_once_with()
+
+    def test_fresh_cache_does_not_touch_remote_capability(self) -> None:
+        cached = capability_fixture()
+        (Path(self.temp.name) / "generation-capabilities.json").write_text(json.dumps(cached))
+        with (
+            patch("agent.models.connected", return_value=True),
+            patch("agent.models.refresh_capabilities") as refresh,
+        ):
+            value = models.capabilities_document()
+        self.assertEqual(value["models"][0]["id"], "fastsam3d-plus-plus")
+        refresh.assert_not_called()
 
     def test_source_input_limits_are_local_not_cloud_sam(self) -> None:
         self.assertEqual(models.source_input_limits()["max_bytes"], 20 * 1024 * 1024)

@@ -319,6 +319,8 @@ class ProviderPreferenceTests(unittest.TestCase):
 
         rembg_preprocess.reset_session()
         with patch("agent.preprocess.runtime.provider_preference", return_value="gpu"), patch(
+            "agent.preprocess.runtime._is_windows", return_value=True
+        ), patch(
             "onnxruntime.get_available_providers",
             return_value=["CUDAExecutionProvider", "CPUExecutionProvider"],
         ), patch("agent.preprocess.runtime._preload_cuda_runtime"), patch(
@@ -416,6 +418,42 @@ class ModelDownloadTests(unittest.TestCase):
             error=None,
             integrity="unverified",
         )
+
+    def test_existing_model_recovers_ready_verified_state_after_process_restart(self) -> None:
+        payload = b"persisted verified model"
+        digest = __import__("hashlib").md5(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.preprocess.model_store.rembg_home", return_value=Path(temporary)
+        ), patch.object(model_store, "MODEL_BYTES", len(payload)), patch.object(
+            model_store, "MODEL_MD5", digest
+        ):
+            model = model_store.model_path()
+            model.parent.mkdir(parents=True, exist_ok=True)
+            model.write_bytes(payload)
+            state = model_store.download_status()
+            self.assertEqual(state["status"], "ready")
+            self.assertEqual(state["integrity"], "verified")
+            self.assertEqual(state["downloaded_bytes"], len(payload))
+            signature = model_store._verified_model_signature
+            with patch("agent.preprocess.model_store._md5", side_effect=AssertionError("verified signature should be reused")):
+                repeated = model_store.download_status()
+            self.assertEqual(repeated["status"], "ready")
+            self.assertEqual(model_store._verified_model_signature, signature)
+
+    def test_corrupt_existing_model_is_never_reported_ready(self) -> None:
+        payload = b"corrupt persisted model"
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "agent.preprocess.model_store.rembg_home", return_value=Path(temporary)
+        ), patch.object(model_store, "MODEL_BYTES", len(payload)), patch.object(
+            model_store, "MODEL_MD5", "0" * 32
+        ):
+            model = model_store.model_path()
+            model.parent.mkdir(parents=True, exist_ok=True)
+            model.write_bytes(payload)
+            state = model_store.download_status()
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["integrity"], "failed")
+            self.assertIn("MD5", state["error"])
 
     def test_interrupted_download_resumes_with_range_and_verifies(self) -> None:
         payload = b"abcdefghij" * 100

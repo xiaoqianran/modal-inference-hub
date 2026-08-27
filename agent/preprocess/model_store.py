@@ -42,6 +42,19 @@ def download_status() -> dict:
     partial = partial_model_path()
     with _download_state_lock:
         state = dict(_download_state)
+    if model.is_file() and state["status"] not in {"downloading", "verifying"} and state["integrity"] != "verified":
+        try:
+            with _download_lock:
+                _verify_model(model)
+        except (OSError, RuntimeError) as exc:
+            _set_download_state(
+                status="failed",
+                downloaded_bytes=model.stat().st_size if model.is_file() else 0,
+                error=str(exc),
+                integrity="failed",
+            )
+        with _download_state_lock:
+            state = dict(_download_state)
     if state["status"] not in {"downloading", "verifying"}:
         if model.is_file():
             state["downloaded_bytes"] = model.stat().st_size

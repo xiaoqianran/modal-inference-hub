@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 import modal
@@ -49,6 +50,7 @@ from agent.storage import data_dir
 APP_NAME = GATEWAY_APP
 SUBMIT_FUNCTION = GATEWAY_SUBMIT
 _CACHE_NAME = "generation-capabilities.json"
+_CACHE_TTL_SECONDS = 300.0
 _RECOVERABLE_ERRORS = (
     NotConnectedError,
     AuthError,
@@ -61,6 +63,7 @@ _RECOVERABLE_ERRORS = (
     TimeoutError,
 )
 _lock = threading.RLock()
+_refresh_thread: threading.Thread | None = None
 
 
 class CapabilityError(RuntimeError):
@@ -239,6 +242,33 @@ def _read_cache() -> dict | None:
         return None
 
 
+def _cache_fresh() -> bool:
+    try:
+        return time.time() - _cache_path().stat().st_mtime <= _CACHE_TTL_SECONDS
+    except OSError:
+        return False
+
+
+def _refresh_in_background() -> None:
+    global _refresh_thread
+    with _lock:
+        if _refresh_thread is not None and _refresh_thread.is_alive():
+            return
+
+        def run() -> None:
+            global _refresh_thread
+            try:
+                refresh_capabilities()
+            except (IncompatibleCapability, *_RECOVERABLE_ERRORS):
+                pass
+            finally:
+                with _lock:
+                    _refresh_thread = None
+
+        _refresh_thread = threading.Thread(target=run, name="modal-3d-capability-refresh", daemon=True)
+        _refresh_thread.start()
+
+
 def refresh_capabilities() -> dict:
     fn = modal.Function.from_name(APP_NAME, "capabilities", client=client())
     document = _validate_document(fn.remote())
@@ -247,8 +277,17 @@ def refresh_capabilities() -> dict:
     return document
 
 
-def capabilities_document(*, refresh: bool = True) -> dict:
-    if refresh and connected():
+def capabilities_document(*, refresh: bool = False) -> dict:
+    with _lock:
+        cached = _read_cache()
+        fresh = cached is not None and _cache_fresh()
+
+    if cached is not None and not refresh:
+        if connected() and not fresh:
+            _refresh_in_background()
+        return cached
+
+    if connected():
         try:
             return refresh_capabilities()
         except IncompatibleCapability:
@@ -256,8 +295,6 @@ def capabilities_document(*, refresh: bool = True) -> dict:
         except _RECOVERABLE_ERRORS:
             pass
 
-    with _lock:
-        cached = _read_cache()
     if cached is not None:
         return cached
     if not connected():
