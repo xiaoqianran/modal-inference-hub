@@ -1,119 +1,39 @@
-﻿$ErrorActionPreference = "Stop"
-. (Join-Path $PSScriptRoot "ensure-windows-env.ps1")
+param([Parameter(Mandatory = $true)][string]$Agent)
 
-$agent = (Get-ChildItem -LiteralPath "src-tauri/binaries" -Filter "modal-3d-agent-*.exe" -File -Recurse |
-  Where-Object { $_.Directory.Name -like "modal-3d-agent-*" } |
-  Select-Object -First 1).FullName
-if (-not $agent) { throw "找不到已构建的本地代理可执行文件。" }
-$handshake = Join-Path $env:TEMP ("modal-3d-agent-smoke-" + [guid]::NewGuid().ToString("N") + ".port")
-$dataDir = Join-Path $env:TEMP ("modal-3d-agent-smoke-data-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $dataDir | Out-Null
-[byte[]]$tokenBytes = New-Object byte[] 32
-[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($tokenBytes)
-$token = [BitConverter]::ToString($tokenBytes).Replace("-", "").ToLowerInvariant()
-$env:MODAL_3D_AGENT_TOKEN = $token
-$env:MODAL_3D_AGENT_HANDSHAKE = $handshake
-$env:MODAL_3D_AGENT_DATA_DIR = $dataDir
-$env:MODAL_3D_AGENT_SMOKE = "1"
-
-function Invoke-HttpAllowError {
-  param(
-    [string]$Uri,
-    [string]$Method = "Get",
-    [hashtable]$Headers,
-    [string]$Body
-  )
-  $parameters = @{ Uri = $Uri; Method = $Method; Headers = $Headers; UseBasicParsing = $true }
-  if ((Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipHttpErrorCheck")) {
-    $parameters.SkipHttpErrorCheck = $true
-  }
-  if ($Body) {
-    $parameters.ContentType = "application/json"
-    $parameters.Body = $Body
-  }
-  try {
-    $response = Invoke-WebRequest @parameters
-    return [pscustomobject]@{ StatusCode = [int]$response.StatusCode; Content = $response.Content }
-  } catch {
-    if (-not $_.Exception.Response) { throw }
-    $response = $_.Exception.Response
-    $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
-    try { $content = $reader.ReadToEnd() } finally { $reader.Dispose() }
-    return [pscustomobject]@{ StatusCode = [int]$response.StatusCode; Content = $content }
-  }
-}
-
-$process = Start-Process -FilePath $agent -PassThru -WindowStyle Hidden
+$ErrorActionPreference = "Stop"
+$resolvedAgent = (Resolve-Path -LiteralPath $Agent).Path
+$token = [Guid]::NewGuid().ToString("N")
+$workRoot = Join-Path $env:TEMP "modal-inference-hub-smoke-$token"
+$handshake = Join-Path $workRoot "agent.port"
+$dataDir = Join-Path $workRoot "data"
+New-Item -ItemType Directory -Force -Path $workRoot, $dataDir | Out-Null
+$env:MODAL_HUB_SESSION_TOKEN = $token
+$env:MODAL_HUB_HANDSHAKE = $handshake
+$env:MODAL_HUB_DATA_DIR = $dataDir
+$process = Start-Process -FilePath $resolvedAgent -WindowStyle Hidden -PassThru
 try {
-  $deadline = (Get-Date).AddSeconds(90)
-  while (-not (Test-Path $handshake)) {
-    if ($process.HasExited) { throw "本地代理在启动期间退出：$($process.ExitCode)" }
-    if ((Get-Date) -ge $deadline) { throw "本地代理启动握手超时。" }
-    Start-Sleep -Milliseconds 100
-  }
-
-  $port = [int](Get-Content $handshake -Raw).Trim()
-  $base = "http://127.0.0.1:$port"
-  $unauth = Invoke-HttpAllowError "$base/health"
-  if ($unauth.StatusCode -ne 401) { throw "未授权请求应返回 401，实际为 $($unauth.StatusCode)。" }
-
-  $headers = @{ "X-Modal-3D-Session" = $token }
-  $health = Invoke-RestMethod "$base/health" -Headers $headers
-  if (-not $health.ok) { throw "本地代理健康检查失败。" }
-
-  $bad = Invoke-HttpAllowError "$base/modal/connect" "Post" $headers '{"token_id":"bad","token_secret":"bad"}'
-  if ($bad.StatusCode -ne 401) { throw "无效 Modal 凭据应返回 401，实际为 $($bad.StatusCode)。" }
-
-  $models = Invoke-HttpAllowError "$base/v1/models" "Get" $headers
-  if ($models.StatusCode -ne 503) { throw "Fresh CI 环境未连接 Modal 且无 capability cache 时 /v1/models 应返回 503，实际为 $($models.StatusCode)。" }
-
-  $capabilities = Invoke-RestMethod "$base/v1/capabilities" -Headers $headers
-  if ($capabilities.preprocessing.kind -ne "rembg") { throw "本地预处理引擎应为 rembg。" }
-  if ($capabilities.preprocessing.engine -ne "birefnet-general-lite") { throw "默认 rembg 引擎应为 birefnet-general-lite。" }
-  if ($capabilities.preprocessing.provider_preference -notin @("cpu", "gpu")) { throw "rembg provider 偏好必须是 cpu 或 gpu。" }
-  if ($capabilities.preprocessing.available_providers -notcontains $capabilities.preprocessing.provider) { throw "实际 provider 必须属于可用 provider 列表。" }
-  if ($capabilities.preprocessing.provider -eq "gpu" -and $capabilities.preprocessing.available_providers -notcontains "gpu") { throw "GPU provider 状态不一致。" }
-  if ($capabilities.preprocessing.provider -eq "cpu" -and $capabilities.preprocessing.available_providers -notcontains "cpu") { throw "CPU provider 状态不一致。" }
-  if ($capabilities.preprocessing.canonical_size -ne 1024) { throw "Canonical 尺寸契约应为 1024。" }
-  if (-not $capabilities.preprocessing.local_only) { throw "2D 预处理必须标记为 local_only。" }
-
-  $preprocess = Invoke-RestMethod "$base/v1/preprocess/status" -Headers $headers
-  if ($preprocess.engine -ne "birefnet-general-lite") { throw "预处理状态引擎不匹配。" }
-  $providerBody = @{ provider = "cpu" } | ConvertTo-Json
-  $provider = Invoke-RestMethod "$base/v1/preprocess/provider" -Headers $headers -Method Post -ContentType "application/json" -Body $providerBody
-  if ($provider.provider_preference -ne "cpu") { throw "CPU provider 设置未持久化。" }
-  if ($preprocess.model_downloaded) { throw "Fresh CI 环境不应预装 birefnet-general-lite 模型。" }
-  if ($preprocess.model_bytes -ne 224005088) { throw "birefnet-general-lite 预期模型大小异常。" }
-  if ($preprocess.download.status -ne "idle") { throw "Fresh CI 模型下载状态应为 idle。" }
-  if ($preprocess.download.downloaded_bytes -ne 0) { throw "Fresh CI 不应存在 partial 模型字节。" }
-  if ($preprocess.download.total_bytes -ne $preprocess.model_bytes) { throw "下载总字节数应与模型大小一致。" }
-  if ($preprocess.download.resumable) { throw "Fresh CI 不应标记为可续传。" }
-
-  $image = Join-Path $dataDir "smoke.png"
-  # 1x1 真彩 PNG（合法图片，供 image_input 严格解析通过）。
-  $pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
-  [IO.File]::WriteAllBytes($image, [Convert]::FromBase64String($pngBase64))
-  $project = Invoke-RestMethod "$base/v1/projects" -Method Post -Headers $headers -Form @{ file = Get-Item $image }
-  if ($project.status -ne "draft") { throw "新 Project 状态应为 draft，实际为 $($project.status)。" }
-
-  $projects = Invoke-RestMethod "$base/v1/projects" -Headers $headers
-  if ($projects.Count -ne 1 -or $projects[0].id -ne $project.id) { throw "Project 列表未返回刚创建的项目。" }
-
-  $generations = Invoke-RestMethod "$base/v1/projects/$($project.id)/generations" -Headers $headers
-  if ($null -ne $generations -and @($generations).Count -ne 0) { throw "新 Project 的模型成果列表应为空。" }
-
-  $deleted = Invoke-RestMethod "$base/v1/projects/$($project.id)" -Method Delete -Headers $headers
-  if ($deleted.deleted -ne $project.id) { throw "Project 删除返回的 ID 不匹配。" }
-  $missing = Invoke-HttpAllowError "$base/v1/projects/$($project.id)" "Get" $headers
-  if ($missing.StatusCode -ne 404) { throw "已删除 Project 应返回 404，实际为 $($missing.StatusCode)。" }
-
-  Write-Host "本地代理冒烟测试通过，随机端口：$port"
+    $deadline = [DateTime]::UtcNow.AddSeconds(60)
+    while (-not (Test-Path -LiteralPath $handshake) -and [DateTime]::UtcNow -lt $deadline) {
+        if ($process.HasExited) { throw "Hub Agent exited before the handshake." }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not (Test-Path -LiteralPath $handshake)) { throw "Hub Agent handshake timed out." }
+    $port = Get-Content -Raw -LiteralPath $handshake
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/health" -Headers @{ "X-Modal-Hub-Session" = $token } -TimeoutSec 10
+    if (-not $health.ok) { throw "Hub Agent health check failed." }
+    Write-Host "Hub Agent build and smoke check passed: $resolvedAgent"
 }
 finally {
-  if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
-  Remove-Item $handshake -ErrorAction SilentlyContinue
-  Remove-Item Env:MODAL_3D_AGENT_TOKEN -ErrorAction SilentlyContinue
-  Remove-Item Env:MODAL_3D_AGENT_HANDSHAKE -ErrorAction SilentlyContinue
-  Remove-Item Env:MODAL_3D_AGENT_DATA_DIR -ErrorAction SilentlyContinue
-  Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not $process.HasExited) { & taskkill /PID $process.Id /T /F | Out-Null }
+    Remove-Item Env:MODAL_HUB_SESSION_TOKEN -ErrorAction SilentlyContinue
+    Remove-Item Env:MODAL_HUB_HANDSHAKE -ErrorAction SilentlyContinue
+    Remove-Item Env:MODAL_HUB_DATA_DIR -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $workRoot) {
+        $resolvedWork = (Resolve-Path -LiteralPath $workRoot).Path
+        $resolvedTemp = (Resolve-Path -LiteralPath $env:TEMP).Path
+        if (-not $resolvedWork.StartsWith($resolvedTemp, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to clean a smoke directory outside TEMP: $resolvedWork"
+        }
+        Remove-Item -LiteralPath $resolvedWork -Recurse -Force
+    }
 }

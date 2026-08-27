@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    modal_3d_client_lib::run()
+    modal_inference_hub_lib::run()
 }

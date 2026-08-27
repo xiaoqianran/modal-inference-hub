@@ -39,15 +39,15 @@ jobs:
 
       - name: 构建并冒烟测试本地代理
         shell: pwsh
-        run: |
-          ./scripts/build-agent.ps1
-          ./scripts/smoke-agent.ps1
+        run: ./scripts/build-agent.ps1
 
       - name: 验证源码
         run: |
           npm run build
-          uv run python -m compileall -q agent
-          uv run python -m unittest discover -s tests -v
+          npm test
+          uv run python -m compileall -q hub agent
+          uv run ruff check hub agent tests
+          uv run pytest -q
           cargo fmt --manifest-path src-tauri/Cargo.toml --check
           cargo test --manifest-path src-tauri/Cargo.toml
           cargo check --manifest-path src-tauri/Cargo.toml
@@ -76,5 +76,5 @@ jobs:
           $releaseAssets = @($assets.FullName) + @($checksumPath)
           gh release create $env:GITHUB_REF_NAME @releaseAssets `
             --verify-tag `
-            --title "modal-3D 三维创作客户端 $env:GITHUB_REF_NAME" `
-            --notes "Windows 优先预览版本，包含本地 rembg 预处理、本地代理和 Windows 凭据管理器支持。原图预处理不上传云端；生成时仅上传 1024×1024 Canonical RGBA。安装包尚未签名，首次启动时 Windows SmartScreen 可能显示警告。"
+            --title "Modal Inference Hub $env:GITHUB_REF_NAME" `
+            --notes "Windows 实验工作台：通过独立 modal-2D-client 与 modal-3D-client 组合人工 Text→2D→3D 流程。安装包尚未签名，首次启动时 Windows SmartScreen 可能显示警告。"

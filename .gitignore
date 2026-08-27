@@ -11,6 +11,8 @@ __pycache__/
 src-tauri/target/
 src-tauri/binaries/*.exe
 src-tauri/binaries/*/
+!src-tauri/binaries/modal-inference-hub-agent-x86_64-pc-windows-msvc/
+!src-tauri/binaries/modal-inference-hub-agent-x86_64-pc-windows-msvc/.gitkeep
 
 # Agent packaging
 build/
@@ -20,10 +22,11 @@ build/
 .env
 .env.*
 !.env.example
+.data/
 .DS_Store
 
 # generated Windows sidecar
-src-tauri/resources/modal-3d-agent.exe
+src-tauri/resources/modal-inference-hub-agent.exe
 
 # release build workspace
 /build/

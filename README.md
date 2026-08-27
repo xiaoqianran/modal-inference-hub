@@ -1,314 +1,104 @@
-# modal-inference-hub
+# Modal Inference Hub
 
-`modal-inference-hub` 是本地 **Inference Composition Hub**。它和 AgentScape 处在同一类“调用/组合层”，负责 Project、Preprocess、Workflow Composition；具体 Provider execution 由独立 Reference Sidecar 承担。
+面向人的实验工作台：组合 modal-2D-client 与 modal-3D-client，但不拥有 Provider
+执行、模型生命周期或 Modal CLI Schema。
 
-```text
-                     Local UI / Workspace
-                              │
-                              ▼
-                  modal-inference-hub
-                   Project / Preprocess
-                    Workflow Composition
-                     │              │
-                     ▼              ▼
-              modal-2D-client   modal-3D-client
-                     │              │
-                     ▼              ▼
-                  modal-2D       modal-3D
-                     │              │
-                     └──── Artifact ┘
-```
+当前支持：
 
-目标边界：
+- 粘贴 `modal token set --token-id ... --token-secret ...` 并安全识别凭据；只解析，不执行。
+- 从 UI 调用 2D/3D 仓库自有部署器，并用 capabilities 验证部署结果。
+- 单 Prompt 实验、批量 Prompt 候选生成、批量 PNG/JPEG/WebP 直接转 3D。
+- 确定性 Sidecar Job ID、uncertain 恢复、内容寻址输入和 GLB 流式下载。
 
-- Hub owns：Project、原图、rembg/component selection、canonicalization、2D→3D composition、UI/Workspace state。
-- Hub does **not** own：Modal Provider Job internals、Provider Artifact transport、GPU model lifecycle。
-- `modal-2D-client` / `modal-3D-client` 是平级 Reference Sidecar；Hub 通过它们调用 `modal-2D` / `modal-3D`。
-- 旧 `MODAL_3D_AGENT_*` 环境变量和旧本地数据目录暂时保留兼容，后续再做无损迁移。
+~~~text
+用户文本
+   │
+   ▼
+实验 exp_xxx（Hub 真值）
+   │
+   ├─ N 个确定性 job ref ──────► modal-2D-client ──► modal-2D
+   │                                  │
+   │                           PNG Artifact descriptor
+   │                                  │
+   ├─ 人工选择 candidate ◄────────────┘
+   │
+   └─ 选中 PNG 原样转交 ───────► modal-3D-client ──► modal-3D
+                                      │
+                                GLB Artifact descriptor
+~~~
 
----
+## 启动
 
-## 当前实现兼容区
+先独立启动两个参考 Sidecar；Hub 不替它们重做 CLI：
 
-下面内容描述现有本地 preprocess + 3D workflow；它会逐步迁移到上面的 Hub → 2D/3D Sidecar 架构。
+~~~powershell
+$env:MODAL_2D_PORT = "3212"
+uv run --project ..\modal-2D-client python -m modal_2d_client.server
 
+$env:MODAL_3D_CLIENT_PORT = "3213"
+uv run --project ..\modal-3D-client python -m modal_3d_client.server
+~~~
 
-Windows-first desktop client for **local 2D preprocessing** and Modal-backed 3D generation.
+Sidecar 的 Modal 认证仍由 Sidecar 自己完成。然后启动 Hub：
 
-The active product boundary is simple:
+~~~powershell
+uv sync --group dev
+npm install
+npm run desktop:dev
+~~~
 
-```text
-local machine                                    Modal cloud
+纯 Web 开发时可单独运行 Python Hub，并设置 VITE_HUB_URL。Sidecar 地址可通过
+MODAL_2D_CLIENT_URL、MODAL_3D_CLIENT_URL 覆盖；会话 token 分别通过
+MODAL_2D_CLIENT_TOKEN、MODAL_3D_CLIENT_TOKEN 提供。
 
-source image
-    │
-    ▼
-rembg / birefnet-general-lite
-CPU or Windows NVIDIA CUDA GPU
-    │
-    ▼
-Full RGBA
-    │
-    ▼
-8-connected Alpha components
-    │
-    ├── click / checkbox
-    ├── drag = replace selection
-    ├── Shift+drag = add
-    ├── Alt+drag = remove
-    └── Undo / Redo
-    │
-    ▼
-active-selection RGBA
-    │
-    ▼
-union bbox
-    │
-    ▼
-preserve aspect ratio
-transparent letterbox + center
-    │
-    ▼
-1024×1024 / 8-bit RGBA PNG
-Canonical
-    │
-    │ upload once when 3D generation starts
-    └──────────────────────────────────────────► modal-3D Volume
-                                                     │
-                                                     ├── FastSAM3D++
-                                                     ├── Hermite-TRELLIS2++
-                                                     ├── Hunyuan2.1++
-                                                     └── Pixal3D
-                                                     │
-                                                     ▼
-                                                    GLB
-```
+## 凭据与自动部署
 
-The original image, rembg matte, component selection, crop and canonicalization stay on the user's machine. Modal receives only the final Canonical RGBA used for generation.
+连接界面接受完整命令或一对凭据：
 
-## Local preprocessing
+~~~text
+modal token set --token-id <TOKEN_ID> --token-secret <TOKEN_SECRET>
+~~~
 
-- Engine: `rembg`
-- Model: `birefnet-general-lite`
-- Default provider: Windows NVIDIA GPU when CUDA is available, with automatic CPU fallback
-- Windows GPU provider: ONNXRuntime CUDA（cuDNN）
-- CUDA 随 Agent 打包 NVIDIA CUDA / cuDNN 运行库，仅支持 NVIDIA GPU
-- If GPU initialization fails, preprocessing falls back to CPU
-- Linux and macOS currently use CPU
-- Canonical contract: PNG, 1024×1024, 8-bit RGBA
-- Geometry: preserve source aspect ratio and center with transparent letterbox padding
+输入不会作为 shell 命令执行。连接成功或失败后 UI 都会清空输入；Hub 不把凭据写入
+SQLite、Experiment、Batch 或 Deployment document。
 
-Importing an image automatically creates a local project and starts preprocessing. If preprocessing fails, the original project remains available and can be retried without importing the image again.
+点击 Provider 旁的“部署”后，Hub 读取 Provider 自己导出的计划并要求再次确认。默认从
+相邻的 `../modal-2D`、`../modal-3D` 启动部署器，也可覆盖：
 
-### First-run model preparation
+~~~powershell
+$env:MODAL_2D_PROVIDER_REPO = "D:\path\to\modal-2D"
+$env:MODAL_3D_PROVIDER_REPO = "D:\path\to\modal-3D"
+# 或一次设置五仓工作区根目录：
+$env:MODAL_HUB_WORKSPACE = "D:\path\to\workspace"
+~~~
 
-`birefnet-general-lite` is approximately 224 MB. The Agent owns the model download instead of leaving it as an opaque rembg operation.
+部署需要本机 `uv`。Hub 只保存脱敏后的部署阶段；2D/3D 的 App 列表、CLI 参数、worker
+注册与 adapter revision 校验全部留在 Provider 仓库。
 
-```text
-idle
- │
- ▼
-downloading ───────────────┐
- │                         │
- ▼                         │
-verifying                  │
- │                         │
- ├── checksum OK ──► ready │
- │                         │
- └── failure ──────► failed
-                         │
-                         └── retry / HTTP Range resume
-```
+## 批量任务
 
-The client provides:
+~~~text
+多行 Prompt ─► Batch ─► N 个 Experiment ─► awaiting_review ─► 人工选择
 
-- byte-level download progress
-- downloaded / total MiB display
-- `.partial` files for interrupted downloads
-- HTTP Range resume on retry
-- pinned MD5 verification before ONNX session creation
-- corrupt completed partials are deleted instead of promoted
-- optional **Prepare model** action in Settings before importing any image
+多张图片 ─► 内容寻址 InputStore ─► Batch ─► N 个 DirectImage Run ─► GLB
+~~~
 
-The model cache lives under the application's local data directory in `rembg/`.
+- Prompt 输入一行一项，单批最多 50 项。
+- 图片支持 PNG/JPEG/WebP，单文件最多 25 MiB，单批最多 50 项。
+- 重复 Prompt 与相同内容摘要的图片会保持顺序去重，避免重复付费提交。
+- Provider 提交使用有界顺序调度；Batch 只保存目标引用，不复制 Job/Artifact document。
+- 批次和 Experiment 都显示在左侧历史中，进入候选选择后可以回到原批次。
 
-## Multi-object foreground selection
+## 验证
 
-After global rembg matting, the client performs local **8-connected Alpha component analysis**.
-
-All meaningful components are selected by default, so the initial Canonical output remains equivalent to the complete rembg foreground. Tiny Alpha fragments are not exposed as individual UI objects while the default all-selected result still preserves them.
-
-Supported editing:
-
-```text
-click / checkbox       toggle one component
-Drag                   replace selection
-Shift + Drag           add matched components
-Alt + Drag             remove matched components
-Ctrl/Cmd + Z           undo
-Ctrl/Cmd + Shift + Z   redo
-```
-
-The client keeps up to 50 local selection-history states. At least one foreground component must remain selected.
-
-Selection edits do **not** rerun rembg and do **not** call Modal. They update local `selection.png`, recompute the union bbox and regenerate the Canonical PNG locally.
-
-For interaction performance, decoded matte/label data uses a bounded 64 MiB process-local LRU cache. Oversized images automatically bypass that cache instead of growing Agent memory without bound.
-
-## Cloud generation
-
-The separate `modal-3D` repository is the cloud inference layer. It does not perform background removal, segmentation, subject selection, cropping or Canonical generation.
-
-The client discovers workers through the cloud capability registry rather than maintaining a hard-coded active model list. Current workers are:
-
-- FastSAM3D++
-- Hermite-TRELLIS2++
-- Hunyuan2.1++
-- Pixal3D
-
-The Canonical PNG is uploaded lazily only when generation starts. The local SHA-256 and byte count are verified before the remote path is persisted.
-
-## Local project workspace
-
-Each project keeps local preprocessing state under the application data directory, including:
-
-```text
-project/
-├── source.*          original image
-├── matte.png         complete rembg RGBA
-├── selection.png     current selected RGBA in source coordinates
-├── canonical.png     current 1024×1024 Canonical RGBA
-└── components.json   component metadata + selected component IDs
-```
-
-The project database also tracks model/profile choice, Modal FunctionCall job state, optional remote Canonical path and validated GLB metadata. Every generation is appended to a per-project model history, so earlier successful GLBs remain selectable after image edits or later generation attempts.
-
-Old projects that predate `selection.png` can rebuild it locally from `matte.png` plus saved component state; rembg does not have to run again.
-
-## Credentials
-
-Modal credentials are handled by the local Agent. On Windows, the desktop client can store them in Windows Credential Manager. Credentials are not reloaded into the React UI after restart.
-
-## Unified Connector
-
-The local Agent also exposes `/connector/v1/*` for AgentScape. Pairing uses one short-lived local approval secret: `MODAL_CONNECTOR_PAIRING_TOKEN` when explicitly configured, otherwise the existing `MODAL_3D_AGENT_TOKEN`. A successful pair creates a separate scoped Connector bearer session; the approval secret itself is never persisted in Connector jobs, artifacts or responses.
-
-```text
-MODAL_CONNECTOR_PAIRING_TOKEN
-        │ explicit override
-        ▼
-Connector pairing approval
-        ▲
-        │ fallback
-MODAL_3D_AGENT_TOKEN
-```
-
-This keeps the desktop sidecar on one ephemeral secret source while preserving an explicit override for non-desktop deployments.
-
-## Windows development
-
-### Required tool versions
-
-The repository currently expects:
-
-```text
-Node.js   24.x in CI
-Python    3.12
-uv        >=0.12.5,<0.13
-Rust      stable
-```
-
-The uv requirement is enforced by `uv.toml`. Windows CI uses uv `0.12.5` and performs a real locked install.
-
-### Clean checkout / update
-
-PowerShell:
-
-```powershell
-git pull
-
-uv --version
-npm ci
-uv sync --locked --group dev --group build
-
+~~~powershell
+uv run --group dev ruff check hub agent tests
+uv run --group dev pytest -q
 npm run build
-uv run pytest -q
-```
+npm test
+cargo test --manifest-path src-tauri/Cargo.toml
+~~~
 
-For a clean environment rebuild:
-
-```powershell
-Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
-uv sync --locked --group dev --group build
-```
-
-Do not run `uv lock` unless you intentionally changed Python dependencies in `pyproject.toml`.
-
-### If `uv sync --locked` says the lockfile needs updating
-
-First inspect the workspace instead of regenerating the lock immediately:
-
-```powershell
-uv --version
-git status --short
-git diff -- pyproject.toml uv.lock
-```
-
-Make sure uv satisfies:
-
-```text
->=0.12.5,<0.13
-```
-
-If `pyproject.toml` / `uv.lock` were changed unintentionally, restore them and rebuild the environment:
-
-```powershell
-git restore pyproject.toml uv.lock
-git pull
-Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
-uv sync --locked --group dev --group build
-```
-
-The committed lockfile is cross-platform. It resolves the platform-specific ONNXRuntime dependency as:
-
-```text
-Windows  -> onnxruntime-gpu[cuda,cudnn] 1.24.x
-Linux    -> onnxruntime 1.25.x
-macOS    -> onnxruntime 1.25.x
-```
-
-So a lockfile error on an otherwise clean checkout should be treated as an environment/version issue first, not as a reason to casually regenerate `uv.lock`.
-
-## Validation and Windows packaging
-
-The Windows workflow validates the same locked environment used for development:
-
-```text
-npm ci
-npm run build
-
-uv python install 3.12
-uv lock --check
-uv sync --locked --group dev --group build
-python compileall
-Python unit tests
-PyInstaller Agent build
-Agent smoke test
-
-cargo fmt --check
-cargo test
-cargo check
-Tauri NSIS build
-```
-
-The normal Windows CI uploads an NSIS installer. The release workflow builds both NSIS and MSI installers and publishes SHA-256 checksums.
-
-## Archived SAM 3.1 implementation
-
-The retired SAM 3.1 cloud/local preprocessing implementation is preserved under `archive/sam3_1/`.
-
-It is not imported, packaged, deployed or exposed by the active runtime.
-
-## Architecture reference
-
-See `docs/PRODUCT_ARCHITECTURE.md` for the detailed active architecture and cloud/client boundary.
+旧 modal-3D-client 数据目录会原地保留并优先复用。Hub 新数据分别写入
+`experiments.sqlite3`、`direct-images.sqlite3`、`batches.sqlite3`、
+`deployments.sqlite3` 与内容寻址 `inputs/`；不会改写旧 projects.sqlite3 或 Artifact 历史。

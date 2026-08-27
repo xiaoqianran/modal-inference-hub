@@ -27,17 +27,17 @@
       @keyframes startup-slide { from { transform: translateX(0); } to { transform: translateX(184%); } }
       @media (prefers-reduced-motion: reduce) { .startup-progress::after { animation: none; width: 100%; opacity: .7; } }
     </style>
-    <meta name="description" content="modal-3D 本地与云端协同的三维创作客户端" />
-    <title>modal-3D 三维创作客户端</title>
+    <meta name="description" content="组合 Modal 2D 与 3D Sidecar 的人工实验工作台" />
+    <title>Modal Inference Hub</title>
   </head>
 
   <body>
     <div id="root">
       <div id="startup" role="status" aria-live="polite">
         <div class="startup-card">
-          <div class="startup-mark">3D</div>
-          <strong>正在启动 modal-3D</strong>
-          <span>正在准备本地服务与创作工作区</span>
+          <div class="startup-mark">MI</div>
+          <strong>正在启动 Modal Inference Hub</strong>
+          <span>正在准备实验工作区</span>
           <div class="startup-progress" aria-hidden="true"></div>
         </div>
       </div>

@@ -1,5 +1,3 @@
-mod agent_handoff;
-mod credentials;
 use rand::RngCore;
 use serde::Serialize;
 use std::{
@@ -13,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{async_runtime, Manager};
-use tauri_plugin_dialog::DialogExt;
+
 #[derive(Clone, Serialize)]
 struct AgentInfo {
     running: bool,
@@ -21,16 +19,15 @@ struct AgentInfo {
     session_token: Option<String>,
 }
 
-struct AgentProcess {
+struct HubProcess {
     child: Child,
     port: u16,
     session_token: String,
     handshake: PathBuf,
-    log: PathBuf,
 }
 
 #[derive(Default)]
-struct AgentState(Mutex<Option<AgentProcess>>);
+struct HubState(Mutex<Option<HubProcess>>);
 
 fn random_token() -> String {
     let mut bytes = [0u8; 32];
@@ -38,117 +35,34 @@ fn random_token() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-#[cfg(target_os = "windows")]
-fn windows_drive(path: &str) -> Option<&str> {
-    let bytes = path.as_bytes();
-    (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':').then(|| &path[..2])
-}
-
-#[cfg(target_os = "windows")]
-fn configure_windows_child_env(command: &mut Command) {
-    let system_drive = std::env::var("SystemDrive")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            std::env::var("SystemRoot")
-                .ok()
-                .and_then(|root| windows_drive(&root).map(str::to_owned))
-        });
-
-    if let Some(drive) = system_drive {
-        if std::env::var_os("SystemDrive").is_none() {
-            command.env("SystemDrive", &drive);
-        }
-        if std::env::var_os("ProgramData").is_none() {
-            command.env("ProgramData", format!(r"{}\ProgramData", drive));
-        }
-        if std::env::var_os("ALLUSERSPROFILE").is_none() {
-            command.env("ALLUSERSPROFILE", format!(r"{}\ProgramData", drive));
-        }
-    }
-
-    if std::env::var_os("USERPROFILE").is_none() {
-        if let Some(home) = std::env::var_os("HOME") {
-            command.env("USERPROFILE", home);
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn configure_windows_child_env(_command: &mut Command) {}
-
-fn client_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("MODAL_3D_AGENT_DATA_DIR") {
+fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("MODAL_HUB_DATA_DIR") {
         return Ok(PathBuf::from(path));
     }
-    let tauri_data_dir = app
+    let current = app
         .path()
         .app_data_dir()
-        .map_err(|error| format!("无法定位客户端数据目录：{error}"))?;
+        .map_err(|error| format!("无法定位 Hub 数据目录：{error}"))?;
     #[cfg(target_os = "windows")]
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let legacy = PathBuf::from(local_app_data).join("modal-3D-client");
-        let legacy_has_projects = legacy.join("projects.sqlite3").is_file();
-        let tauri_has_projects = tauri_data_dir.join("projects.sqlite3").is_file();
-        // 优先沿用已有数据库；两边都没有时使用 Agent 的稳定历史目录。
-        if legacy_has_projects || !tauri_has_projects {
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let legacy = PathBuf::from(local).join("modal-3D-client");
+        // 继续使用旧目录，保证升级不会移动或丢失原 Project/Artifact 历史。
+        if legacy.join("projects.sqlite3").is_file() || legacy.join("experiments.sqlite3").is_file()
+        {
             return Ok(legacy);
         }
     }
-    Ok(tauri_data_dir)
-}
-
-#[derive(Serialize)]
-struct AppDiagnostics {
-    version: String,
-    data_dir: String,
-    agent_log: Option<String>,
-}
-
-#[tauri::command]
-async fn app_diagnostics(app: tauri::AppHandle) -> Result<AppDiagnostics, String> {
-    async_runtime::spawn_blocking(move || {
-        let data_dir = client_data_dir(&app)?;
-        let state = app.state::<AgentState>();
-        let agent_log = state
-            .0
-            .lock()
-            .map_err(|_| "无法锁定本地代理状态")?
-            .as_ref()
-            .map(|process| process.log.to_string_lossy().into_owned());
-        Ok(AppDiagnostics {
-            version: app.package_info().version.to_string(),
-            data_dir: data_dir.to_string_lossy().into_owned(),
-            agent_log,
-        })
-    })
-    .await
-    .map_err(|error| format!("桌面后台任务异常退出：{error}"))?
-}
-
-#[tauri::command]
-fn reveal_app_data(app: tauri::AppHandle) -> Result<(), String> {
-    let data_dir = client_data_dir(&app)?;
-    fs::create_dir_all(&data_dir).map_err(|error| format!("无法创建客户端数据目录：{error}"))?;
-    #[cfg(target_os = "windows")]
-    Command::new("explorer.exe")
-        .arg(&data_dir)
-        .spawn()
-        .map_err(|error| format!("无法打开客户端数据目录：{error}"))?;
-    #[cfg(not(target_os = "windows"))]
-    return Err("当前只支持在 Windows 中打开数据目录".into());
-    Ok(())
+    Ok(current)
 }
 
 #[cfg(debug_assertions)]
-fn agent_command(_app: &tauri::AppHandle) -> Result<Command, String> {
-    if let Some(path) = std::env::var_os("MODAL_3D_AGENT_EXECUTABLE") {
+fn hub_command(_app: &tauri::AppHandle) -> Result<Command, String> {
+    if let Some(path) = std::env::var_os("MODAL_HUB_EXECUTABLE") {
         return Ok(Command::new(path));
     }
-
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .ok_or("项目根目录无效")?
+        .ok_or("Hub 项目根目录无效")?
         .to_path_buf();
     let mut command = Command::new("uv");
     command
@@ -158,116 +72,47 @@ fn agent_command(_app: &tauri::AppHandle) -> Result<Command, String> {
 }
 
 #[cfg(not(debug_assertions))]
-fn agent_command(app: &tauri::AppHandle) -> Result<Command, String> {
-    if let Some(path) = std::env::var_os("MODAL_3D_AGENT_EXECUTABLE") {
+fn hub_command(app: &tauri::AppHandle) -> Result<Command, String> {
+    if let Some(path) = std::env::var_os("MODAL_HUB_EXECUTABLE") {
         return Ok(Command::new(path));
     }
-
-    #[cfg(target_os = "windows")]
-    {
-        let resource_dir = app
-            .path()
-            .resource_dir()
-            .map_err(|error| format!("无法定位客户端资源目录：{error}"))?;
-        let bundled_agent = resource_dir
-            .join("binaries")
-            .join("modal-3d-agent-x86_64-pc-windows-msvc")
-            .join("modal-3d-agent-x86_64-pc-windows-msvc.exe");
-        if bundled_agent.is_file() {
-            return Ok(Command::new(bundled_agent));
-        }
-    }
-
-    Err("在客户端资源目录中找不到已捆绑的本地代理".into())
+    let target = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("无法定位 Hub 资源目录：{error}"))?
+        .join("binaries")
+        .join("modal-inference-hub-agent-x86_64-pc-windows-msvc")
+        .join("modal-inference-hub-agent-x86_64-pc-windows-msvc.exe");
+    target
+        .is_file()
+        .then(|| Command::new(target))
+        .ok_or_else(|| "在应用资源中找不到 Hub Agent".into())
 }
 
-fn terminate_child(child: &mut Child) {
+fn terminate(child: &mut Child) {
     #[cfg(target_os = "windows")]
-    {
+    if matches!(child.try_wait(), Ok(None)) {
         use std::os::windows::process::CommandExt;
-
-        if matches!(child.try_wait(), Ok(None)) {
-            let mut taskkill = Command::new("taskkill");
-            taskkill
-                .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(0x08000000);
-            let terminated = taskkill.spawn().ok().is_some_and(|mut taskkill| {
-                let deadline = Instant::now() + Duration::from_secs(5);
-                loop {
-                    match taskkill.try_wait() {
-                        Ok(Some(status)) => break status.success(),
-                        Ok(None) if Instant::now() < deadline => {
-                            thread::sleep(Duration::from_millis(25));
-                        }
-                        _ => {
-                            let _ = taskkill.kill();
-                            break false;
-                        }
-                    }
-                }
-            });
-            if !terminated {
-                let _ = child.kill();
-            }
-        }
+        let mut command = Command::new("taskkill");
+        command
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x08000000);
+        let _ = command.status();
     }
-
     #[cfg(not(target_os = "windows"))]
     let _ = child.kill();
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline {
-        if !matches!(child.try_wait(), Ok(None)) {
-            return;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    let _ = child.kill();
+    let _ = child.wait();
 }
 
-fn stop_process(process: &mut AgentProcess) {
-    terminate_child(&mut process.child);
+fn stop(process: &mut HubProcess) {
+    terminate(&mut process.child);
     let _ = fs::remove_file(&process.handshake);
-    let _ = credentials::clear_agent_handoff(&process.session_token);
 }
 
-fn startup_failure(
-    child: &mut Child,
-    handshake: &PathBuf,
-    log: &PathBuf,
-    message: impl Into<String>,
-) -> String {
-    terminate_child(child);
-    let _ = fs::remove_file(handshake);
-
-    let message = message.into();
-    let detail = fs::read_to_string(log).ok().and_then(|contents| {
-        let trimmed = contents.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(
-                trimmed
-                    .chars()
-                    .rev()
-                    .take(4000)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect::<String>(),
-            )
-        }
-    });
-    match detail {
-        Some(detail) => format!("{message}\n本地代理日志：\n{detail}"),
-        None => message,
-    }
-}
-
-fn process_info(process: &AgentProcess) -> AgentInfo {
+fn info(process: &HubProcess) -> AgentInfo {
     AgentInfo {
         running: true,
         port: Some(process.port),
@@ -275,289 +120,188 @@ fn process_info(process: &AgentProcess) -> AgentInfo {
     }
 }
 
-fn agent_start_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
-    let state = app.state::<AgentState>();
-    let mut state = state.0.lock().map_err(|_| "无法锁定本地代理状态")?;
-    if let Some(process) = state.as_mut() {
-        if process
-            .child
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            return Ok(process_info(process));
+fn startup_error(child: &mut Child, handshake: &PathBuf, log: &PathBuf, message: &str) -> String {
+    terminate(child);
+    let _ = fs::remove_file(handshake);
+    let detail = fs::read_to_string(log).unwrap_or_default();
+    let tail: String = detail
+        .chars()
+        .rev()
+        .take(3000)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if tail.trim().is_empty() {
+        message.into()
+    } else {
+        format!("{message}\nHub 日志：\n{tail}")
+    }
+}
+
+fn start_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
+    let state = app.state::<HubState>();
+    let mut guard = state.0.lock().map_err(|_| "无法锁定 Hub 进程状态")?;
+    if let Some(process) = guard.as_mut() {
+        if matches!(process.child.try_wait(), Ok(None)) {
+            return Ok(info(process));
         }
-        stop_process(process);
-        *state = None;
+        stop(process);
+        *guard = None;
     }
 
     let session_token = random_token();
-    let data_dir = client_data_dir(app)?;
-    fs::create_dir_all(&data_dir).map_err(|error| format!("无法创建客户端数据目录：{error}"))?;
+    let data = data_dir(app)?;
+    fs::create_dir_all(&data).map_err(|error| format!("无法创建 Hub 数据目录：{error}"))?;
     let handshake = std::env::temp_dir().join(format!(
-        "modal-3d-agent-{}-{}.port",
+        "modal-inference-hub-{}-{}.port",
         std::process::id(),
         &session_token[..12]
     ));
-    let log = data_dir.join("agent.log");
+    let log = data.join("hub.log");
     let _ = fs::remove_file(&handshake);
-
-    let mut command = agent_command(app)?;
-    configure_windows_child_env(&mut command);
-    command.env("MODAL_3D_AGENT_DATA_DIR", &data_dir);
-    if let Ok(Some((token_id, token_secret))) = credentials::load() {
-        command
-            .env("MODAL_3D_SAVED_TOKEN_ID", token_id)
-            .env("MODAL_3D_SAVED_TOKEN_SECRET", token_secret);
-    }
     let mut log_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log)
-        .map_err(|error| format!("无法创建本地代理启动日志：{error}"))?;
+        .map_err(|error| format!("无法创建 Hub 日志：{error}"))?;
     let _ = writeln!(
         log_file,
-        "[desktop] starting local agent pid={}",
+        "[desktop] starting Hub pid={}",
         std::process::id()
     );
-    let log_stdout = log_file
+    let stdout = log_file
         .try_clone()
-        .map_err(|error| format!("无法打开本地代理启动日志：{error}"))?;
+        .map_err(|error| format!("无法打开 Hub 日志：{error}"))?;
+    let mut command = hub_command(app)?;
     command
-        .env("MODAL_3D_AGENT_TOKEN", &session_token)
-        .env("MODAL_3D_AGENT_HANDSHAKE", &handshake)
-        .env("MODAL_3D_AGENT_PARENT_PID", std::process::id().to_string())
+        .env("MODAL_HUB_DATA_DIR", &data)
+        .env("MODAL_HUB_SESSION_TOKEN", &session_token)
+        .env("MODAL_HUB_HANDSHAKE", &handshake)
+        .env("MODAL_HUB_PARENT_PID", std::process::id().to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::from(log_stdout))
+        .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log_file));
-
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("无法启动 Hub Agent：{error}"))?;
 
-    let mut child = command.spawn().map_err(|error| {
-        let _ = fs::remove_file(&handshake);
-        format!("无法启动本地代理：{error}")
-    })?;
     let deadline = Instant::now() + Duration::from_secs(30);
     let port = loop {
-        if let Ok(value) = fs::read_to_string(&handshake) {
-            match value.trim().parse::<u16>() {
-                Ok(port) => break port,
-                Err(_) => {
-                    return Err(startup_failure(
-                        &mut child,
-                        &handshake,
-                        &log,
-                        "本地代理返回了无效的启动握手信息",
-                    ));
-                }
-            }
+        if let Ok(raw) = fs::read_to_string(&handshake) {
+            break raw
+                .trim()
+                .parse::<u16>()
+                .map_err(|_| startup_error(&mut child, &handshake, &log, "Hub 握手无效"))?;
         }
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            return Err(startup_failure(
+        if !matches!(child.try_wait(), Ok(None)) {
+            return Err(startup_error(
                 &mut child,
                 &handshake,
                 &log,
-                format!("本地代理在启动过程中退出：{status}"),
+                "Hub Agent 在启动时退出",
             ));
         }
         if Instant::now() >= deadline {
-            return Err(startup_failure(
+            return Err(startup_error(
                 &mut child,
                 &handshake,
                 &log,
-                "本地代理启动超时",
+                "Hub Agent 启动超时",
             ));
         }
         thread::sleep(Duration::from_millis(50));
     };
     let _ = fs::remove_file(&handshake);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let connect_deadline = Instant::now() + Duration::from_secs(5);
     while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            return Err(startup_failure(
+        if Instant::now() >= connect_deadline {
+            return Err(startup_error(
                 &mut child,
                 &handshake,
                 &log,
-                format!("本地代理在监听端口前退出：{status}"),
+                "Hub Agent 未监听端口",
             ));
         }
-        if Instant::now() >= deadline {
-            return Err(startup_failure(
-                &mut child,
-                &handshake,
-                &log,
-                "本地代理未能监听本机端口",
-            ));
-        }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(25));
     }
-
-    let _ =
-        credentials::publish_agent_handoff(port, child.id(), std::process::id(), &session_token);
-
-    let process = AgentProcess {
+    let process = HubProcess {
         child,
         port,
         session_token,
         handshake,
-        log,
     };
-    let info = process_info(&process);
-    *state = Some(process);
-    Ok(info)
+    let result = info(&process);
+    *guard = Some(process);
+    Ok(result)
 }
 
 #[tauri::command]
 async fn agent_start(app: tauri::AppHandle) -> Result<AgentInfo, String> {
-    async_runtime::spawn_blocking(move || agent_start_blocking(&app))
+    async_runtime::spawn_blocking(move || start_blocking(&app))
         .await
-        .map_err(|error| format!("桌面后台任务异常退出：{error}"))?
+        .map_err(|error| format!("Hub 后台任务异常：{error}"))?
 }
 
 #[tauri::command]
 async fn agent_status(app: tauri::AppHandle) -> Result<AgentInfo, String> {
-    async_runtime::spawn_blocking(move || agent_status_blocking(&app))
-        .await
-        .map_err(|error| format!("桌面后台任务异常退出：{error}"))?
-}
-
-fn agent_status_blocking(app: &tauri::AppHandle) -> Result<AgentInfo, String> {
-    let state = app.state::<AgentState>();
-    let mut state = state.0.lock().map_err(|_| "无法锁定本地代理状态")?;
-    if let Some(process) = state.as_mut() {
-        if process
-            .child
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_none()
-        {
-            return Ok(process_info(process));
+    async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubState>();
+        let mut guard = state.0.lock().map_err(|_| "无法锁定 Hub 进程状态")?;
+        if let Some(process) = guard.as_mut() {
+            if matches!(process.child.try_wait(), Ok(None)) {
+                return Ok(info(process));
+            }
+            stop(process);
+            *guard = None;
         }
-        stop_process(process);
-        *state = None;
-    }
-    Ok(AgentInfo {
-        running: false,
-        port: None,
-        session_token: None,
+        Ok(AgentInfo {
+            running: false,
+            port: None,
+            session_token: None,
+        })
     })
-}
-
-#[tauri::command]
-async fn export_save(
-    app: tauri::AppHandle,
-    export_id: String,
-    suggested_name: String,
-) -> Result<Option<String>, String> {
-    if export_id.len() != 32 || !export_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("无效的导出 ID".into());
-    }
-
-    let data_dir = client_data_dir(&app)?;
-    let source = data_dir.join("exports").join(format!("{export_id}.glb"));
-    if !source.is_file() {
-        return Err("导出缓存不存在，请重新生成导出文件".into());
-    }
-
-    let suggested = PathBuf::from(suggested_name);
-    let filename = suggested
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("modal-3d.glb");
-    let selected = app
-        .dialog()
-        .file()
-        .add_filter("glTF Binary", &["glb"])
-        .set_file_name(filename)
-        .blocking_save_file();
-    let Some(selected) = selected else {
-        let _ = fs::remove_file(&source);
-        return Ok(None);
-    };
-    let mut target = selected
-        .into_path()
-        .map_err(|error| format!("无法读取保存路径：{error}"))?;
-    if target
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_none_or(|extension| !extension.eq_ignore_ascii_case("glb"))
-    {
-        target.set_extension("glb");
-    }
-
-    let expected = fs::metadata(&source)
-        .map_err(|error| format!("无法读取导出缓存：{error}"))?
-        .len();
-    let copied = fs::copy(&source, &target).map_err(|error| format!("保存 GLB 失败：{error}"))?;
-    if copied != expected {
-        let _ = fs::remove_file(&target);
-        return Err(format!(
-            "GLB 写入不完整：预期 {expected} 字节，实际 {copied} 字节"
-        ));
-    }
-    let _ = fs::remove_file(&source);
-    Ok(Some(target.to_string_lossy().into_owned()))
+    .await
+    .map_err(|error| format!("Hub 后台任务异常：{error}"))?
 }
 
 #[tauri::command]
 async fn agent_stop(app: tauri::AppHandle) -> Result<(), String> {
-    async_runtime::spawn_blocking(move || agent_stop_blocking(&app))
-        .await
-        .map_err(|error| format!("桌面后台任务异常退出：{error}"))?
+    async_runtime::spawn_blocking(move || {
+        let state = app.state::<HubState>();
+        let process = state.0.lock().map_err(|_| "无法锁定 Hub 进程状态")?.take();
+        if let Some(mut process) = process {
+            stop(&mut process);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Hub 后台任务异常：{error}"))?
 }
 
-fn agent_stop_blocking(app: &tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<AgentState>();
-    let mut state = state.0.lock().map_err(|_| "无法锁定本地代理状态")?;
-    if let Some(mut process) = state.take() {
-        stop_process(&mut process);
-    }
-    Ok(())
-}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .manage(AgentState::default())
+        .manage(HubState::default())
         .invoke_handler(tauri::generate_handler![
             agent_start,
             agent_status,
-            agent_stop,
-            app_diagnostics,
-            reveal_app_data,
-            export_save,
-            credentials::credentials_status,
-            credentials::credentials_save,
-            credentials::credentials_clear
+            agent_stop
         ])
         .build(tauri::generate_context!())
-        .expect("构建 modal-3D 客户端失败");
-
+        .expect("构建 Modal Inference Hub 失败");
     app.run(|handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
-            let state = handle.state::<AgentState>();
-            let process = state.0.lock().ok().and_then(|mut state| state.take());
-            if let Some(mut process) = process {
-                stop_process(&mut process);
+            if let Ok(mut guard) = handle.state::<HubState>().0.lock() {
+                if let Some(mut process) = guard.take() {
+                    stop(&mut process);
+                }
             }
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_drive_accepts_drive_paths_only() {
-        assert_eq!(super::windows_drive(r"C:\Windows"), Some("C:"));
-        assert_eq!(super::windows_drive(r"d:\Users\test"), Some("d:"));
-        assert_eq!(super::windows_drive(r"\\server\share"), None);
-        assert_eq!(super::windows_drive(""), None);
-    }
 }
