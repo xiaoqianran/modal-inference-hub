@@ -140,6 +140,10 @@ export function useGenerationJob({
       return false;
     }
     if (!modalConnected || submittingRef.current) return false;
+    if (job && isJobActive(job)) {
+      setWorkflowMessage("当前项目已有云端生成任务，请等待完成或先取消后再重新生成。");
+      return false;
+    }
 
     submittingRef.current = true;
     setSubmitting(true);
@@ -174,6 +178,7 @@ export function useGenerationJob({
   }, [
     agent,
     canonical,
+    job,
     modalConnected,
     project,
     refreshGenerations,

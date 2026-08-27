@@ -26,11 +26,12 @@ import modal
 from agent import modal_client
 from agent.storage import data_dir
 
-SOURCE_COMMIT = "8512e113f32a2354153b319bfa32c2935bbfbe8a"
-SOURCE_SHA256 = "affd8561b0474579d2906e5240e9d3cf52d76f01d84455dde77caa0ef327af4f"
+SOURCE_COMMIT = "c51b9c24d35aab35cc63d1dbaf3f6fe8bdb4e901"
+SOURCE_SHA256 = "638fd82dfe30187a05d4fffe5a238f8bb5eabfd1a54f4f40c46cf9a0451974f3"
 SOURCE_URL = f"https://codeload.github.com/xiaoqianran/modal-3D/zip/{SOURCE_COMMIT}"
 GATEWAY_APP = "modal-3d-gateway"
 REGISTRY_NAME = "modal-3d-model-registry"
+EXPECTED_WORKER_ADAPTER_REVISION = "modal-3d.worker-adapter.v3"
 WORKERS = (
     ("fastsam3d_plus_plus", "modal-3d-fastsam3d"),
     ("hunyuan2_1_plus_plus", "modal-3d-hunyuan"),
@@ -207,32 +208,64 @@ def _component_template() -> list[dict]:
     return components
 
 
-def _registered_worker_apps(client: modal.Client) -> set[str]:
+def _registered_worker_records(client: modal.Client) -> dict[str, dict]:
     try:
         registry = modal.Dict.from_name(REGISTRY_NAME, client=client)
         registry.hydrate(client=client)
         values = [value for _key, value in registry.items()]
     except Exception:  # noqa: BLE001 - missing/unauthorized registry means no registrations.
-        return set()
-    apps: set[str] = set()
+        return {}
+    records: dict[str, dict] = {}
     for value in values:
         if not isinstance(value, dict):
             continue
         worker_app = value.get("worker_app")
-        if not worker_app and isinstance(value.get("registration"), dict):
-            worker_app = value["registration"].get("worker_app")
+        registration = value.get("registration")
+        if not worker_app and isinstance(registration, dict):
+            worker_app = registration.get("worker_app")
         if isinstance(worker_app, str) and worker_app:
-            apps.add(worker_app)
-    return apps
+            records[worker_app] = value
+    return records
+
+
+def _record_adapter_revision(record: dict | None) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    deployment = record.get("deployment")
+    if isinstance(deployment, dict) and isinstance(deployment.get("adapter_revision"), str):
+        return deployment["adapter_revision"]
+    registration = record.get("registration")
+    if isinstance(registration, dict) and isinstance(registration.get("adapter_revision"), str):
+        return registration["adapter_revision"]
+    return None
 
 
 def _component_status(client: modal.Client) -> list[dict]:
-    registered_apps = _registered_worker_apps(client)
+    records = _registered_worker_records(client)
     result: list[dict] = []
     for component in _component_template():
         function_exists = _function_exists(component["app"], component["function"], client)
-        registered = component["kind"] == "gateway" or component["app"] in registered_apps
-        result.append({**component, "deployed": function_exists and registered, "registered": registered})
+        if component["kind"] == "gateway":
+            registered = True
+            revision = None
+            current_revision = True
+        else:
+            record = records.get(component["app"])
+            registered = record is not None
+            revision = _record_adapter_revision(record)
+            current_revision = revision == EXPECTED_WORKER_ADAPTER_REVISION
+        result.append(
+            {
+                **component,
+                "deployed": function_exists and registered and current_revision,
+                "registered": registered,
+                "adapter_revision": revision,
+                "expected_adapter_revision": (
+                    EXPECTED_WORKER_ADAPTER_REVISION if component["kind"] == "worker" else None
+                ),
+                "stale": bool(registered and not current_revision),
+            }
+        )
     return result
 
 
@@ -291,9 +324,31 @@ def _deploy_worker(client: modal.Client, module: ModuleType, app_name: str) -> d
         _set_component_state(app_name, "deploying")
         _log(f"deploy worker: {app_name}")
         module.app.deploy(client=client)
+
+        _set_component_state(app_name, "syncing-weights")
+        _log(f"sync worker weights: {app_name}")
+        sync_result = modal.Function.from_name(app_name, "sync_weights", client=client).remote()
+        if not isinstance(sync_result, dict) or not isinstance(sync_result.get("bytes"), int) or sync_result["bytes"] <= 0:
+            raise RuntimeError(f"{app_name} 权重同步未返回有效结果")
+
+        _set_component_state(app_name, "warming")
+        _log(f"warm worker GPU model: {app_name}")
+        warmup = modal.Function.from_name(app_name, "warmup", client=client).remote()
+        capability = getattr(module, "CAPABILITY", {})
+        expected_model = capability.get("id") if isinstance(capability, dict) else None
+        if not isinstance(warmup, dict) or (expected_model and warmup.get("model") != expected_model):
+            raise RuntimeError(f"{app_name} GPU 预热校验失败")
+
         _set_component_state(app_name, "registering")
         _log(f"register worker: {app_name}")
         registration = modal.Function.from_name(app_name, "register", client=client).remote()
+        if (
+            not isinstance(registration, dict)
+            or registration.get("adapter_revision") != EXPECTED_WORKER_ADAPTER_REVISION
+        ):
+            raise RuntimeError(
+                f"{app_name} 注册版本不匹配；期望 {EXPECTED_WORKER_ADAPTER_REVISION}"
+            )
         _mark_completed(app_name)
         _set_component_state(app_name, "completed")
         _log(f"worker ready: {app_name}")

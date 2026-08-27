@@ -64,6 +64,18 @@ class JobManagerTests(unittest.TestCase):
         self.assertEqual(value["status"], "running")
         self.assertIsNone(value["error_code"])
 
+    def test_pending_poll_becomes_stalled_after_wall_clock_limit(self) -> None:
+        job = self.create()
+        with patch(
+            "agent.jobs._job_age_seconds",
+            return_value=46 * 60,
+        ):
+            value, call = self.poll_with(job["id"], error=TimeoutError())
+        self.assertEqual(value["status"], "failed")
+        self.assertEqual(value["error_code"], "remote.stalled")
+        self.assertTrue(value["retryable"])
+        call.cancel.assert_called_once()
+
     def test_connection_error_is_recoverable(self) -> None:
         job = self.create()
         value, _ = self.poll_with(job["id"], error=ConnectionError("offline"))

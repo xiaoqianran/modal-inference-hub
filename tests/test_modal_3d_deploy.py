@@ -58,6 +58,33 @@ class Modal3DDeployTests(unittest.TestCase):
         with patch("modal.Function.from_name", return_value=function):
             self.assertFalse(modal_3d_deploy._function_exists("app", "fn", object()))
 
+    def test_component_status_rejects_stale_registered_worker(self) -> None:
+        current = modal_3d_deploy.EXPECTED_WORKER_ADAPTER_REVISION
+        records = {
+            "modal-3d-fastsam3d": {
+                "worker_app": "modal-3d-fastsam3d",
+                "deployment": {"adapter_revision": current},
+            },
+            "modal-3d-hunyuan": {
+                "worker_app": "modal-3d-hunyuan",
+                "deployment": {"adapter_revision": "modal-3d.worker-adapter.v1"},
+            },
+        }
+        with patch(
+            "agent.modal_3d_deploy._registered_worker_records", return_value=records
+        ), patch("agent.modal_3d_deploy._function_exists", return_value=True):
+            status = modal_3d_deploy._component_status(object())
+
+        by_app = {item["app"]: item for item in status}
+        self.assertTrue(by_app["modal-3d-fastsam3d"]["deployed"])
+        self.assertFalse(by_app["modal-3d-fastsam3d"]["stale"])
+        self.assertFalse(by_app["modal-3d-hunyuan"]["deployed"])
+        self.assertTrue(by_app["modal-3d-hunyuan"]["stale"])
+        self.assertEqual(
+            by_app["modal-3d-hunyuan"]["adapter_revision"],
+            "modal-3d.worker-adapter.v1",
+        )
+
     def test_safe_extract_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -98,6 +125,10 @@ class Modal3DDeployTests(unittest.TestCase):
         client = object()
         worker_modules = {}
         model_ids = ["fastsam3d-plus-plus", "hunyuan2.1-plus-plus", "hermit-trellis2-plus-plus", "pixal3d"]
+        model_by_app = {
+            app_name: model_id
+            for (_module_name, app_name), model_id in zip(modal_3d_deploy.WORKERS, model_ids, strict=True)
+        }
         for (module_name, app_name), model_id in zip(modal_3d_deploy.WORKERS, model_ids, strict=True):
             app = Mock(name=f"app-{app_name}")
             worker_modules[module_name] = SimpleNamespace(app=app, CAPABILITY={"id": model_id})
@@ -111,8 +142,12 @@ class Modal3DDeployTests(unittest.TestCase):
             function = Mock()
             if app_name == modal_3d_deploy.GATEWAY_APP and function_name == "capabilities":
                 function.remote.return_value = {"models": [{"id": model_id} for model_id in model_ids]}
+            elif function_name == "sync_weights":
+                function.remote.return_value = {"bytes": 1024}
+            elif function_name == "warmup":
+                function.remote.return_value = {"model": model_by_app[app_name], "load_s": 1.0}
             else:
-                function.remote.return_value = {"registered": app_name}
+                function.remote.return_value = {"registered": app_name, "adapter_revision": modal_3d_deploy.EXPECTED_WORKER_ADAPTER_REVISION}
             return function
 
         with patch.object(modal_client, "client", return_value=client), patch(
@@ -127,7 +162,11 @@ class Modal3DDeployTests(unittest.TestCase):
         gateway_app.deploy.assert_called_once_with(client=client)
         self.assertEqual(
             set(function_calls[:-1]),
-            {(app_name, "register") for _module, app_name in modal_3d_deploy.WORKERS},
+            {
+                (app_name, function_name)
+                for _module, app_name in modal_3d_deploy.WORKERS
+                for function_name in ("sync_weights", "warmup", "register")
+            },
         )
         self.assertEqual(function_calls[-1], (modal_3d_deploy.GATEWAY_APP, "capabilities"))
         self.assertTrue(result["ok"])
@@ -138,6 +177,10 @@ class Modal3DDeployTests(unittest.TestCase):
         client = object()
         modules = {}
         model_ids = ["fastsam3d-plus-plus", "hunyuan2.1-plus-plus", "hermit-trellis2-plus-plus", "pixal3d"]
+        model_by_app = {
+            app_name: model_id
+            for (_module_name, app_name), model_id in zip(modal_3d_deploy.WORKERS, model_ids, strict=True)
+        }
         for (module_name, app_name), model_id in zip(modal_3d_deploy.WORKERS, model_ids, strict=True):
             modules[module_name] = SimpleNamespace(app=Mock(name=app_name), CAPABILITY={"id": model_id})
         modules["gateway"] = SimpleNamespace(app=Mock(name="gateway"))
@@ -147,6 +190,15 @@ class Modal3DDeployTests(unittest.TestCase):
             function = Mock()
             if app_name == modal_3d_deploy.GATEWAY_APP and function_name == "capabilities":
                 function.remote.return_value = {"models": [{"id": model_id} for model_id in model_ids]}
+            elif function_name == "sync_weights":
+                function.remote.return_value = {"bytes": 1024}
+            elif function_name == "warmup":
+                function.remote.return_value = {"model": model_by_app[app_name], "load_s": 1.0}
+            else:
+                function.remote.return_value = {
+                    "registered": app_name,
+                    "adapter_revision": modal_3d_deploy.EXPECTED_WORKER_ADAPTER_REVISION,
+                }
             return function
 
         with patch("agent.modal_3d_deploy._preflight"), patch(
@@ -175,9 +227,14 @@ class Modal3DDeployTests(unittest.TestCase):
             modules[module_name] = SimpleNamespace(app=app, CAPABILITY={"id": app_name})
         modules["fastsam3d_plus_plus"].app.deploy.side_effect = RuntimeError("image build failed")
 
-        def from_name(app_name: str, _function_name: str, **_kwargs):
+        def from_name(app_name: str, function_name: str, **_kwargs):
             function = Mock()
-            function.remote.return_value = {"registered": app_name}
+            if function_name == "sync_weights":
+                function.remote.return_value = {"bytes": 1024}
+            elif function_name == "warmup":
+                function.remote.return_value = {"model": app_name, "load_s": 1.0}
+            else:
+                function.remote.return_value = {"registered": app_name, "adapter_revision": modal_3d_deploy.EXPECTED_WORKER_ADAPTER_REVISION}
             return function
 
         with patch("agent.modal_3d_deploy._preflight"), patch(
@@ -202,6 +259,7 @@ class Modal3DDeployTests(unittest.TestCase):
         maximum_active = 0
         modules = {}
         model_ids = []
+        model_by_app = {}
 
         def deploy_worker(**_kwargs) -> None:
             nonlocal active, maximum_active
@@ -219,6 +277,7 @@ class Modal3DDeployTests(unittest.TestCase):
             app.deploy.side_effect = deploy_worker
             model_id = f"model-{module_name}"
             model_ids.append(model_id)
+            model_by_app[app_name] = model_id
             modules[module_name] = SimpleNamespace(app=app, CAPABILITY={"id": model_id})
         modules["gateway"] = SimpleNamespace(app=Mock(name="gateway"))
 
@@ -226,8 +285,12 @@ class Modal3DDeployTests(unittest.TestCase):
             function = Mock()
             if app_name == modal_3d_deploy.GATEWAY_APP and function_name == "capabilities":
                 function.remote.return_value = {"models": [{"id": model_id} for model_id in model_ids]}
+            elif function_name == "sync_weights":
+                function.remote.return_value = {"bytes": 1024}
+            elif function_name == "warmup":
+                function.remote.return_value = {"model": model_by_app[app_name], "load_s": 1.0}
             else:
-                function.remote.return_value = {"registered": app_name}
+                function.remote.return_value = {"registered": app_name, "adapter_revision": modal_3d_deploy.EXPECTED_WORKER_ADAPTER_REVISION}
             return function
 
         with patch("agent.modal_3d_deploy._preflight"), patch(

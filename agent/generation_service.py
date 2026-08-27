@@ -46,6 +46,40 @@ class GenerationCoordinator:
                     flush=True,
                 )
 
+    def _upload_canonical(self, project_id: str, descriptor: dict, local_path) -> str:
+        uploaded = artifacts.put(local_path.read_bytes(), ".png")
+        if (
+            uploaded["sha256"] != descriptor["sha256"]
+            or uploaded["bytes"] != descriptor["bytes"]
+        ):
+            raise artifacts.ArtifactValidationError("Canonical RGBA 上传完整性校验失败")
+        canonical_path = uploaded["path"]
+        self.projects.record_remote_canonical(
+            project_id, canonical_path, descriptor["sha256"]
+        )
+        return canonical_path
+
+    def _ensure_remote_canonical(self, project_id: str) -> tuple[dict, str]:
+        descriptor, local_path = self.projects.canonical_local(project_id)
+        try:
+            _, canonical_path = self.projects.canonical_remote(project_id)
+        except RuntimeError:
+            return descriptor, self._upload_canonical(project_id, descriptor, local_path)
+
+        # canonical_path 是本地持久化提示，不是远端存在性承诺。Modal Volume
+        # 会独立清理文件，因此每次创建付费任务前都验证远端 PNG 的 bytes + SHA。
+        # 只有明确的缺失/内容损坏才重传；鉴权、网络等异常必须向上抛出，
+        # 防止在连接不确定时误判为“文件已丢失”。
+        try:
+            remote = artifacts.describe_remote_png(
+                canonical_path, expected_bytes=descriptor["bytes"]
+            )
+        except (FileNotFoundError, artifacts.ArtifactValidationError):
+            return descriptor, self._upload_canonical(project_id, descriptor, local_path)
+        if remote.get("sha256") != descriptor["sha256"]:
+            return descriptor, self._upload_canonical(project_id, descriptor, local_path)
+        return descriptor, canonical_path
+
     def submit(
         self,
         project_id: str,
@@ -76,23 +110,9 @@ class GenerationCoordinator:
             raise GenerationConflict("该生成请求正在提交")
 
         # Canonical 准备/上传发生在真正的 generation submit 之前；这里失败可安全释放。
+        # 即使 SQLite 记录了 remote path，也必须确认 Volume 中内容仍真实存在。
         try:
-            descriptor, local_path = self.projects.canonical_local(project_id)
-            try:
-                _, canonical_path = self.projects.canonical_remote(project_id)
-            except RuntimeError:
-                uploaded = artifacts.put(local_path.read_bytes(), ".png")
-                if (
-                    uploaded["sha256"] != descriptor["sha256"]
-                    or uploaded["bytes"] != descriptor["bytes"]
-                ):
-                    raise artifacts.ArtifactValidationError(
-                        "Canonical RGBA 上传完整性校验失败"
-                    )
-                canonical_path = uploaded["path"]
-                self.projects.record_remote_canonical(
-                    project_id, canonical_path, descriptor["sha256"]
-                )
+            _descriptor, canonical_path = self._ensure_remote_canonical(project_id)
         except Exception:
             self.intents.release_pre_remote(request_id)
             raise

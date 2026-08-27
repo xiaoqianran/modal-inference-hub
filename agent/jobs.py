@@ -44,6 +44,10 @@ from agent.storage import data_dir
 
 _DB_VERSION = 3
 _REMOTE_NOT_FOUND_CONFIRMATIONS = 2
+# Modal may keep an input PENDING while repeatedly retrying a container that can
+# never deserialize/start. The remote 30-minute function timeout does not always
+# terminate that pre-execution retry loop, so the desktop needs its own wall clock.
+_REMOTE_JOB_MAX_WALL_SECONDS = 45 * 60
 _AUTH_ERRORS = (NotConnectedError, AuthError, PermissionDeniedError)
 _TRANSIENT_ERRORS = (ModalConnectionError, InternalError, ServiceError, ResourceExhaustedError)
 _RECOVERABLE_ERRORS = (*_AUTH_ERRORS, *_TRANSIENT_ERRORS, ModalTimeoutError, BuiltinTimeoutError)
@@ -71,6 +75,16 @@ def default_db_path() -> Path:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _job_age_seconds(job: "Job") -> float:
+    try:
+        created = datetime.fromisoformat(job.created_at)
+    except ValueError:
+        return 0.0
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - created.astimezone(UTC)).total_seconds())
 
 
 @dataclass
@@ -398,6 +412,24 @@ class JobManager:
             self._reset_remote_not_found(current)
             if current.status == "cancel_requested" and call is not None:
                 return self._retry_cancel(current, call)
+            if _job_age_seconds(current) >= _REMOTE_JOB_MAX_WALL_SECONDS:
+                if call is not None:
+                    try:
+                        call.cancel()
+                    except Exception:
+                        # Local terminal state must not depend on Modal acknowledging
+                        # cancellation of a call already stuck in startup retries.
+                        pass
+                return self._set_state(
+                    current.id,
+                    "failed",
+                    error=(
+                        "云端任务超过 45 分钟仍未进入终态，已停止等待。"
+                        "请先确认模型部署为最新版本后重新生成"
+                    ),
+                    error_code="remote.stalled",
+                    retryable=True,
+                )
             if current.status == "connection_required":
                 return self._set_state(job.id, "running")
             return current.public()
